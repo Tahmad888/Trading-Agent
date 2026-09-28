@@ -71,7 +71,7 @@ def shares() -> TradeProposal:
     # 20 shares at $250 with a $1.25 stop: $25 at the stop, $5,000 of cost.
     return TradeProposal(
         proposal_id="s1",
-        setup_id="R1_18sma_daily_swing",
+        setup_id="3_relative_strength_leaders",
         tier=1,
         instrument="MSFT",
         structure="shares",

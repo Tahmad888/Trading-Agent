@@ -57,7 +57,7 @@ LEG_SHAPES: dict[str, tuple[int, int]] = {
 class TradeProposal(BaseModel):
     proposal_id: str
     plan_id: str | None = None      # the journal plan this came from
-    setup_id: str                   # playbook setup, e.g. "1_trend_pullback", "R1_18sma"
+    setup_id: str                   # playbook setup, e.g. "1_trend_pullback", "2_breakout"
     tier: Tier                      # the setup's current size tier
     instrument: str
     structure: Structure
