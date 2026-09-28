@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch",
+      "WebSearch"
+    ],
+    "deny": [
+      "mcp__Webull__place_stock_instruction",
+      "mcp__Webull__place_option_single_instruction",
+      "mcp__Webull__place_option_strategy_instruction",
+      "mcp__Webull__place_algo_instruction",
+      "mcp__Webull__place_crypto_instruction",
+      "mcp__Webull__place_futures_instruction",
+      "mcp__Webull__place_event_instruction",
+      "mcp__Webull__revoke_instruction"
+    ]
+  }
+}
