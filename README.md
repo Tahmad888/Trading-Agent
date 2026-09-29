@@ -8,7 +8,7 @@ The plan is Trading Desk Blueprint v2.3. `CLAUDE.md` holds its six rules and the
 
 Phase 0, step 2: the risk engine and order contracts, carried over from the earlier desk and updated for v2.3 (tiered sizing, the 2% worst-case cap, open interest and 14-day checks, no perps).
 
-Phase 0, step 3 (in progress): bars and indicators. `desk.bars` parses and checks Webull bars and fails closed on bad or missing data; `desk.indicators` computes the feature pack with TA-Lib 0.8.1 on TradingView's default settings, tested against TradingView's published formulas. `python -m desk.screen_check bars.json` prints a ticker's latest daily values to compare with a TradingView screen.
+Phase 0, step 3 (in progress): bars and indicators. `desk.bars` parses and checks Webull bars and fails closed on bad or missing data; `desk.indicators` computes the feature pack with TA-Lib 0.8.1 on TradingView's default settings, tested against TradingView's published formulas. `python -m desk.screen_check bars.json` prints a ticker's latest daily values to compare with a TradingView screen. `desk.webull` is the desk's own read-only Webull market-data connection (signed HTTPS, keys from environment variables, fail closed).
 
 ## Run the tests
 
