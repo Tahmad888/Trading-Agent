@@ -21,8 +21,8 @@ from desk.bars import BarDataError
 from desk.indicators import rs_line
 
 # Trend Template numbers. [Sourced] Minervini, Trade Like a Stock Market Wizard (2013),
-# as written in blueprint section 5, unless marked otherwise.
-ABOVE_52W_LOW = 1.25        # at least 25% above the 52-week low
+# chapter 5, checked against the book's text on 29 Sep 2026, unless marked otherwise.
+ABOVE_52W_LOW = 1.30        # "at least 30 percent above its 52-week low" (the book; 25% had no source)
 FROM_52W_HIGH = 0.75        # within 25% of the 52-week high
 RISING_200_BARS = 21        # 200-day rising for at least a month
 RS_AVG_BARS = 50            # [Assumption] RS line above its 50-day average
@@ -82,7 +82,7 @@ def trend_template(features: pd.DataFrame, benchmark_close: pd.Series) -> GateRe
         "200-day rising for a month": s200 > sma200_month_ago,
         "50-day above the 150 and 200-day": s50 > s150 and s50 > s200,
         "price above the 50-day": close > s50,
-        "at least 25% above the 52-week low": close >= ABOVE_52W_LOW * last["low_52w"],
+        "at least 30% above the 52-week low": close >= ABOVE_52W_LOW * last["low_52w"],
         "within 25% of the 52-week high": close >= FROM_52W_HIGH * last["high_52w"],
         "RS line above its 50-day": rs_now > rs_avg,
         "RS line near its 52-week high": rs_now >= RS_NEAR_HIGH * rs_high,

@@ -47,7 +47,7 @@ def test_a_stock_lagging_spy_fails_only_on_relative_strength():
     # Up 10% while SPY is up 20%: its trend looks fine, but its RS line is falling.
     r = trend_template(feats(path((N, 10))), SPY["close"])
     assert set(r.failed) <= {"RS line above its 50-day", "RS line near its 52-week high",
-                             "at least 25% above the 52-week low"}
+                             "at least 30% above the 52-week low"}
     assert "RS line above its 50-day" in r.failed
 
 

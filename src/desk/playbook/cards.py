@@ -71,7 +71,7 @@ QULL = "Kullamägi's own site, qullamaggie.com"
 MINERVINI = "Minervini, Trade Like a Stock Market Wizard (2013)"
 ONEIL = "O'Neil, How to Make Money in Stocks, 4th ed. (2009)"
 DARVAS = "Darvas, How I Made $2,000,000 in the Stock Market (1960)"
-KELL = "Kell's teaching (Cycle of Price Action)"
+KELL = "Kell, Victory in Stock Trading (2021)"
 LUK = "Luk's posts and interviews"
 STREET_SMARTS = "Connors and Raschke, Street Smarts (1995), Holy Grail"
 WEINSTEIN = "Weinstein, Secrets for Profiting in Bull and Bear Markets (1988)"
@@ -120,8 +120,8 @@ CARDS: dict[str, Card] = {c.id: c for c in [
             "base_lookback": A(150, "the base starts at the highest high of the last 150 bars (30 weeks)"),
             "base_min_bars": A(15, "3 weeks, O'Neil's shortest base"),
             "dry_volume": A(0.7, "10-day average volume under 0.7 × the 50-day"),
-            "max_stop_pct": S(0.08, f"{MINERVINI}: never more than 8% away"),
-            "max_chase": S(0.05, f"{ONEIL}: never more than 5% past the pivot"),
+            "max_stop_pct": A(0.08, f"desk default inside {MINERVINI}'s 10% maximum loss (chapter 12; his average loss is 6-7%)"),
+            "max_chase": A(0.05, "O'Neil's 5% chase limit, widely quoted from IBD, but not found in the book's text (book check, 29 Sep 2026)"),
         }),
     Card(
         id="3_oneil_cup_with_handle", name="O'Neil cup-with-handle", family="breakout",
@@ -142,9 +142,9 @@ CARDS: dict[str, Card] = {c.id: c for c in [
             "cup_min_bars": S(35, f"{ONEIL}: 7 weeks"), "cup_max_bars": S(325, f"{ONEIL}: 65 weeks"),
             "right_side": A(0.85, "the right side recovers to within 15% of the left-side high"),
             "handle_min_bars": A(5, "a week"), "handle_max_bars": A(25, "5 weeks"),
-            "handle_max_depth": S(0.12, f"{ONEIL}: handles drift down 8-12%"),
-            "breakout_volume": S(1.4, f"{ONEIL}: volume 40-50% above average"),
-            "max_chase": S(0.05, f"{ONEIL}: never more than 5% past the pivot"),
+            "handle_max_depth": A(0.12, "handles drift down 8-12%: widely quoted from IBD, but not found in the book's text (book check, 29 Sep 2026)"),
+            "breakout_volume": A(1.4, "volume 40-50% above average: widely quoted from IBD, but not found in the book's text (book check, 29 Sep 2026)"),
+            "max_chase": A(0.05, "never more than 5% past the pivot: widely quoted from IBD, but not found in the book's text (book check, 29 Sep 2026)"),
             "stop_pct": S(0.08, f"{ONEIL}: sell at 7-8% below the purchase price"),
             "min_eps_growth": S(0.25, f"{ONEIL}: current quarterly EPS up 25%+"),
         }),
@@ -161,7 +161,7 @@ CARDS: dict[str, Card] = {c.id: c for c in [
         exit="Only by the trailing stop",
         params={
             "new_high_bars": A(10, "the 52-week high was made in the last 10 days"),
-            "confirm_bars": A(3, "a top is a high with 3 later bars all below it"),
+            "confirm_bars": S(3, f"{DARVAS}, 1971 edition: a top holds when 3 days fail to reach it"),
             "max_height_adr": A(2.0, "box height no more than 2 × ADR%, or it's too loose"),
             "breakout_volume": A(1.5, "breakout day's volume 1.5 × the 50-day average"),
         }),
@@ -184,7 +184,7 @@ CARDS: dict[str, Card] = {c.id: c for c in [
             "near_middle": A(0.15, "the close is within 15% of the 60-day midpoint"),
             "early_volume": A(0.5, "first 30 minutes' volume is half the 50-day average or more"),
             "max_stop_adr": S(1.5, f"{QULL}: no more than 1x, max 1.5x the average daily range"),
-            "min_growth": A(0.25, "the report shows EPS or sales up 25%+ year on year"),
+            "min_growth": A(0.25, "EPS or sales up 25%+ year on year; Kullamägi's own page asks for mid/high or triple-digit growth"),
         }),
     Card(
         id="6_kell_ema_crossback", name="Kell EMA crossback", family="pullback",
@@ -215,7 +215,7 @@ CARDS: dict[str, Card] = {c.id: c for c in [
         stop="The intraday low, no wider than 1 × ADR% (Luk: often 1-4%)",
         exit="Hold the stop until +2R, then out on a daily close below the 9-day EMA",
         params={
-            "min_run": S(0.30, f"{LUK}: stocks up 30%+"),
+            "min_run": A(0.30, "stocks up 30%+; Luk's rules have no primary source yet, his contest results do"),
             "near_atr": A(0.5, "the low within 0.5 × ATR of the 21 EMA or anchored VWAP"),
             "anchor_bars": A(63, "the VWAP is anchored at the lowest low of the last 3 months"),
             "max_stop_adr": A(1.0, "stop no wider than 1 × ADR%"),
