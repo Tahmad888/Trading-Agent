@@ -44,9 +44,10 @@ def client(transport, token=None):
 
 
 def test_bars_request_is_signed_and_parsed():
-    t = FakeTransport([{"symbol": "SPY", "instrument_id": "1",
-                        "result": [bar("2026-09-28T04:00:00.000+0000", 765.6),
-                                   bar("2026-09-25T04:00:00.000+0000", 771.4)]}])
+    # The reply shape Webull returned on 29 Sep 2026.
+    t = FakeTransport({"result": [{"symbol": "SPY", "instrument_id": "1", "delay_minutes": 0,
+                                   "result": [bar("2026-09-28T04:00:00.000+0000", 765.6),
+                                              bar("2026-09-25T04:00:00.000+0000", 771.4)]}]})
     out = client(t, token="tok").bars(["SPY"], category="US_ETF", timespan="D", count=2)
     req = t.requests[0]
     assert req.get_method() == "POST" and req.full_url.endswith("/market-data/stocks/bars/list")
@@ -108,3 +109,10 @@ def test_host_comes_from_env_and_is_limited_to_webull():
     assert t.requests[0].full_url.startswith("https://api.sandbox.webull.com/")
     with pytest.raises(WebullError, match="WEBULL_HOST"):
         WebullData.from_env({**env, "WEBULL_HOST": "evil.example.com"})
+
+
+def test_delayed_bars_fail_closed():
+    t = FakeTransport({"result": [{"symbol": "SPY", "delay_minutes": 15,
+                                   "result": [bar("2026-09-28T04:00:00.000+0000", 765.6)]}]})
+    with pytest.raises(WebullError, match="15 minutes delayed"):
+        client(t).bars(["SPY"], category="US_ETF", timespan="D")

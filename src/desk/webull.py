@@ -39,7 +39,7 @@ import pandas as pd
 from desk.bars import BarDataError, bars_from_webull
 
 HOST = "api.webull.com"
-SANDBOX_HOST = "api.sandbox.webull.com"   # Webull's test host; paper keys may need it (unverified)
+SANDBOX_HOST = "api.sandbox.webull.com"   # Checked 29 Sep 2026: paper-trade keys work here, with delay_minutes 0
 BARS_PATH = "/market-data/stocks/bars/list"
 SNAPSHOT_PATH = "/market-data/stocks/snapshots/list"
 EARNINGS_PATH = "/market-data/fundamentals/earnings-calendars/list"
@@ -148,8 +148,12 @@ class WebullData:
             raise WebullError("Webull reply is not JSON") from e
 
     def bars(self, symbols: Sequence[str], *, category: str, timespan: str, count: int = 1000,
-             sessions: str | None = None) -> dict[str, pd.DataFrame]:
-        """Bars for up to 20 symbols, oldest first. A symbol missing from the reply is an error."""
+             sessions: str | None = None, max_delay_minutes: int = 0) -> dict[str, pd.DataFrame]:
+        """Bars for up to 20 symbols, oldest first.
+
+        A symbol missing from the reply, or data delayed more than
+        max_delay_minutes (Webull's delay_minutes field), is an error.
+        """
         if not 1 <= len(symbols) <= MAX_SYMBOLS_PER_BARS_CALL:
             raise WebullError(f"1 to {MAX_SYMBOLS_PER_BARS_CALL} symbols per call")
         if timespan not in TIMESPANS or category not in ("US_STOCK", "US_ETF"):
@@ -159,11 +163,20 @@ class WebullData:
         if sessions:
             payload["trading_sessions"] = sessions
         reply = self._call("POST", BARS_PATH, payload=payload)
+        # Checked 29 Sep 2026: the reply is {"result": [{"symbol", "result": [bars], "delay_minutes"}]}.
+        if isinstance(reply, Mapping):
+            reply = reply.get("result")
         if not isinstance(reply, list):
             raise WebullError("unexpected bars reply")
         out = {}
         for item in reply:
             if isinstance(item, Mapping) and item.get("symbol") in symbols:
+                try:
+                    delay = int(item.get("delay_minutes", 0) or 0)
+                except (TypeError, ValueError) as e:
+                    raise WebullError("bad delay_minutes") from e
+                if delay > max_delay_minutes:
+                    raise WebullError(f"{item['symbol']} data is {delay} minutes delayed")
                 out[item["symbol"]] = bars_from_webull(item.get("result") or [])
         missing = [s for s in symbols if s not in out]
         if missing:
