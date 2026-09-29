@@ -99,3 +99,12 @@ def test_earnings_calendar_is_a_signed_get():
     rows = client(t).earnings_calendar("JPM")
     assert rows[0]["expected_publish_date"] == "2026-10-13"
     assert t.requests[0].get_method() == "GET" and "symbol=JPM" in t.requests[0].full_url
+
+
+def test_host_comes_from_env_and_is_limited_to_webull():
+    env = {"WEBULL_APP_KEY": "k", "WEBULL_APP_SECRET": "s", "WEBULL_HOST": "api.sandbox.webull.com"}
+    t = FakeTransport([{"expected_publish_date": "2026-10-13"}])
+    WebullData.from_env(env, transport=t, min_interval=0).earnings_calendar("JPM")
+    assert t.requests[0].full_url.startswith("https://api.sandbox.webull.com/")
+    with pytest.raises(WebullError, match="WEBULL_HOST"):
+        WebullData.from_env({**env, "WEBULL_HOST": "evil.example.com"})

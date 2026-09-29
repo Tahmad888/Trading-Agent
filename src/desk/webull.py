@@ -39,6 +39,7 @@ import pandas as pd
 from desk.bars import BarDataError, bars_from_webull
 
 HOST = "api.webull.com"
+SANDBOX_HOST = "api.sandbox.webull.com"   # Webull's test host; paper keys may need it (unverified)
 BARS_PATH = "/market-data/stocks/bars/list"
 SNAPSHOT_PATH = "/market-data/stocks/snapshots/list"
 EARNINGS_PATH = "/market-data/fundamentals/earnings-calendars/list"
@@ -96,6 +97,9 @@ class WebullData:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ, **kw) -> WebullData:
+        kw.setdefault("host", env.get("WEBULL_HOST") or HOST)
+        if kw["host"] not in (HOST, SANDBOX_HOST):
+            raise WebullError(f"WEBULL_HOST must be {HOST} or {SANDBOX_HOST}")
         return cls(env.get("WEBULL_APP_KEY", ""), env.get("WEBULL_APP_SECRET", ""),
                    env.get("WEBULL_ACCESS_TOKEN") or None, **kw)
 
