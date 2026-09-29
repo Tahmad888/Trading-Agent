@@ -170,7 +170,7 @@ CARDS: dict[str, Card] = {c.id: c for c in [
         directions=("long",), source=f"{QULL}, crediting Pradeep Bonde", grade="moderate",
         trend_template=False, needs_earnings_numbers=True,
         rules=("A stock that went sideways for 3 to 6 months",
-               "Gaps up 10% or more on news that surprises the market, usually earnings with big growth",
+               "Gaps up 10% or more on news that surprises the market, usually earnings with EPS or sales up 50%+",
                "Heavy early volume; buy the break of the first 15-minute high, or the first 1-hour high by 11:00"),
         timeframes={"weekly": "Sideways for 3-6 months", "daily": "Today's 10%+ gap on news",
                     "1-hour / 15-minute": "Entry: first 15-minute high, or first 1-hour high by 11:00 ET"},
@@ -184,7 +184,7 @@ CARDS: dict[str, Card] = {c.id: c for c in [
             "near_middle": A(0.15, "the close is within 15% of the 60-day midpoint"),
             "early_volume": A(0.5, "first 30 minutes' volume is half the 50-day average or more"),
             "max_stop_adr": S(1.5, f"{QULL}: no more than 1x, max 1.5x the average daily range"),
-            "min_growth": A(0.25, "EPS or sales up 25%+ year on year; Kullamägi's own page asks for mid/high or triple-digit growth"),
+            "min_growth": A(0.50, "EPS or sales up 50%+ year on year: our reading of Kullamägi's \"mid/high or even triple digit EPS and revenue growth\" (qullamaggie.com; Taz chose the source's bar, 29 Sep 2026)"),
         }),
     Card(
         id="6_kell_ema_crossback", name="Kell EMA crossback", family="pullback",
