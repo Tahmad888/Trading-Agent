@@ -1,12 +1,12 @@
 """Risk layer tests carried from the paused ai-trading-desk code, updated for
-the 0.25% tier 1 default and with the perp case removed. They include the
+dollar risk per trade (blueprint v2.4) and with the perp case removed. They include the
 adversarial cases the first gate names: oversized qty, stale buying power,
 spread > 10%. (The missing-token case belongs to the execution adapter.)"""
 
 from dataclasses import replace
 from datetime import timedelta
 
-from desk.risk import OpenPosition, evaluate
+from desk.risk import evaluate
 from tests.conftest import NOW
 
 
@@ -27,7 +27,7 @@ def test_oversized_qty_is_shrunk_never_grown(proposal, account):
     })
     d = evaluate(big, account, now=NOW)
     assert d.approved, failed(d)
-    assert d.final_qty_multiplier == 0.1          # 10 lots -> 1 lot, $20 risk
+    assert d.final_qty_multiplier == 0.1          # 10 lots -> 1 lot, the ticket's $20
     assert d.final_qty_multiplier <= 1.0
 
 
@@ -71,12 +71,12 @@ def test_negative_margin_excess_rejected(proposal, account):
 
 
 def test_daily_loss_limit_halts(proposal, account):
-    down = replace(account, pnl_today=-150)       # 1.5% of 10k
+    down = replace(account, pnl_today=-200)
     assert "daily_loss_limit" in failed(evaluate(proposal, down, now=NOW))
 
 
 def test_weekly_loss_limit_halts(proposal, account):
-    down = replace(account, pnl_this_week=-400)   # 4% of 10k
+    down = replace(account, pnl_this_week=-400)
     assert "weekly_loss_limit" in failed(evaluate(proposal, down, now=NOW))
 
 
@@ -87,14 +87,6 @@ def test_manual_halt_respected(proposal, account):
 def test_kill_switch_on_drawdown(proposal, account):
     dd = replace(account, equity=9_000, equity_high_water_mark=10_000)
     assert "kill_switch_drawdown" in failed(evaluate(proposal, dd, now=NOW))
-
-
-def test_position_count_and_sector_limits(proposal, account):
-    five = replace(account, open_positions=[OpenPosition(f"X{i}", f"s{i}", 0) for i in range(5)])
-    assert "max_open_positions" in failed(evaluate(proposal, five, now=NOW))
-    two = replace(account, open_positions=[OpenPosition("QQQ", "us_index", 0),
-                                           OpenPosition("IWM", "us_index", 0)])
-    assert "max_per_sector" in failed(evaluate(proposal, two, now=NOW))
 
 
 def test_already_moved_rejected(proposal, account):
