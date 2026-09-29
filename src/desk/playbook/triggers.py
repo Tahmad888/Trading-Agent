@@ -249,6 +249,19 @@ def episodic_pivot(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
         "trigger": "first 15-minute high (1-hour high by 11:00 ET); earnings growth checked separately"})
 
 
+def growth_group(card: Card, eps_growth: float | None, sales_growth: float | None) -> str | None:
+    """The episodic pivot's earnings gate: None if it fails, else the group the journal compares.
+
+    Year-on-year growth as fractions (0.30 = 30%). EPS or sales counts. Both
+    groups trade the same size with the same rules; only the tag differs.
+    Missing numbers fail the gate (fail closed).
+    """
+    best = max((g for g in (eps_growth, sales_growth) if g is not None), default=None)
+    if best is None or best < card.p("min_growth"):
+        return None
+    return "50%+" if best >= card.p("strong_growth") else "25-50%"
+
+
 # 6. Kell EMA crossback
 def kell_crossback(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     if _long_ok(card, ctx):

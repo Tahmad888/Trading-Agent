@@ -162,3 +162,11 @@ def test_scan_uses_the_real_trend_template():
 
 def test_every_card_has_a_check():
     assert set(t.CHECKS) == set(CARDS)
+
+
+def test_episodic_pivot_growth_gate_and_tag():
+    card = CARDS["5_qullamaggie_episodic_pivot"]
+    assert t.growth_group(card, 0.70, 0.30) == "50%+"          # EPS or sales counts
+    assert t.growth_group(card, 0.40, 0.35) == "25-50%"        # qualifies, tagged as the smaller group
+    assert t.growth_group(card, 0.20, None) is None
+    assert t.growth_group(card, None, None) is None            # no numbers, no trade
