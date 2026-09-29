@@ -31,8 +31,10 @@ close, on trading days) and skips a slot that already ran. Every scan, failed on
    your Mac user name, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tradingdesk.scanner.plist`.
 6. Check it: `tail ~/Trading-Agent/data/scanner.out` shows "no scan due" outside market hours and one line per scan in session.
 
-The watchlist is `data/watchlist.json`, a JSON list of tickers; until the Friday leader scan writes it,
-the scanner watches SPY, QQQ and IWM.
+The Friday leader scan (16:40 ET) writes the watchlist to `data/watchlist.json`; until its first run the
+scanner watches SPY, QQQ and IWM. To add or drop names, edit `data/taz-picks.json`:
+`{"add": ["TSLA"], "remove": ["XYZ"]}` (SPY, QQQ and IWM always stay). Each morning at 10:00 the day's
+movers are checked for an episodic pivot on top of the list.
 
 ## Plan B
 

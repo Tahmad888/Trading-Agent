@@ -23,6 +23,12 @@ from desk.indicators import daily_features
 from desk.playbook.filters import trend_template
 
 ALWAYS = ("SPY", "QQQ", "IWM")
+# The leader scan's universe: Webull's top-200 lists, merged. [Assumption] Together they cover the
+# liquid names that moved most over 1 week to 1 year; price and volume are checked on our own bars.
+UNIVERSE_LISTS = (("gainers", "DAY_5"), ("gainers", "MONTH_1"), ("gainers", "MONTH_3"),
+                  ("gainers", "WEEK_52"), ("most_active", "TURNOVER"), ("most_active", "VOLUME"))
+MOVER_LISTS = (("gainers", "PRE_MARKET"), ("gainers", "DAY_1"), ("most_active", "RELATIVE_VOLUME_10D"))
+MIN_GAP = 0.10                   # [Sourced] Kullamägi: episodic pivots gap 10% or more
 MIN_PRICE = 10.0                 # [Sourced] blueprint section 3: price above $10
 MIN_AVG_VOLUME = 1_000_000       # [Sourced] blueprint section 3: over 1 million shares a day
 VOLUME_AVG_BARS = 50             # [Assumption] "a day" judged on the 50-day average
@@ -101,3 +107,45 @@ def build_watchlist(leaders: Iterable[str], movers: Iterable[str] = (), added: I
             if s and (source in ("always", "Taz") or s not in gone):
                 out.setdefault(s, []).append(source)
     return out
+
+
+def _num(row: Mapping, key: str) -> float:
+    try:
+        return float(row.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _price(row: Mapping) -> float:
+    return _num(row, "price") or _num(row, "close")
+
+
+def _rankings(source, lists, skipped: dict[str, str]) -> list[dict]:
+    rows = []
+    for kind, arg in lists:
+        try:
+            rows += getattr(source, kind)(arg)
+        except BarDataError as e:                    # one list failing doesn't stop the others; it's logged
+            skipped[f"{kind}:{arg}"] = str(e)
+    return rows
+
+
+def universe(source, skipped: dict[str, str]) -> list[str]:
+    """Names for the Friday leader scan: Webull's top lists, over $10, common-stock tickers only."""
+    rows = _rankings(source, UNIVERSE_LISTS, skipped)
+    return sorted({r["symbol"] for r in rows if _price(r) > MIN_PRICE and r["symbol"].isalpha()})
+
+
+def movers(source, skipped: dict[str, str]) -> list[str]:
+    """This morning's names over $10 up 10%+ (pre-market or today), or trading 2× their usual volume.
+
+    The episodic pivot's candidates; the setup's own check decides. [Assumption] 2× relative volume.
+    """
+    out = set()
+    for kind, arg in MOVER_LISTS:
+        for r in _rankings(source, [(kind, arg)], skipped):
+            big = (_num(r, "relative_volume_10d") >= 2.0 if arg == "RELATIVE_VOLUME_10D"
+                   else _num(r, "change_ratio") >= MIN_GAP)
+            if big and _price(r) > MIN_PRICE and r["symbol"].isalpha():
+                out.add(r["symbol"])
+    return sorted(out)

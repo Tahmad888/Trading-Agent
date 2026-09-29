@@ -116,3 +116,18 @@ def test_delayed_bars_fail_closed():
                                    "result": [bar("2026-09-28T04:00:00.000+0000", 765.6)]}]})
     with pytest.raises(WebullError, match="15 minutes delayed"):
         client(t).bars(["SPY"], category="US_ETF", timespan="D")
+
+
+def test_rankings_are_signed_gets_and_fail_closed():
+    row = {"symbol": "NVDA", "price": "180.1", "change_ratio": "0.31"}
+    for reply in ([row], {"data": [row]}):
+        t = FakeTransport(reply)
+        assert client(t).gainers("MONTH_3")[0]["symbol"] == "NVDA"
+        assert "rank_type=MONTH_3" in t.requests[0].full_url and "/screeners/gainers-losers/list" in t.requests[0].full_url
+    t = FakeTransport([row])
+    client(t).most_active()
+    assert "rank_type=TURNOVER" in t.requests[0].full_url
+    with pytest.raises(WebullError):
+        client(FakeTransport([{"price": "1"}])).most_active()
+    with pytest.raises(WebullError):
+        client(FakeTransport([])).gainers("MONTH_6")

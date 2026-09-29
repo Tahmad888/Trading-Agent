@@ -1,6 +1,7 @@
 import json
 from datetime import date, datetime
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -21,8 +22,14 @@ def daily(cl, spread=0.005, end=DAY):
 
 
 class Fake:
-    def __init__(self, frames, fail=()):
-        self.frames, self.fail, self.calls = frames, set(fail), []
+    def __init__(self, frames, fail=(), lists=None):
+        self.frames, self.fail, self.calls, self.lists = frames, set(fail), [], lists or {}
+
+    def gainers(self, period):
+        return self.lists.get(period, [])
+
+    def most_active(self, by="TURNOVER"):
+        return self.lists.get(by, [])
 
     def bars(self, symbols, *, category, timespan, count=1000, **kw):
         self.calls.append((tuple(symbols), category, timespan))
@@ -34,9 +41,9 @@ class Fake:
 UP = line((0, 300), (len(QULL) - 1, 420))
 
 
-def frames():
-    return {("SPY", "D"): daily(UP), ("QQQ", "D"): daily(UP * 1.3), ("IWM", "D"): daily(RSI2_DIP[-len(QULL):]),
-            ("LEAD", "D"): daily(QULL, spread=0.02)}
+def frames(end=DAY):
+    return {("SPY", "D"): daily(UP, end=end), ("QQQ", "D"): daily(UP * 1.3, end=end),
+            ("IWM", "D"): daily(RSI2_DIP[-len(QULL):], end=end), ("LEAD", "D"): daily(QULL, spread=0.02, end=end)}
 
 
 def test_schedule():
@@ -106,7 +113,7 @@ def test_run_writes_one_line_per_slot_and_the_funnel_counts_it(tmp_path):
     assert any(t["setup_id"] == "1_qullamaggie_breakout" for t in intraday.triggered)
     assert sc.run(src, ["LEAD"], log, datetime(2026, 9, 30, 20, 0, tzinfo=ET)) is None   # outside the schedule
     fun = sc.funnel(log.records(), date(2026, 9, 28), date(2026, 10, 2))
-    assert fun["scans_scheduled"] == 5 * 26 and fun["scans_run"] == 2
+    assert fun["scans_scheduled"] == 5 * 26 + 1 and fun["scans_run"] == 2
     assert fun["setups_armed"] >= 1 and fun["entries_triggered"] >= 1
     assert len(log.path.read_text().splitlines()) == 2
 
@@ -127,3 +134,38 @@ def test_main_logs_a_failed_scan_when_keys_are_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(sc, "datetime", type("D", (datetime,), {"now": staticmethod(lambda tz=None: datetime(2026, 9, 29, 20, 11, tzinfo=tz))}))
     assert sc.main(["--data-dir", str(tmp_path), "--watchlist", str(tmp_path / "none.json")]) == 1
     assert "no Webull connection" in sc.ScanLog(tmp_path).records()[0]["error"]
+
+
+def test_friday_leader_scan_writes_the_watchlist(tmp_path):
+    log = sc.ScanLog(tmp_path)
+    (tmp_path / "taz-picks.json").write_text(json.dumps({"add": ["TSLA"], "remove": []}))
+    lists = {"MONTH_3": [{"symbol": "LEAD", "price": "148"}, {"symbol": "PENNY", "price": "2"}],
+             "TURNOVER": [{"symbol": "SPY", "price": "400"}, {"symbol": "BRK.B", "price": "480"}]}
+    stale = sc.run(Fake(frames(), lists=lists), [], log, datetime(2026, 10, 2, 16, 41, tzinfo=ET))
+    assert "no SPY bars for today" in stale.error        # Tuesday's bars on a Friday: nothing written
+    rec = sc.run(Fake(frames(date(2026, 10, 2)), lists=lists), [], log, datetime(2026, 10, 2, 16, 42, tzinfo=ET))
+    assert rec.kind == "leader" and not rec.error, rec.error
+    assert [l["symbol"] for l in rec.leaders] == ["LEAD"]
+    wl = json.loads((tmp_path / "watchlist.json").read_text())
+    assert wl["TSLA"] == ["Taz"] and "SPY" in wl and "PENNY" not in wl
+
+
+def test_morning_movers_become_episodic_pivots(tmp_path):
+    from tests.test_triggers import EP
+    log = sc.ScanLog(tmp_path)
+    log.save_armed(DAY, sc.ScanRecord("close", "", None, market="full"))
+    d = daily(np.r_[EP, EP[-1]], spread=0.02)             # the last bar is today's, and is dropped
+    m = m15([(57.5, 58.5, 57, 58.2), (58.2, 58.4, 57.8, 58.1)]).assign(volume=8e5)
+    f = {("GAP", "D"): d, ("GAP", "M15"): m}
+    lists = {"PRE_MARKET": [{"symbol": "GAP", "price": "57.5", "change_ratio": "0.13"}]}
+    rec = sc.run(Fake(f, lists=lists), [], log, datetime(2026, 9, 29, 10, 2, tzinfo=ET))
+    assert [a["setup_id"] for a in rec.armed] == ["5_qullamaggie_episodic_pivot"]
+    assert log.load_armed(DAY)[1][0].symbol == "GAP"
+
+
+def test_episodic_pivot_entry_before_and_after_11():
+    ep = sig("5_qullamaggie_episodic_pivot", trigger=57.5, stop=54)
+    bars = m15([(57.5, 58.5, 57, 58.2), (58.2, 58.4, 57.8, 58.1), (58.1, 58.3, 57.9, 58.0), (58, 58.6, 57.9, 58.5),
+                (58.5, 58.55, 58.2, 58.3), (58.3, 58.45, 58.1, 58.2), (58.2, 58.7, 58.1, 58.6)])
+    hit, level, why = sc.entry_hit(ep, bars, datetime(2026, 9, 29, 11, 15, tzinfo=ET))
+    assert hit and level == 58.5 and "before 11:00" in why

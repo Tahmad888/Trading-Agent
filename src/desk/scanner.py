@@ -1,7 +1,7 @@
 """The scanner: checks the watchlist for the 10 setups on a schedule and logs every scan.
 
 Blueprint v2.4 sections 3 and 5, build step 4; serves the watch step. Runs on
-the iMac (Taz, 29 Sep 2026). Two kinds of scan:
+the iMac (Taz, 29 Sep 2026). The scans:
 
 - After the close (16:10 ET): daily bars for every watchlist name, the market
   filter from SPY and QQQ, the Trend Template, and the 10 daily checks. The
@@ -9,16 +9,17 @@ the iMac (Taz, 29 Sep 2026). Two kinds of scan:
 - In session, every 15 minutes from 09:45 to 15:45 ET: 15-minute bars for the
   armed names, to see whether each entry rule fired. At 15:45 the RSI(2) check
   also runs on the day's bars so far, as an estimate of the close.
+- At 10:00, this morning's movers (Webull's top gainers and unusual volume)
+  are checked for an episodic pivot, which is then watched like the rest.
+- Fridays at 16:40 ET, the leader scan ranks Webull's top-200 lists (1 week to
+  52-week gainers, most traded) on our own bars and writes next week's
+  watchlist, with Taz's adds and removals from data/taz-picks.json.
 
 Every scan, including a failed one, writes a line to the scan log, which the
 Friday note reads for the funnel (scans run out of scheduled, setups armed,
 entries triggered, and names skipped for bad data). A name with bad or stale
 data is skipped and logged (fail closed); a scan that can't get SPY and QQQ
 arms nothing.
-
-Not yet wired in: the episodic pivot, which needs the morning movers list
-(Webull top gainers and most active) and the gap day's open; and the Friday
-leader scan, which needs the ~1,000-name universe. Both are next in step 4.
 
 Plan B: if the iMac misses scans, the free Microsoft VM runs the same command
 from cron, and a missed scan shows in the Friday funnel as a drift flag.
@@ -43,12 +44,14 @@ from desk.bars import BarDataError, require
 from desk.indicators import daily_features
 from desk.playbook.cards import CARDS, INDEX_ETFS
 from desk.playbook.filters import MarketSize, market_filter, trend_template
-from desk.playbook.triggers import Context, Signal, connors_rsi2, scan
+from desk.playbook.triggers import Context, Signal, connors_rsi2, episodic_pivot, scan
 
 ET = ZoneInfo("America/New_York")
 DAILY_BARS = 1000                 # rule 6: warm-up for the 200-day and the 52-week values
 MIN_DAILY_BARS = 260
 CLOSE_SCAN = time(16, 10)
+LEADER_SCAN = time(16, 40)        # Fridays: the weekly leader scan builds next week's watchlist
+EP_SCAN = time(10, 0)             # the first 30 minutes are in: check this morning's movers
 FIRST_INTRADAY, LAST_INTRADAY = time(9, 45), time(15, 45)
 EP_CUTOFF = time(11, 0)           # [Sourced] Kullamägi: first 1-hour high, by 11:00
 
@@ -77,7 +80,10 @@ def scheduled_slots(d: date) -> list[datetime]:
     while t.time() <= LAST_INTRADAY:
         slots.append(t)
         t += timedelta(minutes=15)
-    return slots + [datetime.combine(d, CLOSE_SCAN, ET)]
+    slots.append(datetime.combine(d, CLOSE_SCAN, ET))
+    if d.weekday() == 4:
+        slots.append(datetime.combine(d, LEADER_SCAN, ET))
+    return slots
 
 
 def category(symbol: str) -> str:
@@ -117,6 +123,7 @@ class ScanRecord:
     market_why: str | None = None
     armed: list[dict] = field(default_factory=list)
     triggered: list[dict] = field(default_factory=list)
+    leaders: list[dict] = field(default_factory=list)
     skipped: dict[str, str] = field(default_factory=dict)
     error: str | None = None
 
@@ -181,6 +188,14 @@ def entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, floa
             if (after["close"] > sig.trigger).any():
                 return True, sig.trigger, "15-minute close back above the level"
         return False, sig.trigger, "no dip and reclaim yet"
+    if setup == "5_qullamaggie_episodic_pivot":
+        # Before 11:00 the first 15-minute high; after that the first hour's high; day 1 only.
+        early = later[later.index.tz_convert(ET).time < EP_CUTOFF]
+        first_hour = float(today["high"].iloc[:4].max())
+        if (early["high"] > first["high"]).any():
+            return True, float(first["high"]), "took out the first 15-minute high before 11:00"
+        late = later[later.index.tz_convert(ET).time >= EP_CUTOFF]
+        return bool((late["high"] > first_hour).any()), first_hour, "took out the first hour's high after 11:00"
     if setup == "9_weinstein_stage4_breakdown":
         return bool(first["close"] < sig.trigger), float(first["close"]), "first 15 minutes still under support"
     if sig.direction == "long":
@@ -206,6 +221,60 @@ def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime) -> 
             continue
         if hit:
             rec.triggered.append(_sig(sig, entry_level=round(level, 2), why=why))
+    return rec
+
+
+def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skipped: dict[str, str]) -> list[Signal]:
+    """At 10:00: this morning's movers checked for an episodic pivot, from the gap and the first 30 minutes."""
+    from desk.watchlist import movers
+
+    today = now.astimezone(ET).date()
+    names = movers(source, skipped)
+    daily = fetch(source, names, "D", DAILY_BARS, skipped)
+    intraday = fetch(source, names, "M15", 40, skipped)
+    out = []
+    for sym in names:
+        if sym not in daily or sym not in intraday:
+            continue
+        d, m = daily[sym], intraday[sym]
+        d = d[d.index.tz_convert(ET).date < today]            # yesterday's close is the gap's base
+        m = m[m.index.tz_convert(ET).date == today]
+        if len(m) < 2 or len(d) < MIN_DAILY_BARS:
+            skipped.setdefault(sym, "not enough bars for the episodic pivot")
+            continue
+        try:
+            ctx = Context(sym, market, None, today_open=float(m["open"].iloc[0]),
+                          early_volume=float(m["volume"].iloc[:2].sum()))
+            sig = episodic_pivot(daily_features(d), CARDS["5_qullamaggie_episodic_pivot"], ctx)
+        except BarDataError as e:
+            skipped[sym] = str(e)
+            continue
+        if sig:
+            out.append(sig)
+    return out
+
+
+def leader_scan_job(source: BarSource, log: "ScanLog", now: datetime) -> ScanRecord:
+    """Fridays after the close: rank the universe and write next week's watchlist with Taz's picks."""
+    from desk.watchlist import build_watchlist, leader_scan, universe
+
+    rec = ScanRecord("leader", now.astimezone(ET).isoformat(), None)
+    names = universe(source, rec.skipped)
+    bars = fetch(source, sorted(set(names) | {"SPY"}), "D", DAILY_BARS, rec.skipped)
+    if "SPY" not in bars or bars["SPY"].index[-1].tz_convert(ET).date() != now.astimezone(ET).date():
+        rec.error = "no SPY bars for today: last week's watchlist stays"
+        return rec
+    scan_ = leader_scan({s: b for s, b in bars.items() if s != "SPY"}, bars["SPY"]["close"])
+    rec.skipped.update(scan_.skipped)
+    rec.scanned = scan_.ranked
+    if not scan_.leaders:
+        rec.error = "no leaders found: last week's watchlist stays"
+        return rec
+    picks = log.picks()
+    wl = build_watchlist([l.symbol for l in scan_.leaders], added=picks.get("add", []),
+                         removed=picks.get("remove", []))
+    log.write_watchlist(wl)
+    rec.leaders = [{"symbol": l.symbol, "score": l.score, **l.returns} for l in scan_.leaders]
     return rec
 
 
@@ -243,6 +312,20 @@ class ScanLog:
         if not self.path.exists():
             return []
         return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
+
+    def picks(self) -> dict:
+        """Taz's adds and removals: <data dir>/taz-picks.json, {"add": [...], "remove": [...]}."""
+        p = self.root / "taz-picks.json"
+        return json.loads(p.read_text()) if p.exists() else {}
+
+    def write_watchlist(self, wl: Mapping[str, list[str]]) -> None:
+        (self.root / "watchlist.json").write_text(json.dumps(wl, indent=1))
+
+    def add_armed(self, day: date, market: MarketSize, sigs: Sequence[Signal]) -> None:
+        old_market, old = self.load_armed(day)
+        rec = ScanRecord("intraday", "", None, market=(old_market or market).value,
+                         armed=[_sig(s) for s in [*old, *sigs]])
+        self.save_armed(day, rec)
 
     def save_armed(self, for_day: date, rec: ScanRecord) -> None:
         (self.root / f"armed-{for_day.isoformat()}.json").write_text(
@@ -293,17 +376,28 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
     if any(r.get("slot") == slot.isoformat() and not r.get("error") for r in log.records()):
         return None                                   # this slot already ran
     try:
-        if slot.time() == CLOSE_SCAN:
+        if slot.time() == LEADER_SCAN:
+            rec = leader_scan_job(source, log, now)
+        elif slot.time() == CLOSE_SCAN:
             rec, _ = close_scan(source, watchlist, now)
             log.save_armed(next_trading_day(slot.date()), rec)
         else:
             market, armed = log.load_armed(slot.date())
+            new: list[Signal] = []
+            if slot.time() == EP_SCAN and market is not None:
+                skipped: dict[str, str] = {}
+                new = episodic_pivots(source, market, now, skipped)
+                log.add_armed(slot.date(), market, new)
+                armed = [*armed, *new]
             rec = intraday_scan(source, armed, now)
+            if slot.time() == EP_SCAN and market is not None:
+                rec.skipped.update(skipped)
             if slot.time() == LAST_INTRADAY and market is not None:
-                rec.armed = [_sig(s) for s in rsi2_estimate(source, watchlist, market, now)]
+                new = rsi2_estimate(source, watchlist, market, now)
+            rec.armed = [_sig(s) for s in new]
     except Exception as e:                            # any failure is logged as a failed scan, never silent
-        rec = ScanRecord("close" if slot.time() == CLOSE_SCAN else "intraday", now.isoformat(), None,
-                         error=f"{type(e).__name__}: {e}")
+        kind = {LEADER_SCAN: "leader", CLOSE_SCAN: "close"}.get(slot.time(), "intraday")
+        rec = ScanRecord(kind, now.isoformat(), None, error=f"{type(e).__name__}: {e}")
     rec.slot = slot.isoformat()
     log.write(rec)
     return rec

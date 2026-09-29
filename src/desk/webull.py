@@ -43,6 +43,12 @@ SANDBOX_HOST = "api.sandbox.webull.com"   # Checked 29 Sep 2026: paper-trade key
 BARS_PATH = "/market-data/stocks/bars/list"
 SNAPSHOT_PATH = "/market-data/stocks/snapshots/list"
 EARNINGS_PATH = "/market-data/fundamentals/earnings-calendars/list"
+# Rankings, top 200 each, not paginated (Sourced: webull-openapi-python-sdk 3.0.2, screener requests v2).
+GAINERS_PATH = "/market-data/screeners/gainers-losers/list"
+ACTIVES_PATH = "/market-data/screeners/top-actives/list"
+GAINER_PERIODS = frozenset({"PRE_MARKET", "AFTER_MARKET", "MIN_3", "MIN_5", "DAY_1", "DAY_5",
+                            "MONTH_1", "MONTH_3", "WEEK_52"})
+ACTIVE_KINDS = frozenset({"VOLUME", "RELATIVE_VOLUME_10D", "TURNOVER", "TURNOVER_RATE", "AMPLITUDE"})
 MAX_SYMBOLS_PER_BARS_CALL = 20
 TIMESPANS = frozenset({"M1", "M5", "M15", "M30", "M60", "M120", "M240", "D", "W", "M", "Y"})
 
@@ -197,3 +203,25 @@ class WebullData:
         if not isinstance(reply, list):
             raise WebullError("unexpected earnings reply")
         return reply
+
+    def _ranking(self, path: str, query: Mapping[str, str]) -> list[dict]:
+        reply = self._call("GET", path, query)
+        # Not yet seen live: accept a plain list or one wrapped in "data" or "result".
+        if isinstance(reply, Mapping):
+            reply = reply.get("data", reply.get("result"))
+        if not isinstance(reply, list) or not all(isinstance(r, Mapping) and r.get("symbol") for r in reply):
+            raise WebullError("unexpected ranking reply")
+        return [dict(r) for r in reply]
+
+    def gainers(self, period: str, *, losers: bool = False) -> list[dict]:
+        """Top 200 US stocks by price change over a period (DAY_1, MONTH_3, ...)."""
+        if period not in GAINER_PERIODS:
+            raise WebullError(f"period must be one of {sorted(GAINER_PERIODS)}")
+        return self._ranking(GAINERS_PATH, {"rank_type": period, "category": "US_STOCK",
+                                            "sort_by": "CHANGE_RATIO", "direction": "ASC" if losers else "DESC"})
+
+    def most_active(self, by: str = "TURNOVER") -> list[dict]:
+        """Top 200 US stocks by trading activity (TURNOVER is dollar volume)."""
+        if by not in ACTIVE_KINDS:
+            raise WebullError(f"by must be one of {sorted(ACTIVE_KINDS)}")
+        return self._ranking(ACTIVES_PATH, {"category": "US_STOCK", "rank_type": by})
