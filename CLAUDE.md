@@ -31,4 +31,7 @@ Read the six rules before doing anything. They come from Trading Desk Blueprint 
 
 - `src/desk/contracts.py`: typed hand-offs (trade proposal, legs, risk decision, approval record).
 - `src/desk/risk.py`: the risk engine, with limits from blueprint section 10.
+- `src/desk/bars.py`: parses and checks price bars; bad, short or stale bars raise `BarDataError` (no trade).
+- `src/desk/indicators.py`: the feature pack on TA-Lib 0.8.1, matched to TradingView; `tests/tv_reference.py` holds the Pine formulas it's tested against.
+- `src/desk/screen_check.py`: prints a ticker's latest daily values to compare with Taz's screen.
 - `tests/`: run with `pip install -e .[dev]` then `pytest`.
