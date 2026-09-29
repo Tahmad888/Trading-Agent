@@ -1,8 +1,9 @@
 """Risk and sizing layer. Deterministic code only: no LLM ever touches this.
 
-Limits are blueprint v2.3 section 10's starting values for a small account.
-They are engineering choices, not research findings, and may only be
-tightened without Taz's explicit sign-off.
+Limits are blueprint v2.4 section 10. Size is a dollar amount per trade: the
+analyst's grade suggests it and Taz sets it on the ticket, up to a hard
+ceiling. There is no cap on the number of trades or positions; quality, not
+quantity, is the goal. The checks that remain stop a bad or untradable trade.
 
 The layer can only shrink or reject a proposal. It never grows a size.
 """
@@ -10,45 +11,36 @@ The layer can only shrink or reject a proposal. It never grows a size.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from desk.contracts import (DEBIT_STRUCTURES, LEG_SHAPES, OPTION_STRUCTURES, RiskDecision,
+from desk.contracts import (DEBIT_STRUCTURES, LEG_SHAPES, OPTION_STRUCTURES, Grade, RiskDecision,
                             RuleCheck, TradeProposal)
 
 EXCHANGE_TZ = ZoneInfo("America/New_York")
 
+# The dollar risk a ticket suggests for each analyst grade. Taz can set any
+# amount up to the ceiling when he approves; these are only starting points.
+GRADE_RISK_USD: dict[str, float] = {"A": 100.0, "B": 50.0, "C": 20.0}
+
+
+def suggested_risk_usd(grade: Grade) -> float:
+    return GRADE_RISK_USD[grade]
+
 
 @dataclass(frozen=True)
 class RiskLimits:
-    # Loss at the stop per trade, as a fraction of equity, by size tier.
-    # Tier 0 is paper only and is sized like tier 1, so paper results show
-    # what a first live trade would have done.
-    tier1_risk_pct: float = 0.0025
-    tier2_risk_pct: float = 0.005
-    max_worst_case_pct: float = 0.02         # per option position; a bought option's whole premium counts
-    max_total_open_risk_pct: float = 0.03    # all open positions at their stops, plus this one
-    daily_loss_pct: float = 0.015            # halts new entries until manual reset
-    weekly_loss_pct: float = 0.04
-    max_open_positions: int = 5
-    max_per_sector: int = 2
+    max_risk_per_trade_usd: float = 100.0    # hard ceiling on loss at the stop, whatever the ticket says
+    daily_loss_usd: float = 200.0            # halts new entries until manual reset [Assumption]
+    weekly_loss_usd: float = 400.0           # [Assumption]
+    kill_switch_drawdown_pct: float = 0.10   # from equity high-water mark
     max_option_spread_pct_mid: float = 0.10
     min_open_interest: int = 500             # at every leg's strike
     min_days_to_expiry_for_buys: int = 14    # no opening purchases closer to expiry
     max_already_moved_pct: float = 0.03      # fast move belongs to faster players
-    kill_switch_drawdown_pct: float = 0.10   # from equity high-water mark
     max_account_state_age: timedelta = timedelta(seconds=30)
-
-    def risk_pct_for_tier(self, tier: int) -> float:
-        return self.tier2_risk_pct if tier == 2 else self.tier1_risk_pct
-
-
-@dataclass(frozen=True)
-class OpenPosition:
-    instrument: str
-    sector: str
-    risk_usd: float                          # loss if it hits its stop now
+    max_quote_age: timedelta = timedelta(seconds=60)
 
 
 @dataclass(frozen=True)
@@ -62,7 +54,6 @@ class AccountState:
     margin_excess: float
     pnl_today: float
     pnl_this_week: float
-    open_positions: list[OpenPosition] = field(default_factory=list)
     halted: bool = False                     # set by loss limits; only Taz resets it
 
 
@@ -98,17 +89,18 @@ def evaluate(
     check("kill_switch_drawdown", drawdown < limits.kill_switch_drawdown_pct,
           drawdown, limits.kill_switch_drawdown_pct)
 
-    day_loss = max(0.0, -account.pnl_today) / equity if equity > 0 else 1.0
-    check("daily_loss_limit", day_loss < limits.daily_loss_pct, day_loss, limits.daily_loss_pct)
-    week_loss = max(0.0, -account.pnl_this_week) / equity if equity > 0 else 1.0
-    check("weekly_loss_limit", week_loss < limits.weekly_loss_pct, week_loss, limits.weekly_loss_pct)
+    day_loss = max(0.0, -account.pnl_today)
+    check("daily_loss_limit", day_loss < limits.daily_loss_usd, day_loss, limits.daily_loss_usd)
+    week_loss = max(0.0, -account.pnl_this_week)
+    check("weekly_loss_limit", week_loss < limits.weekly_loss_usd, week_loss, limits.weekly_loss_usd)
 
-    n_open = len(account.open_positions)
-    check("max_open_positions", n_open + 1 <= limits.max_open_positions,
-          n_open + 1, limits.max_open_positions)
-    n_sector = sum(1 for p in account.open_positions if p.sector == proposal.sector)
-    check("max_per_sector", n_sector + 1 <= limits.max_per_sector,
-          n_sector + 1, limits.max_per_sector)
+    # A fresh quote doesn't prove the stock trades: a halted stock can show
+    # fresh quotes before it reopens. Unknown status fails closed.
+    quote_age = (now - proposal.quote_as_of).total_seconds()
+    check("quote_fresh", 0 <= quote_age <= limits.max_quote_age.total_seconds(),
+          quote_age, limits.max_quote_age.total_seconds())
+    check("security_tradable", proposal.security_tradable is True,
+          float(bool(proposal.security_tradable)), 1.0)
 
     is_option = proposal.structure in OPTION_STRUCTURES
     legs_have_expiry = [leg.expiry is not None for leg in proposal.legs]
@@ -141,21 +133,13 @@ def evaluate(
     check("already_moved", abs(proposal.already_moved_pct) <= limits.max_already_moved_pct,
           abs(proposal.already_moved_pct), limits.max_already_moved_pct)
 
-    # Size: shrink so the loss at the stop fits the tier's budget and, for
-    # options, the worst case fits the 2% cap. Never grow.
+    # Size: shrink so the loss at the stop fits the ticket's dollar risk,
+    # never above the hard ceiling. Never grow. Paper trades are sized the
+    # same way, so the journal shows what the live trade would have done.
     min_leg_qty = min(leg.qty for leg in proposal.legs)
-    budget = limits.risk_pct_for_tier(proposal.tier) * equity
-    multiplier = _lots(min_leg_qty, budget / proposal.max_loss_usd) if budget > 0 else 0.0
+    budget = min(proposal.risk_usd, limits.max_risk_per_trade_usd)
+    multiplier = _lots(min_leg_qty, budget / proposal.max_loss_usd)
     check("risk_per_trade_sizable", multiplier > 0, proposal.max_loss_usd * multiplier, budget)
-    if is_option:
-        cap = limits.max_worst_case_pct * equity
-        wc_multiplier = _lots(min_leg_qty, cap / proposal.worst_case_loss_usd) if cap > 0 else 0.0
-        check("worst_case_cap", wc_multiplier > 0, proposal.worst_case_loss_usd * wc_multiplier, cap)
-        multiplier = min(multiplier, wc_multiplier)
-
-    open_risk = sum(p.risk_usd for p in account.open_positions) + proposal.max_loss_usd * multiplier
-    open_risk_cap = limits.max_total_open_risk_pct * equity
-    check("total_open_risk", open_risk <= open_risk_cap, open_risk, open_risk_cap)
 
     # The worst case is what the broker holds: premium, spread margin or share cost.
     required = proposal.worst_case_loss_usd * multiplier + proposal.est_costs_usd

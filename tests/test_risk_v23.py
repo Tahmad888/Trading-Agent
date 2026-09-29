@@ -1,4 +1,6 @@
-"""Tests for the blueprint v2.3 step 2 changes to the risk engine and contracts."""
+"""Tests for the blueprint v2.3 step 2 changes that v2.4 keeps. v2.4 dropped
+the 2% worst-case cap, the percentage tiers and the 3% total-risk backstop;
+their tests are gone and test_risk_v24.py covers what replaced them."""
 
 from dataclasses import replace
 from datetime import timedelta
@@ -7,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from desk.contracts import Leg, TradeProposal
-from desk.risk import OpenPosition, RiskLimits, evaluate
+from desk.risk import evaluate
 from tests.conftest import NOW, TODAY
 from tests.test_risk import failed
 
@@ -21,72 +23,21 @@ def test_perp_structures_no_longer_accepted(proposal):
             TradeProposal(**{**data, "structure": structure})
 
 
-# (2) Worst-case loss field and the 2% cap.
+# (2) Worst-case loss field.
 
 def test_worst_case_below_stop_loss_is_invalid(proposal):
     with pytest.raises(ValidationError):
         TradeProposal(**{**proposal.model_dump(), "worst_case_loss_usd": 10})
 
 
-def test_bought_premium_over_cap_rejected_even_with_tight_stop(long_call, account):
-    # One call with $300 of premium: the stop risks only $20, but the whole
-    # premium counts against the 2% cap ($200 on $10k).
-    one = long_call.model_copy(update={
-        "legs": [long_call.legs[0].model_copy(update={"qty": 1, "limit_price": 3.00})],
-        "max_loss_usd": 20, "worst_case_loss_usd": 300,
-    })
-    d = evaluate(one, account, now=NOW)
-    assert not d.approved
-    assert "worst_case_cap" in failed(d)
-
-
-def test_worst_case_cap_shrinks_below_stop_budget(long_call, account):
-    # Stop budget at tier 2 ($50) allows 2 of 3 calls; the 2% cap allows 1.
-    d = evaluate(long_call, account, now=NOW)
-    assert d.approved, failed(d)
-    assert d.final_qty_multiplier == pytest.approx(1 / 3)
-
-
-def test_shares_are_sized_by_stop_not_the_option_cap(shares, account):
+def test_shares_are_sized_by_stop(shares, account):
     d = evaluate(shares, account, now=NOW)
     assert d.approved, failed(d)
-    assert "worst_case_cap" not in {c.rule for c in d.checks}
+    assert d.final_qty_multiplier == 1.0          # $25 at the stop inside the ticket's $50
 
 
 def test_share_cost_counts_against_buying_power(shares, account):
     assert "buying_power" in failed(evaluate(shares, replace(account, buying_power=4_000), now=NOW))
-
-
-# (3) Sizing by tier, 0.25% default.
-
-def test_default_risk_is_quarter_percent():
-    assert RiskLimits().tier1_risk_pct == 0.0025
-    assert RiskLimits().tier2_risk_pct == 0.005
-
-
-def test_tier_zero_is_paper_only(proposal, account):
-    paper = proposal.model_copy(update={"tier": 0})
-    live = evaluate(paper, account, now=NOW)
-    assert not live.approved
-    assert "tier_allows_live" in failed(live)
-    d = evaluate(paper, account, now=NOW, live=False)
-    assert d.approved, failed(d)
-    assert d.final_qty_multiplier == 1.0          # sized like tier 1
-
-
-def test_tier_one_budget_rejects_what_tier_two_allows(proposal, account):
-    thirty = proposal.model_copy(update={"max_loss_usd": 30, "worst_case_loss_usd": 30})
-    assert "risk_per_trade_sizable" in failed(evaluate(thirty, account, now=NOW))
-    assert evaluate(thirty.model_copy(update={"tier": 2}), account, now=NOW).approved
-
-
-def test_tier_two_sizes_at_half_percent(proposal, account):
-    big = proposal.model_copy(update={
-        "legs": [leg.model_copy(update={"qty": 10}) for leg in proposal.legs],
-        "max_loss_usd": 200, "worst_case_loss_usd": 200,
-    })
-    assert evaluate(big, account, now=NOW).final_qty_multiplier == 0.1
-    assert evaluate(big.model_copy(update={"tier": 2}), account, now=NOW).final_qty_multiplier == 0.2
 
 
 # (4) Open interest, the 14-day rule and leg expiries.
@@ -146,25 +97,13 @@ def test_proposal_requires_setup_and_tier(proposal):
         with pytest.raises(ValidationError):
             TradeProposal(**{k: v for k, v in data.items() if k != missing})
     with pytest.raises(ValidationError):
-        TradeProposal(**{**data, "tier": 3})
+        TradeProposal(**{**data, "tier": 2})
 
 
 def test_single_long_put_allowed(long_call, account):
     put = long_call.model_copy(update={"structure": "long_put", "tier": 1})
     d = evaluate(put, account, now=NOW)
     assert d.approved, failed(d)
-
-
-# (6) 3% total open risk backstop.
-
-def test_total_open_risk_backstop(proposal, account):
-    near_cap = replace(account, open_positions=[OpenPosition("QQQ", "tech", 150),
-                                                OpenPosition("XLE", "energy", 140)])
-    d = evaluate(proposal, near_cap, now=NOW)          # 290 + 20 > 300
-    assert "total_open_risk" in failed(d)
-    ok = replace(near_cap, open_positions=[OpenPosition("QQQ", "tech", 150),
-                                           OpenPosition("XLE", "energy", 130)])
-    assert evaluate(proposal, ok, now=NOW).approved   # 280 + 20 = 300
 
 
 # Leg shapes: a structure's legs must match its name.

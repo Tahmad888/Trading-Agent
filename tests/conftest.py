@@ -24,12 +24,14 @@ def account() -> AccountState:
 
 @pytest.fixture
 def proposal() -> TradeProposal:
-    # A 1-lot put credit spread risking $20, inside the tier 1 budget of $25 (0.25% of $10k).
+    # A 1-lot put credit spread risking $20 at the stop, on a grade C ticket ($20).
     return TradeProposal(
         proposal_id="p1",
         plan_id="plan1",
         setup_id="5_oversold_bounce",
         tier=1,
+        grade="C",
+        risk_usd=20,
         instrument="SPY",
         structure="credit_vertical",
         legs=[Leg(symbol="SPY 260930P00500000", side="sell", qty=1, limit_price=1.20,
@@ -42,6 +44,8 @@ def proposal() -> TradeProposal:
         est_costs_usd=2,
         sector="us_index",
         option_spread_pct_mid=0.04,
+        quote_as_of=NOW - timedelta(seconds=5),
+        security_tradable=True,
         time_stop=NOW + timedelta(days=5),
     )
 
@@ -52,7 +56,9 @@ def long_call() -> TradeProposal:
     return TradeProposal(
         proposal_id="c1",
         setup_id="1_trend_pullback",
-        tier=2,
+        tier=1,
+        grade="A",
+        risk_usd=100,
         instrument="AAPL",
         structure="long_call",
         legs=[Leg(symbol="AAPL 261120C00230000", side="buy", qty=3, limit_price=1.50,
@@ -62,6 +68,8 @@ def long_call() -> TradeProposal:
         est_costs_usd=3,
         sector="tech",
         option_spread_pct_mid=0.05,
+        quote_as_of=NOW - timedelta(seconds=5),
+        security_tradable=True,
         time_stop=NOW + timedelta(days=20),
     )
 
@@ -73,6 +81,8 @@ def shares() -> TradeProposal:
         proposal_id="s1",
         setup_id="3_relative_strength_leaders",
         tier=1,
+        grade="B",
+        risk_usd=50,
         instrument="MSFT",
         structure="shares",
         legs=[Leg(symbol="MSFT", side="buy", qty=20, limit_price=250.0)],
@@ -80,5 +90,7 @@ def shares() -> TradeProposal:
         worst_case_loss_usd=5_000,
         est_costs_usd=1,
         sector="tech",
+        quote_as_of=NOW - timedelta(seconds=5),
+        security_tradable=True,
         time_stop=NOW + timedelta(days=15),
     )

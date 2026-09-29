@@ -7,7 +7,9 @@ parse them to make a decision.
 Carried over from the paused ai-trading-desk code (order contracts only) and
 changed for blueprint v2.3 step 2: no perps, a worst-case loss field, setup
 and tier on every proposal, single long calls and puts, and an expiry and
-open interest on each option leg.
+open interest on each option leg. Blueprint v2.4: risk is a dollar amount per
+trade (the analyst's grade suggests it, Taz sets it), plus the quote time and
+trading status every order is checked against.
 """
 
 from __future__ import annotations
@@ -19,9 +21,13 @@ from pydantic import BaseModel, Field, model_validator
 
 Unit = Annotated[float, Field(ge=0, le=1)]
 
-# Size tiers (blueprint section 5): 0 = journal and paper only,
-# 1 = small live size, 2 = normal live size.
-Tier = Literal[0, 1, 2]
+# Tiers (blueprint section 5): 0 = journal and paper only, 1 = may trade live
+# (after 30+ paper trades positive after costs, and only when Taz says so).
+# Size no longer depends on the tier; it's the dollar risk on each ticket.
+Tier = Literal[0, 1]
+
+# The chart analyst's grade for a plan. It suggests the ticket's dollar risk.
+Grade = Literal["A", "B", "C"]
 
 
 class Leg(BaseModel):
@@ -58,7 +64,9 @@ class TradeProposal(BaseModel):
     proposal_id: str
     plan_id: str | None = None      # the journal plan this came from
     setup_id: str                   # playbook setup, e.g. "1_trend_pullback", "2_breakout"
-    tier: Tier                      # the setup's current size tier
+    tier: Tier                      # the setup's current tier: 0 paper, 1 live allowed
+    grade: Grade | None = None      # the analyst's grade, which suggests risk_usd
+    risk_usd: Annotated[float, Field(gt=0)]   # dollars at the stop Taz accepts for this trade
     instrument: str
     structure: Structure
     legs: list[Leg] = Field(min_length=1)
@@ -71,6 +79,8 @@ class TradeProposal(BaseModel):
     sector: str                     # sector bucket, for concentration limits
     option_spread_pct_mid: float | None = None   # widest leg bid-ask as % of mid
     already_moved_pct: float = 0.0
+    quote_as_of: datetime           # when the quote this plan is priced on was taken
+    security_tradable: bool | None = None   # trading status from the quote source; None = unknown
     time_stop: datetime
     exit_rules: list[str] = []
 
