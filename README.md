@@ -10,6 +10,8 @@ Phase 0, step 2: the risk engine and order contracts, carried over from the earl
 
 Phase 0, step 3 (in progress): bars and indicators. `desk.bars` parses and checks Webull bars and fails closed on bad or missing data; `desk.indicators` computes the feature pack with TA-Lib 0.8.1 on TradingView's default settings, tested against TradingView's published formulas. `python -m desk.screen_check bars.json` prints a ticker's latest daily values to compare with a TradingView screen. `desk.webull` is the desk's own read-only Webull market-data connection (signed HTTPS, keys from environment variables, fail closed).
 
+Phase 0, step 4 (in progress): the scanner. `desk.playbook.filters` has Minervini's Trend Template and the SPY/QQQ market filter; `desk.playbook.cards` holds the 10 wave-1 setup cards with every number labelled; `desk.playbook.triggers` checks each setup on daily bars; `desk.watchlist` ranks the leader scan and builds the watchlist; `desk.scanner` runs on a schedule and logs every scan for the Friday funnel. It runs on the iMac: setup steps in `ops/imac/README.md`.
+
 ## Run the tests
 
 ```

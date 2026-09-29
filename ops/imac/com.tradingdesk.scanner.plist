@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Copy to ~/Library/LaunchAgents/ and load with:
+     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tradingdesk.scanner.plist
+     Replace USERNAME below with the Mac's short user name. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.tradingdesk.scanner</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/USERNAME/Trading-Agent/ops/imac/run-scan.sh</string></array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
