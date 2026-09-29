@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 Unit = Annotated[float, Field(ge=0, le=1)]
 
@@ -79,7 +79,7 @@ class TradeProposal(BaseModel):
     sector: str                     # sector bucket, for concentration limits
     option_spread_pct_mid: float | None = None   # widest leg bid-ask as % of mid
     already_moved_pct: float = 0.0
-    quote_as_of: datetime           # when the quote this plan is priced on was taken
+    quote_as_of: AwareDatetime      # when the quote this plan is priced on was taken; naive times are refused
     security_tradable: bool | None = None   # trading status from the quote source; None = unknown
     time_stop: datetime
     exit_rules: list[str] = []

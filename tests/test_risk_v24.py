@@ -109,3 +109,10 @@ def test_halted_or_unknown_status_rejected(proposal, account):
     for status in (False, None):
         p = proposal.model_copy(update={"security_tradable": status})
         assert "security_tradable" in failed(evaluate(p, account, now=NOW))
+
+
+def test_naive_quote_time_refused(proposal):
+    # A quote time without a timezone can't be compared with the clock, so
+    # the contract refuses it instead of letting evaluate() crash.
+    with pytest.raises(ValidationError):
+        TradeProposal(**{**proposal.model_dump(), "quote_as_of": NOW.replace(tzinfo=None)})
