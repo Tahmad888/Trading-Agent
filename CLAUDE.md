@@ -2,14 +2,16 @@
 
 ## Active repair work
 
-Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. The tracker
-records current user decisions and the last completed checkpoint; stop after each
-numbered step. Taz now chooses each trade's dollar risk budget, with no hard $100
-ceiling or automatic grade-dollar assignments, and has removed the 11:00 ET EP
-condition. These are approved changes pending their numbered implementation steps,
-not a claim that the legacy runtime below already implements them.
+Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify and
+checkpoint each numbered step before advancing under Taz's current authorization.
+Taz chooses each trade's dollar risk budget, with no hard $100 ceiling or automatic
+grade-dollar assignments. Step 02 implements that risk policy; Step 03 removes the
+11:00 ET EP condition. The tracker records actual completion, not just approved intent.
 
-Read the six rules before doing anything. They come from Trading Desk Blueprint v2.3 (28 Sep 2026), which is the plan this repo builds: https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg (source in the project folder at `research/ai-trading/outside-review/trading-desk-blueprint.md`).
+Read the six rules before doing anything. They come from Trading Desk Blueprint v2.4
+(29 Sep 2026), amended by Taz's later decisions in the repair plan:
+https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg
+(source in the project folder at `research/ai-trading/outside-review/trading-desk-blueprint.md`).
 
 ## The six rules
 
@@ -17,7 +19,7 @@ Read the six rules before doing anything. They come from Trading Desk Blueprint 
 2. **Every task names its step.** Each task has to say which step of the trader's day it serves: watch, analyze, plan, approve, manage or journal. Anything that serves none of them, such as multi-year backtests, statistical gates or research programs, waits until Taz asks for it.
 3. **"Researched" has a clear meaning.** Every rule and number carries one of three labels. *Sourced* links to the trader, book or paper it came from. *Checked* means verified on our live data or journal. *Assumption* means the journal will check it. No backtest is needed.
 4. **Tickets in plain words.** Each ticket gives the ticker, the setup's name, what each timeframe shows, the entry, stop and target, which option and why, the dollars at risk, and the next earnings date. If Taz can't follow a ticket, that's a bug to fix.
-5. **A weekly check.** Every Friday a short note covers what was built, which step it served, paper results by setup, and the week's funnel: scans run out of scans scheduled, setups triggered, plans logged, tickets sent, and for each blocked plan the check that blocked it (a risk limit, a loss-limit halt, earnings or the ticket cap). It raises a drift flag when any of these is true:
+5. **A weekly check.** Every Friday a short note covers what was built, which step it served, paper results by setup, and the week's funnel: scans run out of scans scheduled, setups triggered, plans logged, tickets sent, and for each blocked plan the check that blocked it (a risk limit, a loss-limit halt or earnings). It raises a drift flag when any of these is true:
    - While building, a week passed with no progress on the current step.
    - Once the scanner is live, a scheduled scan was missed, or a trading day logged no plans or no-trade notes for the watchlist.
    - Setups triggered but no ticket reached Taz, and the block wasn't one of the written risk limits.
@@ -39,7 +41,7 @@ Read the six rules before doing anything. They come from Trading Desk Blueprint 
 ## Layout
 
 - `src/desk/contracts.py`: typed hand-offs (trade proposal, legs, risk decision, approval record).
-- `src/desk/risk.py`: the risk engine, with limits from blueprint section 10.
+- `src/desk/risk.py`: the risk engine, with limits from blueprint section 10: user-selected dollar risk per ticket, including estimated costs, with no grade-dollar mapping or hard $100 ceiling, dollar loss limits, quote-age and trading-status checks. No caps on trade or position counts.
 - `src/desk/bars.py`: parses and checks price bars; bad, short or stale bars raise `BarDataError` (no trade).
 - `src/desk/indicators.py`: the feature pack on TA-Lib 0.8.1, matched to TradingView; `tests/tv_reference.py` holds the Pine formulas it's tested against.
 - `src/desk/screen_check.py`: prints a ticker's latest daily values to compare with Taz's screen.

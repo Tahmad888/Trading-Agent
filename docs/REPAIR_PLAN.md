@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30. Status: Step 01 complete locally; Step 02 not started.
+Prepared 2026-09-30. Status: Steps 01–02 complete locally; Step 03 next.
 
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through
@@ -23,7 +23,7 @@ step tracker says when each repair actually lands.
 | D06 | No trade-count, position-count or sector-count caps; display exposure. Stock eligibility is separate from option suitability, preserving shares as an alternative. | Selected repair plan / existing user policy | 02, 05, 08, 11 |
 | D07 | Retain the 30% Trend Template rule and 25% EP growth threshold; 50%+ is a comparison tag. | Existing user decisions / current cards | 08, 09, 10 |
 | D08 | No multi-year backtesting requirement or invented statistical gate. Use focused point-in-time examples, live-data checks and forward records. | User instruction / CLAUDE.md | All |
-| D09 | Number the work, finish one step and stop before the next. Start repair work now. | User instruction, 2026-09-30 | All |
+| D09 | Number the work; verify and checkpoint each step before advancing. Taz's latest instruction authorizes proceeding sequentially after verification. Pause on an unresolved trading-policy choice or failed acceptance check. | Latest user instruction, 2026-09-30 | All |
 
 Research labels remain **Sourced**, **Checked**, and **Assumption**. A user-selected
 policy is labelled as such; a test passing does not turn a policy assumption into
@@ -32,7 +32,8 @@ individual setup rules. Do not claim book verification when the passage is unava
 
 ## How to use this tracker
 
-- Only one numbered step is active unless Taz explicitly authorizes a batch.
+- Only one numbered step is active at a time. Taz has authorized sequential advancement
+  after verification; each step still needs its own checkpoint and completion evidence.
 - Open the latest checkpoint, verify the checkout, and name the step before edits.
 - Use the change record below. Close the step only when its listed exit criteria pass.
 - On completion, mark the row done and add a checkpoint with exact evidence.
@@ -52,7 +53,7 @@ workflow. No agent has been dispatched by creating this plan.
 | Done | Step | Deliverable | Proposed implementer / reviewer | Completion criterion |
 | --- | --- | --- | --- | --- |
 | [x] | 01 | Baseline, branch reconciliation and repair instructions | Codex | Both branches and a temporary combination tested; integration decision and full tracker recorded; preview reverted; checkpoint saved. |
-| [ ] | 02 | User-selected dollar risk; reconcile PR #1 | Codex / Claude | One coherent risk policy; no $100 ceiling or grade-dollar assignment; explicit finite positive budget; combined tests pass. |
+| [x] | 02 | User-selected dollar risk; reconcile PR #1 | Codex / Claude | One coherent risk policy; no $100 ceiling or grade-dollar assignment; explicit finite positive budget; combined tests pass. |
 | [ ] | 03 | Remove the 11:00 EP condition | Codex / Claude | Runtime, cards, descriptions and tests agree; no 11:00 cutoff/switch; no use of an unfinished opening range. |
 | [ ] | 04 | Shared contracts, option identity and loss calculations | Codex / Claude | Verified contract metadata, allowed structures, independently computed loss measures and integer quantities; malformed proposals fail closed. |
 | [ ] | 05 | Market/account gates and persistent risk state | Codex / Claude | Trusted setup eligibility and regime applied consistently; account halts/exposure recover after restart; no count caps. |
@@ -363,7 +364,7 @@ Plan B: return to paper and reconcile any existing positions.
 
 | Topic | Required resolution | Step |
 | --- | --- | --- |
-| EP opening-range alternatives | Exact 15-minute/60-minute interaction without an 11:00 switch; completed bars and no duplicate trigger. | 03 |
+| EP opening-range alternatives (resolved) | Taz selected either completed 15-minute or 60-minute opening-range breakout throughout day one, subject to other checks. | 03 |
 | Supported option structures | Whether calendars/condors are needed initially; assignment/expiry handling before executable support. | 04, 11, 16 |
 | HALF regime | Whether budget entry is before or after the regime reduction; display both values and apply once. | 05, 13 |
 | Account loss accounting | Realized/unrealized inclusion, fee treatment, day/week boundaries and manual halt reset. | 05 |

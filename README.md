@@ -6,12 +6,13 @@ The original implementation follows Trading Desk Blueprint v2.3, with v2.4 risk 
 in PR #1. Current repair work follows [the numbered repair plan](docs/REPAIR_PLAN.md)
 and [Step 01's verified baseline](docs/checkpoints/01-baseline.md). `CLAUDE.md` holds
 the six rules and standing constraints; `AGENTS.md` defines the checkpoint workflow.
-Step 01 is complete locally. Trading behavior is still the legacy baseline until
-the corresponding repair steps are implemented; Step 02 is next.
+Steps 01–02 are complete locally. PR #1 is integrated with user-selected dollar
+risk, cost-inclusive sizing and no fixed $100 ceiling or grade-dollar assignment.
+See [Step 02 evidence](docs/checkpoints/02-user-risk.md). Step 03 removes the 11:00 EP rule.
 
 ## Status
 
-Phase 0, step 2: the risk engine and order contracts, carried over from the earlier desk and updated for v2.3 (tiered sizing, the 2% worst-case cap, open interest and 14-day checks, no perps).
+Risk engine: Taz supplies each trade’s dollar budget. Code sizes whole units within that budget, including a full estimated cost reserve, and retains account loss halts, liquidity and buying-power checks. No count caps or grade-based sizing. Option identity/loss verification and broker/account reconciliation are still later repair steps; passing unit tests does not make this live-ready.
 
 Phase 0, step 3 (in progress): bars and indicators. `desk.bars` parses and checks Webull bars and fails closed on bad or missing data; `desk.indicators` computes the feature pack with TA-Lib 0.8.1 on TradingView's default settings, tested against TradingView's published formulas. `python -m desk.screen_check bars.json` prints a ticker's latest daily values to compare with a TradingView screen. `desk.webull` is the desk's own read-only Webull market-data connection (signed HTTPS, keys from environment variables, fail closed).
 

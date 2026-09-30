@@ -7,7 +7,9 @@ parse them to make a decision.
 Carried over from the paused ai-trading-desk code (order contracts only) and
 changed for blueprint v2.3 step 2: no perps, a worst-case loss field, setup
 and tier on every proposal, single long calls and puts, and an expiry and
-open interest on each option leg.
+open interest on each option leg. Blueprint v2.4: risk is a dollar amount per
+trade (Taz selects it; grade is descriptive only), plus the quote time and
+trading status every order is checked against.
 """
 
 from __future__ import annotations
@@ -15,20 +17,24 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 Unit = Annotated[float, Field(ge=0, le=1)]
 
-# Size tiers (blueprint section 5): 0 = journal and paper only,
-# 1 = small live size, 2 = normal live size.
-Tier = Literal[0, 1, 2]
+# Tiers (blueprint section 5): 0 = journal and paper only, 1 = may trade live
+# (after 30+ paper trades positive after costs, and only when Taz says so).
+# Size no longer depends on the tier; it's the dollar risk on each ticket.
+Tier = Literal[0, 1]
+
+# The analyst grade describes quality. It does not assign or change dollar risk.
+Grade = Literal["A", "B", "C"]
 
 
 class Leg(BaseModel):
     symbol: str
     side: Literal["buy", "sell"]
-    qty: Annotated[int, Field(gt=0)]
-    limit_price: Annotated[float, Field(gt=0)]   # limit orders only, ever
+    qty: Annotated[int, Field(gt=0, strict=True)]
+    limit_price: Annotated[float, Field(gt=0, allow_inf_nan=False)]   # limit orders only, ever
     expiry: date | None = None                   # options only; None for shares and spot
     open_interest: Annotated[int, Field(ge=0)] | None = None   # options only, at this strike
 
@@ -58,19 +64,23 @@ class TradeProposal(BaseModel):
     proposal_id: str
     plan_id: str | None = None      # the journal plan this came from
     setup_id: str                   # playbook setup, e.g. "1_trend_pullback", "2_breakout"
-    tier: Tier                      # the setup's current size tier
+    tier: Tier                      # the setup's current tier: 0 paper, 1 live allowed
+    grade: Grade | None = None      # descriptive only; never determines risk_usd
+    risk_usd: Annotated[float, Field(gt=0, allow_inf_nan=False, strict=True)]  # Taz's budget, including costs
     instrument: str
     structure: Structure
     legs: list[Leg] = Field(min_length=1)
-    max_loss_usd: Annotated[float, Field(gt=0)]         # loss at the stop, for the whole proposal
+    max_loss_usd: Annotated[float, Field(gt=0, allow_inf_nan=False)]  # gross stop price loss, before costs
     # Structure's max loss: a bought option's whole premium, a spread's width
     # less credit, and for shares or spot the full position cost.
-    worst_case_loss_usd: Annotated[float, Field(gt=0)]
+    worst_case_loss_usd: Annotated[float, Field(gt=0, allow_inf_nan=False)]
     max_gain_usd: float | None = None
-    est_costs_usd: float            # spread crossing + fees
+    est_costs_usd: Annotated[float, Field(ge=0, allow_inf_nan=False)]  # full round-trip cost reserve
     sector: str                     # sector bucket, for concentration limits
     option_spread_pct_mid: float | None = None   # widest leg bid-ask as % of mid
     already_moved_pct: float = 0.0
+    quote_as_of: AwareDatetime      # when the quote this plan is priced on was taken; naive times are refused
+    security_tradable: bool | None = None   # trading status from the quote source; None = unknown
     time_stop: datetime
     exit_rules: list[str] = []
 
@@ -93,6 +103,11 @@ class RiskDecision(BaseModel):
     approved: bool
     final_qty_multiplier: Unit      # risk layer can only shrink
     checks: list[RuleCheck]
+    risk_budget_usd: float | None = None
+    final_leg_quantities: list[int] = Field(default_factory=list)
+    estimated_stop_loss_usd: float = 0.0  # gross price loss for approved quantity
+    cost_reserve_usd: float = 0.0
+    estimated_total_risk_usd: float = 0.0  # gross stop loss + reserved costs
     buying_power_snapshot: float
     margin_excess_snapshot: float
 
