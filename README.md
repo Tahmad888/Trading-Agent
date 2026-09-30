@@ -6,9 +6,11 @@ The original implementation follows Trading Desk Blueprint v2.3, with v2.4 risk 
 in PR #1. Current repair work follows [the numbered repair plan](docs/REPAIR_PLAN.md)
 and [Step 01's verified baseline](docs/checkpoints/01-baseline.md). `CLAUDE.md` holds
 the six rules and standing constraints; `AGENTS.md` defines the checkpoint workflow.
-Steps 01–02 are complete locally. PR #1 is integrated with user-selected dollar
+Steps 01–03 are complete locally. PR #1 is integrated with user-selected dollar
 risk, cost-inclusive sizing and no fixed $100 ceiling or grade-dollar assignment.
-See [Step 02 evidence](docs/checkpoints/02-user-risk.md). Step 03 removes the 11:00 EP rule.
+See [Step 02 evidence](docs/checkpoints/02-user-risk.md). The 11:00 EP rule is removed;
+either completed opening range can qualify during day one, with no unfinished-bar
+look-ahead. See [Step 03 evidence](docs/checkpoints/03-ep-timing.md). Step 04 is next.
 
 ## Status
 

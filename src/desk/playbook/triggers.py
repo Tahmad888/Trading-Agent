@@ -246,7 +246,7 @@ def episodic_pivot(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     return Signal(card.id, ctx.symbol, "long", f.index[-1], ctx.today_open, stop, None, {
         "gap": f"up {_pct(gap)} at the open", "before": f"sideways {len(base)} days in a {_pct(hi / lo - 1)} range",
         "early volume": f"{ctx.early_volume / vol50:.0%} of a normal day",
-        "trigger": "first 15-minute high (1-hour high by 11:00 ET); earnings growth checked separately"})
+        "trigger": "either completed 15-minute or 60-minute opening-range high on day one; earnings growth checked separately"})
 
 
 def growth_group(card: Card, eps_growth: float | None, sales_growth: float | None) -> str | None:

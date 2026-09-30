@@ -84,7 +84,7 @@ def m15(rows, day=DAY):
 
 
 def sig(setup="1_qullamaggie_breakout", d="long", trigger=100.0, stop=95.0):
-    return Signal(setup, "LEAD", d, pd.Timestamp("2026-09-28", tz="UTC"), trigger, stop)
+    return Signal(setup, "LEAD", d, pd.Timestamp("2026-09-28", tz=ET), trigger, stop)
 
 
 def test_entry_rules():
@@ -163,9 +163,10 @@ def test_morning_movers_become_episodic_pivots(tmp_path):
     assert log.load_armed(DAY)[1][0].symbol == "GAP"
 
 
-def test_episodic_pivot_entry_before_and_after_11():
+def test_episodic_pivot_uses_first_observed_opening_range_breakout():
     ep = sig("5_qullamaggie_episodic_pivot", trigger=57.5, stop=54)
     bars = m15([(57.5, 58.5, 57, 58.2), (58.2, 58.4, 57.8, 58.1), (58.1, 58.3, 57.9, 58.0), (58, 58.6, 57.9, 58.5),
                 (58.5, 58.55, 58.2, 58.3), (58.3, 58.45, 58.1, 58.2), (58.2, 58.7, 58.1, 58.6)])
     hit, level, why = sc.entry_hit(ep, bars, datetime(2026, 9, 29, 11, 15, tzinfo=ET))
-    assert hit and level == 58.5 and "before 11:00" in why
+    assert hit and level == 58.5 and "15-minute" in why
+    assert "2026-09-29T14:15:00+00:00" in why  # 10:15 ET; not the later crossing.

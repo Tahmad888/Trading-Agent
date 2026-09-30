@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30. Status: Steps 01–02 complete locally; Step 03 next.
+Prepared 2026-09-30. Status: Steps 01–03 complete locally; Step 04 next.
 
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through
@@ -54,7 +54,7 @@ workflow. No agent has been dispatched by creating this plan.
 | --- | --- | --- | --- | --- |
 | [x] | 01 | Baseline, branch reconciliation and repair instructions | Codex | Both branches and a temporary combination tested; integration decision and full tracker recorded; preview reverted; checkpoint saved. |
 | [x] | 02 | User-selected dollar risk; reconcile PR #1 | Codex / Claude | One coherent risk policy; no $100 ceiling or grade-dollar assignment; explicit finite positive budget; combined tests pass. |
-| [ ] | 03 | Remove the 11:00 EP condition | Codex / Claude | Runtime, cards, descriptions and tests agree; no 11:00 cutoff/switch; no use of an unfinished opening range. |
+| [x] | 03 | Remove the 11:00 EP condition | Codex / Claude | Runtime, cards, descriptions and tests agree; no 11:00 cutoff/switch; no use of an unfinished opening range. |
 | [ ] | 04 | Shared contracts, option identity and loss calculations | Codex / Claude | Verified contract metadata, allowed structures, independently computed loss measures and integer quantities; malformed proposals fail closed. |
 | [ ] | 05 | Market/account gates and persistent risk state | Codex / Claude | Trusted setup eligibility and regime applied consistently; account halts/exposure recover after restart; no count caps. |
 | [ ] | 06 | Market-data timing, provenance and trading calendar | Codex / Claude | Timeframe-aware freshness/completion, session and corporate-action handling tested; live-only uncertainties explicitly separated. |

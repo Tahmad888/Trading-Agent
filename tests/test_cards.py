@@ -28,13 +28,14 @@ def test_long_setups_that_need_the_trend_template():
 
 # Frozen 29 Sep 2026 after the book check (playbook-candidates/3-book-check.md), before any paper ticket.
 # Card 5 re-frozen the same day: 25% growth qualifies, 50%+ is a tag the journal compares (Taz).
+# Card 5 re-frozen 30 Sep 2026: Taz allows either completed opening range all day one.
 # A failing fingerprint means a card's rules or numbers changed: that needs Taz's approval (rule 5).
 FROZEN = {
     "1_qullamaggie_breakout": "de428c0158df2942",
     "2_minervini_vcp": "efd353aecc2a6801",
     "3_oneil_cup_with_handle": "cd2f22a0883053d4",
     "4_darvas_box": "0478599fb5ff7b3f",
-    "5_qullamaggie_episodic_pivot": "ec8acf6eb436f97c",
+    "5_qullamaggie_episodic_pivot": "76501cfb106d2d67",
     "6_kell_ema_crossback": "15e9a82c0ee3a6e2",
     "7_luk_pullback_reclaim": "80f3030c30269188",
     "8_raschke_holy_grail": "40eb8caa4f780f68",

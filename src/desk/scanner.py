@@ -40,7 +40,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from desk.bars import BarDataError, require
+from desk.bars import BarDataError, require, validate
 from desk.indicators import daily_features
 from desk.playbook.cards import CARDS, INDEX_ETFS
 from desk.playbook.filters import MarketSize, market_filter, trend_template
@@ -53,7 +53,6 @@ CLOSE_SCAN = time(16, 10)
 LEADER_SCAN = time(16, 40)        # Fridays: the weekly leader scan builds next week's watchlist
 EP_SCAN = time(10, 0)             # the first 30 minutes are in: check this morning's movers
 FIRST_INTRADAY, LAST_INTRADAY = time(9, 45), time(15, 45)
-EP_CUTOFF = time(11, 0)           # [Sourced] Kullamägi: first 1-hour high, by 11:00
 
 # [Assumption] NYSE full-day holidays as published on nyse.com for 2026-2027,
 # copied by hand; the snapshot's trading status is the live check.
@@ -174,8 +173,56 @@ def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime) -> tu
     return rec, armed
 
 
+def _ep_entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, float, str]:
+    """Detect either completed opening-range breakout on the EP's first session.
+
+    Bars use the repository's start-timestamp contract. This is a crossing
+    detector; setup evidence, stop/chase checks and approval remain separate.
+    """
+    clock = pd.Timestamp(now)
+    if clock.tzinfo is None or not isinstance(m15.index, pd.DatetimeIndex) or m15.index.tz is None:
+        raise BarDataError("EP entries require timezone-aware clock and bar timestamps")
+    clock = clock.tz_convert(ET)
+    reference = pd.Timestamp(sig.as_of)
+    if reference.tzinfo is None:
+        raise BarDataError("EP reference bar needs a timezone")
+    if next_trading_day(reference.tz_convert(ET).date()) != clock.date():
+        return False, sig.trigger, "EP entry is only valid on its gap day"
+    if not trading_day(clock.date()) or not time(9, 30) <= clock.time() < time(16):
+        return False, sig.trigger, "outside regular-session entry hours"
+
+    opened = clock.normalize() + pd.Timedelta(hours=9, minutes=30)
+    interval = pd.Timedelta(minutes=15)
+    # A forming/future bar cannot create or change an earlier trigger.
+    bars = m15[(m15.index >= opened) & (m15.index + interval <= clock)]
+    if bars.empty:
+        return False, sig.trigger, "no completed opening-range bar yet"
+    validate(bars)
+    latest = clock.floor("15min") - interval
+    expected = pd.date_range(opened, latest, freq="15min").tz_convert(m15.index.tz)
+    if not bars.index.equals(expected):
+        raise BarDataError("missing, stale or misaligned completed EP session bars")
+
+    candidates: list[tuple[pd.Timestamp, int, float]] = []
+    for count in (1, 4):
+        if len(bars) <= count:
+            continue
+        level = float(bars["high"].iloc[:count].max())
+        crossed = bars.iloc[count:][bars["high"].iloc[count:] > level]
+        if not crossed.empty:
+            candidates.append((crossed.index[0], count * 15, level))
+    if not candidates:
+        return False, sig.trigger, "no breakout above a completed opening range"
+    stamp, minutes, level = min(candidates)
+    alternatives = ", ".join(f"{m}-minute" for _, m, _ in candidates)
+    return True, level, (f"broke completed {minutes}-minute opening-range high in bar starting {stamp.isoformat()}; "
+                         f"observed alternatives: {alternatives}")
+
+
 def entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, float, str]:
     """Did today's 15-minute bars fire this signal's entry rule? Returns (hit, level, why)."""
+    if sig.setup_id == "5_qullamaggie_episodic_pivot":
+        return _ep_entry_hit(sig, m15, now)
     today = m15[m15.index.tz_convert(ET).date == now.astimezone(ET).date()]
     if today.empty:
         return False, sig.trigger, "no bars today yet"
@@ -188,14 +235,6 @@ def entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, floa
             if (after["close"] > sig.trigger).any():
                 return True, sig.trigger, "15-minute close back above the level"
         return False, sig.trigger, "no dip and reclaim yet"
-    if setup == "5_qullamaggie_episodic_pivot":
-        # Before 11:00 the first 15-minute high; after that the first hour's high; day 1 only.
-        early = later[later.index.tz_convert(ET).time < EP_CUTOFF]
-        first_hour = float(today["high"].iloc[:4].max())
-        if (early["high"] > first["high"]).any():
-            return True, float(first["high"]), "took out the first 15-minute high before 11:00"
-        late = later[later.index.tz_convert(ET).time >= EP_CUTOFF]
-        return bool((late["high"] > first_hour).any()), first_hour, "took out the first hour's high after 11:00"
     if setup == "9_weinstein_stage4_breakdown":
         return bool(first["close"] < sig.trigger), float(first["close"]), "first 15 minutes still under support"
     if sig.direction == "long":

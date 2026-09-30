@@ -171,10 +171,10 @@ CARDS: dict[str, Card] = {c.id: c for c in [
         trend_template=False, needs_earnings_numbers=True,
         rules=("A stock that went sideways for 3 to 6 months",
                "Gaps up 10% or more on news that surprises the market, usually earnings with EPS or sales up 25%+",
-               "Heavy early volume; buy the break of the first 15-minute high, or the first 1-hour high by 11:00"),
+               "Heavy early volume; on day one either completed 15-minute or 60-minute opening-range breakout can qualify"),
         timeframes={"weekly": "Sideways for 3-6 months", "daily": "Today's 10%+ gap on news",
-                    "1-hour / 15-minute": "Entry: first 15-minute high, or first 1-hour high by 11:00 ET"},
-        entry="Buy-stop-limit at the first 15-minute high; if not taken by 11:00 ET, the first 1-hour high; none after that",
+                    "1-hour / 15-minute": "Entry: either completed opening-range high (15 or 60 minutes), throughout day one"},
+        entry="Day one: buy-stop-limit above either completed 15-minute or 60-minute opening-range high; no 11:00 cutoff (Taz, 30 Sep 2026)",
         stop="The day's low, no wider than 1 to 1.5 days' average range",
         exit="Trail on the 10 or 20-day average",
         params={
