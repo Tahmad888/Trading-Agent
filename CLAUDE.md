@@ -1,5 +1,14 @@
 # Trading-Agent
 
+## Active repair work
+
+Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. The tracker
+records current user decisions and the last completed checkpoint; stop after each
+numbered step. Taz now chooses each trade's dollar risk budget, with no hard $100
+ceiling or automatic grade-dollar assignments, and has removed the 11:00 ET EP
+condition. These are approved changes pending their numbered implementation steps,
+not a claim that the legacy runtime below already implements them.
+
 Read the six rules before doing anything. They come from Trading Desk Blueprint v2.3 (28 Sep 2026), which is the plan this repo builds: https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg (source in the project folder at `research/ai-trading/outside-review/trading-desk-blueprint.md`).
 
 ## The six rules

@@ -2,7 +2,12 @@
 
 A retail-style trading desk where AI does the heavy lifting: it watches Taz's tickers, reads the charts top-down, writes a plan in plain words and sends it for approval. Code owns risk, sizing and orders, and Taz approves every entry.
 
-The plan is Trading Desk Blueprint v2.3. `CLAUDE.md` holds its six rules and the standing constraints.
+The original implementation follows Trading Desk Blueprint v2.3, with v2.4 risk work
+in PR #1. Current repair work follows [the numbered repair plan](docs/REPAIR_PLAN.md)
+and [Step 01's verified baseline](docs/checkpoints/01-baseline.md). `CLAUDE.md` holds
+the six rules and standing constraints; `AGENTS.md` defines the checkpoint workflow.
+Step 01 is complete locally. Trading behavior is still the legacy baseline until
+the corresponding repair steps are implemented; Step 02 is next.
 
 ## Status
 
