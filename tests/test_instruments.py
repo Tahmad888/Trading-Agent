@@ -6,10 +6,21 @@ import pytest
 from pydantic import ValidationError
 
 from desk.contracts import Leg, TradeProposal
+from desk.playbook.cards import CARDS
 from desk.instruments import ContractBook, InstrumentError, loss_measures
-from tests.risk_support import evaluate
+from tests.risk_support import evaluate as fixture_evaluate, FixtureTerms
 from tests.conftest import NOW
 from tests.risk_support import BOOK, contract
+
+
+class PayoffTerms(FixtureTerms):
+    def resolve(self, event_id, now):
+        return super().resolve(event_id, now).model_copy(update={"option_exit_prices": {}, "option_exit_source": None})
+
+
+def evaluate(*args, **kwargs):
+    kwargs.setdefault("terms_source", PayoffTerms())
+    return fixture_evaluate(*args, **kwargs)
 
 
 CASES = [
@@ -34,8 +45,11 @@ def build(base, case, quantity=1):
     legs = [Leg(quantity_unit="contract", symbol=c.symbol, side=side, qty=quantity, limit_price=price, expiry=c.expiry, open_interest=2000)
             for c, (side, _, _, price) in zip(contracts, specs)]
     proposal = TradeProposal.model_validate({**base.model_dump(), "structure": structure, "legs": legs,
-        "max_loss_usd": 20 * quantity, "worst_case_loss_usd": maximum * quantity,
+        "max_loss_usd": None, "sizing_mode": "selected_quantity", "worst_case_loss_usd": maximum * quantity,
         "risk_usd": 20 * quantity + 2, "max_gain_usd": None})
+    if case is CASES[1] or case is CASES[3] or case is CASES[4]:
+        proposal = proposal.model_copy(update={"event_id": "spy_short", "stop_price": 505,
+            "setup_id": "8_raschke_holy_grail", "setup_version": CARDS["8_raschke_holy_grail"].fingerprint()})
     return proposal, ContractBook(source="independent synthetic metadata", as_of=NOW, contracts=contracts)
 
 
@@ -69,7 +83,7 @@ def test_long_calendar_uses_covered_debit_bound(proposal, account, right):
     legs = [Leg(quantity_unit="contract", symbol=c.symbol, side=side, qty=2, limit_price=price, expiry=c.expiry, open_interest=1000)
             for c, side, price in [(near, "sell", 2), (far, "buy", 3)]]
     trade = proposal.model_copy(update={"structure": "calendar", "legs": legs,
-        "max_loss_usd": 40, "worst_case_loss_usd": 200, "risk_usd": 42})
+        "max_loss_usd": None, "sizing_mode": "selected_quantity", "worst_case_loss_usd": 200, "risk_usd": 42})
     result = evaluate(trade, account, contract_book=book, now=NOW)
     assert result.approved
     assert result.computed_max_loss_usd == result.net_premium_usd == 200
@@ -182,13 +196,13 @@ def test_shares_cannot_hide_a_short_or_different_symbol(shares, account):
 
 def test_downsizing_recalculates_premium_loss_and_funding(proposal, account):
     trade, book = build(proposal, CASES[6], quantity=7)
-    result = evaluate(trade.model_copy(update={"risk_usd": 62}), account, contract_book=book, now=NOW)
+    result = evaluate(trade.model_copy(update={"risk_usd": 902, "sizing_mode": "maximum_loss_budget"}), account, contract_book=book, now=NOW)
     assert result.approved
     assert result.final_leg_quantities == [3, 3, 3, 3]
     assert result.computed_max_loss_usd == 900
     assert result.net_premium_usd == -600
-    assert result.estimated_stop_loss_usd == 60
-    assert result.estimated_total_risk_usd == 62
+    assert result.estimated_stop_loss_usd is None
+    assert result.estimated_total_risk_usd is None
     assert result.estimated_funding_usd == 902
 
 

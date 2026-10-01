@@ -36,7 +36,7 @@ def test_unsizable_trade_rejected(proposal, account):
     d = evaluate(proposal.model_copy(update={"max_loss_usd": 400, "worst_case_loss_usd": 400}),
                  account, now=NOW)
     assert not d.approved
-    assert "risk_per_trade_sizable" in failed(d)
+    assert "declared_stop_loss_matches" in failed(d)
     assert d.final_qty_multiplier == 0.0
 
 

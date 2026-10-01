@@ -50,12 +50,15 @@ class Signal:
     direction: Direction
     as_of: pd.Timestamp
     trigger: float                # the level the entry must break (or the entry level)
-    stop: float
+    stop: float | None
     target: float | None = None
     saw: dict[str, str] = field(default_factory=dict)   # what each check saw, in plain words
     price_scale_id: str | None = None  # attached by the validated data producer
     price_basis: dict | None = None  # persisted structured evidence; legacy signals rebuild
     setup_version: str = ""  # frozen card fingerprint at evaluation, never refreshed on load
+
+    stop_basis: str = "fixed"
+    adr_pct: float | None = None
 
     def __post_init__(self):
         if not self.setup_version and self.setup_id in CARDS:
@@ -63,18 +66,25 @@ class Signal:
         for name in ("trigger", "stop", "target"):
             v = getattr(self, name)
             if v is not None:
-                object.__setattr__(self, name, round(float(v), 2))
+                object.__setattr__(self, name, float(v) if self.stop_basis == "session_low" else round(float(v), 2))
         if self.direction not in {"long", "short"} or any(
             v is not None and (not math.isfinite(v) or v <= 0)
             for v in (self.trigger, self.stop, self.target)
         ):
             raise ValueError("Signal requires a valid direction and finite positive prices")
-        if self.stop == self.trigger or (self.direction == "long") != (self.stop < self.trigger):
+        if self.stop_basis not in {"fixed", "session_low"}:
+            raise ValueError("Unknown stop basis")
+        if self.stop_basis == "session_low" and (self.direction != "long" or self.adr_pct is None
+                or not math.isfinite(self.adr_pct) or self.adr_pct <= 0):
+            raise ValueError("Session-low stop requires long direction and completed daily ADR")
+        if self.stop is None and self.stop_basis != "session_low":
+            raise ValueError("Fixed stop is required")
+        if self.stop is not None and (self.stop == self.trigger or (self.direction == "long") != (self.stop < self.trigger)):
             raise ValueError(f"{self.setup_id} {self.symbol}: stop {self.stop} is on the wrong side of {self.trigger}")
 
     @property
-    def risk_per_share(self) -> float:
-        return abs(self.trigger - self.stop)
+    def risk_per_share(self) -> float | None:
+        return abs(self.trigger - self.stop) if self.stop is not None else None
 
 
 def _need(row: pd.Series, *cols: str) -> None:
@@ -127,10 +137,10 @@ def qullamaggie_breakout(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | 
         higher_lows = base["low"].iloc[n // 2:].min() >= base["low"].iloc[:n // 2].min()
         base_high = base["high"].max()
         if tight and riding and higher_lows and last["close"] < base_high:
-            stop = base_high * (1 - card.p("max_stop_adr") * last["adr_pct_20"] / 100)
-            return Signal(card.id, ctx.symbol, "long", f.index[-1], base_high, stop, None, {
+            return Signal(card.id, ctx.symbol, "long", f.index[-1], base_high, None, None, {
                 "prior move": f"up {_pct(run)} before the base", "base": f"{n} days, tightening, above the 20-day",
-                "ADR%": f"{last['adr_pct_20']:.1f}", "trigger": f"base high {base_high:.2f}"})
+                "ADR%": f"{last['adr_pct_20']:.1f}", "trigger": f"base high {base_high:.2f}"},
+                stop_basis="session_low", adr_pct=float(last["adr_pct_20"]))
     return None
 
 
@@ -263,11 +273,11 @@ def episodic_pivot(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     heavy = ctx.early_volume is not None and ctx.early_volume >= card.p("early_volume") * vol50
     if gap < card.p("min_gap") or not sideways or not heavy:
         return None
-    stop = ctx.today_open * (1 - card.p("max_stop_adr") * last["adr_pct_20"] / 100)
-    return Signal(card.id, ctx.symbol, "long", f.index[-1], ctx.today_open, stop, None, {
+    return Signal(card.id, ctx.symbol, "long", f.index[-1], ctx.today_open, None, None, {
         "gap": f"up {_pct(gap)} at the open", "before": f"sideways {len(base)} days in a {_pct(hi / lo - 1)} range",
         "early volume": f"{ctx.early_volume / vol50:.0%} of a normal day",
-        "trigger": "either completed 15-minute or 60-minute opening-range high on day one; earnings growth checked separately"})
+        "trigger": "either completed 15-minute or 60-minute opening-range high on day one; earnings growth checked separately"},
+        stop_basis="session_low", adr_pct=float(last["adr_pct_20"]))
 
 
 def growth_group(card: Card, eps_growth: float | None, sales_growth: float | None) -> str | None:

@@ -46,7 +46,7 @@ RSI2_POP = line((0, 400), (400, 300), (403, 310))
 
 def test_qullamaggie_breakout():
     s = run("1_qullamaggie_breakout", features(QULL, spread=0.02), ctx())
-    assert s and s.direction == "long" and s.stop < s.trigger
+    assert s and s.direction == "long" and s.stop is None and s.stop_basis == "session_low"
     assert "up 54" in s.saw["prior move"]
     # A calm stock (ADR% under 3.5) doesn't qualify.
     assert run("1_qullamaggie_breakout", features(QULL, spread=0.002), ctx()) is None

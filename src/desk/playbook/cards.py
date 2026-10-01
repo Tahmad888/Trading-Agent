@@ -90,7 +90,7 @@ CARDS: dict[str, Card] = {c.id: c for c in [
         timeframes={"weekly": "Rising, near highs", "daily": "30%+ run, then a tight base above the 20-day",
                     "1-hour / 15-minute": INTRADAY_15_60},
         entry="Buy-stop-limit at the base high, on the first 15-minute or 1-hour high of a day that trades through it",
-        stop="The day's low, no wider than one day's average range",
+        stop="Observed session low at the entry decision, frozen for this event; no wider than one ADR",
         exit="Sell a third after 3 to 5 days, stop to breakeven, trail the rest on the 10-day (20-day for calmer names)",
         params={
             "prior_move": S(0.30, f"{QULL}: stocks up 30%+ in 1-3 months"),
@@ -175,7 +175,7 @@ CARDS: dict[str, Card] = {c.id: c for c in [
         timeframes={"weekly": "Sideways for 3-6 months", "daily": "Today's 10%+ gap on news",
                     "1-hour / 15-minute": "Entry: either completed opening-range high (15 or 60 minutes), throughout day one"},
         entry="Day one: buy-stop-limit above either completed 15-minute or 60-minute opening-range high; no 11:00 cutoff (Taz, 30 Sep 2026)",
-        stop="The day's low, no wider than 1 to 1.5 days' average range",
+        stop="Observed session low at the entry decision, frozen for this event; no wider than 1.5 ADR",
         exit="Trail on the 10 or 20-day average",
         params={
             "min_gap": S(0.10, f"{QULL}: gaps of 10% or more"),

@@ -11,6 +11,8 @@ The layer can only shrink or reject a proposal. It never grows a size.
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 from fractions import Fraction
@@ -21,6 +23,7 @@ from pydantic import ValidationError
 from desk.contracts import (DEBIT_STRUCTURES, LEG_SHAPES, OPTION_STRUCTURES, RiskDecision,
                             RiskWarning, RuleCheck, TradeProposal)
 from desk.instruments import ContractBook, InstrumentError, loss_measures, money
+from desk.risk_terms import RiskTerms, RiskTermsSource, stop_distance
 from desk.risk_context import AccountEvidence, Exposure, MarketContext, SetupRegistry, default_registry
 from desk.playbook.cards import CARDS
 from desk.playbook.filters import MarketSize
@@ -63,7 +66,7 @@ class AccountState:
     halted: bool = False                     # explicit manual stop, never automatic loss halt
 
 
-def _size(proposal: TradeProposal) -> tuple[list[int], Fraction]:
+def _size(proposal: TradeProposal, sizing_loss: Fraction | None) -> tuple[list[int], Fraction]:
     """Size exact whole strategy units, reserving the full estimated costs.
 
     Decimal strings avoid floating-point rounding at dollar/quantity boundaries.
@@ -71,7 +74,9 @@ def _size(proposal: TradeProposal) -> tuple[list[int], Fraction]:
     """
     units = math.gcd(*(leg.qty for leg in proposal.legs))
     available = max(Fraction(0), Fraction(str(proposal.risk_usd)) - Fraction(str(proposal.est_costs_usd)))
-    affordable = (available * units) // Fraction(str(proposal.max_loss_usd))
+    if proposal.sizing_mode == "selected_quantity":
+        return [leg.qty for leg in proposal.legs], Fraction(1)
+    affordable = (available * units) // sizing_loss if sizing_loss and sizing_loss > 0 else 0
     selected = min(units, affordable)
     return [leg.qty // units * selected for leg in proposal.legs], Fraction(selected, units)
 
@@ -86,10 +91,13 @@ def evaluate(
     contract_book: ContractBook | None = None,
     registry: SetupRegistry | None = None,
     market: MarketContext | None = None,
+    terms_source: RiskTermsSource | None = None,
 ) -> RiskDecision:
     """Local eligibility only, not order authorization or verified broker margin.
 
-    ``contract_book`` is supplied independently by the data/broker adapter.
+    ``contract_book`` and ``terms_source`` are independently supplied adapters.
+    Selected quantity is a reviewable choice, never order authorization.
+    Stop estimates assume the disclosed exit fills; they do not cap actual losses.
     ``live=False`` sizes a paper trade using the same arithmetic.
     """
     now = now or datetime.now(timezone.utc)
@@ -206,16 +214,6 @@ def evaluate(
     check("already_moved", abs(proposal.already_moved_pct) <= limits.max_already_moved_pct,
           abs(proposal.already_moved_pct), limits.max_already_moved_pct)
 
-    # The user budget covers gross stop price loss plus the full cost reserve.
-    # Keep exact unit quantities; the multiplier is informational, not order rounding.
-    quantities, fraction = _size(proposal)
-    multiplier = float(fraction)
-    gross_stop = Fraction(str(proposal.max_loss_usd)) * fraction
-    costs = Fraction(str(proposal.est_costs_usd))
-    total_risk = gross_stop + costs
-    check("risk_per_trade_sizable", fraction > 0 and total_risk <= Fraction(str(proposal.risk_usd)),
-          float(total_risk), proposal.risk_usd)
-
     measures = None
     try:
         measures = loss_measures(proposal, contract_book, now, limits.max_contract_metadata_age)
@@ -225,11 +223,97 @@ def evaluate(
         loss_matches = money(proposal.worst_case_loss_usd) == measures.maximum_loss
         check("declared_max_loss_matches", loss_matches,
               proposal.worst_case_loss_usd, float(measures.maximum_loss))
-        check("stop_within_strategy_loss", money(proposal.max_loss_usd) <= measures.maximum_loss,
-              proposal.max_loss_usd, float(measures.maximum_loss))
+
     except (InstrumentError, ValidationError) as exc:
         check("instrument_valid", False, 0, 1)
         diagnostics.append(str(exc))
+
+    terms = None
+    requested_stop = None
+    stop_basis = "unavailable: underlying stop does not determine an option exit price"
+    try:
+        if terms_source is None:
+            raise ValueError("Independent signal terms source is required")
+        terms = RiskTerms.model_validate(terms_source.resolve(proposal.event_id, now).model_dump())
+        identity = (terms.event_id == proposal.event_id and terms.symbol == proposal.instrument
+                    and terms.setup_id == proposal.setup_id and terms.setup_version == proposal.setup_version
+                    and bool(terms.event_digest))
+        check("signal_identity", identity, float(identity), 1)
+        age = (now - terms.checked_at).total_seconds()
+        quote_age = (now - terms.quote_at).total_seconds()
+        fresh = (0 <= age <= limits.max_quote_age.total_seconds() and now < terms.valid_until
+                 and 0 <= quote_age <= limits.max_quote_age.total_seconds())
+        check("signal_terms_fresh", fresh, age, limits.max_quote_age.total_seconds())
+        matches = money(proposal.stop_price) == money(terms.stop)
+        check("stop_matches_event", matches, proposal.stop_price, terms.stop)
+        target_matches = proposal.target_price == terms.target
+        check("target_matches_event", target_matches, float(target_matches), 1)
+        stop_distance(terms.entry_level, terms.stop, terms.direction)
+        stop_distance(terms.underlying_price, terms.stop, terms.direction)
+        entry = proposal.legs[0].limit_price if not is_option else terms.underlying_price
+        direction = 1 if terms.direction == "long" else -1
+        moved = (entry / terms.chase_reference - 1) * direction
+        chase = min(limits.max_already_moved_pct, CARDS[proposal.setup_id].params.get("max_chase").value
+                    if "max_chase" in CARDS[proposal.setup_id].params else float("inf"))
+        check("executable_entry", (entry - terms.entry_level) * direction >= 0 and moved <= chase + 1e-12, moved, chase)
+        quote_moved = (terms.underlying_price / terms.chase_reference - 1) * direction
+        quote_ok = (terms.underlying_price - terms.entry_level) * direction >= 0 and quote_moved <= chase + 1e-12
+        check("underlying_entry_current", quote_ok, quote_moved, chase)
+        if terms.target is not None:
+            target_ok = (terms.target - entry) * direction > 0
+            check("target_beyond_entry", target_ok, terms.target, entry)
+        distance = stop_distance(entry, terms.stop, terms.direction)
+        if terms.max_stop_fraction is not None:
+            width = float(distance / Fraction(str(entry)))
+            check("structural_stop_width", width <= terms.max_stop_fraction + 1e-12, width, terms.max_stop_fraction)
+        if measures:
+            consistent = measures.direction in {terms.direction, "neutral"}
+            check("instrument_signal_direction", consistent, float(consistent), 1)
+        if not is_option:
+            requested_stop = distance * proposal.legs[0].qty
+            stop_basis = "conditional share fill at event stop; gaps/slippage/nonexecution excluded"
+            check("share_direction", terms.direction == "long", float(terms.direction == "long"), 1)
+        elif terms.option_exit_prices and terms.option_exit_source and measures:
+            from desk.instruments import canonical_symbol
+            exits = {canonical_symbol(k): v for k, v in terms.option_exit_prices.items()}
+            if len(exits) != len(terms.option_exit_prices):
+                raise ValueError("Duplicate option exit identity")
+            # Standard 100-share deliverables were independently validated above.
+            requested_stop = sum((Fraction(str(leg.limit_price)) - Fraction(str(exits[canonical_symbol(leg.symbol)])))
+                                 * (1 if leg.side == "buy" else -1) * leg.qty * 100 for leg in proposal.legs) if all(canonical_symbol(l.symbol) in exits for l in proposal.legs) else None
+            if requested_stop is not None and requested_stop <= 0:
+                raise ValueError("Conditional option exit must describe a loss")
+            if requested_stop is not None:
+                stop_basis = "conditional option-price fills from " + terms.option_exit_source + "; not a prediction at the stock stop"
+        if requested_stop is not None and measures:
+            check("stop_within_strategy_loss", requested_stop <= Fraction(measures.maximum_loss),
+                  float(requested_stop), float(measures.maximum_loss))
+        if proposal.max_loss_usd is not None:
+            matches = requested_stop is not None and Fraction(str(proposal.max_loss_usd)) == requested_stop
+            check("declared_stop_loss_matches", matches, proposal.max_loss_usd,
+                  float(requested_stop) if requested_stop is not None else 0)
+        check("signal_terms_valid", True, 1, 1)
+    except Exception as exc:
+        # Provider outages/malformed evidence are isolated; never expose raw provider responses.
+        check("signal_terms_valid", False, 0, 1)
+        diagnostics.append("Independent signal/exit terms unavailable or invalid (" + type(exc).__name__ + ")")
+
+    costs = Fraction(str(proposal.est_costs_usd))
+    sizing_loss = (Fraction(measures.maximum_loss) if measures else None) if proposal.sizing_mode == "maximum_loss_budget" else requested_stop
+    quantities, fraction = _size(proposal, sizing_loss)
+    multiplier = float(fraction)
+    gross_stop = requested_stop * fraction if requested_stop is not None else None
+    total_risk = gross_stop + costs if gross_stop is not None else None
+    budget = Fraction(str(proposal.risk_usd))
+    sizing_total = sizing_loss * fraction + costs if sizing_loss is not None else None
+    sizable = fraction > 0 and (proposal.sizing_mode == "selected_quantity" or
+                                sizing_total is not None and sizing_total <= budget)
+    check("risk_per_trade_sizable", sizable, float(sizing_total) if sizing_total is not None else 0, proposal.risk_usd)
+    if measures and Fraction(measures.maximum_loss) * fraction + costs > budget:
+        warnings.append(RiskWarning(code="exposure_above_budget", message="Full strategy exposure plus costs exceeds the entered budget; confirm the exact quantity and exposure on the ticket.",
+                                    value=float(Fraction(measures.maximum_loss) * fraction + costs), threshold=proposal.risk_usd))
+    if proposal.sizing_mode == "selected_quantity" and total_risk is not None and total_risk > budget:
+        warnings.append(RiskWarning(code="stop_estimate_above_budget", message="Selected quantity has a conditional stop-loss estimate plus costs above the entered budget.", value=float(total_risk), threshold=proposal.risk_usd))
 
     if market is not None and market.regime is MarketSize.HALF:
         warnings.append(RiskWarning(code="mixed_market", message=market.reason + "; your budget is unchanged.", value=1, threshold=0))
@@ -253,12 +337,22 @@ def evaluate(
         checks=checks,
         risk_budget_usd=proposal.risk_usd,
         final_leg_quantities=quantities if approved else [0] * len(quantities),
-        estimated_stop_loss_usd=float(gross_stop) if approved else 0.0,
+        estimated_stop_loss_usd=float(gross_stop) if approved and gross_stop is not None else None,
         cost_reserve_usd=float(costs) if approved else 0.0,
-        estimated_total_risk_usd=float(total_risk) if approved else 0.0,
+        estimated_total_risk_usd=float(total_risk) if approved and total_risk is not None else None,
         computed_max_loss_usd=float(maximum) if approved else None,
         net_premium_usd=float(premium) if approved else None,
         estimated_funding_usd=required if approved else None,
+        requested_leg_quantities=[leg.qty for leg in proposal.legs],
+        requested_max_loss_usd=float(measures.maximum_loss) if measures else None,
+        requested_stop_loss_usd=float(requested_stop) if requested_stop is not None else None,
+        resolved_stop_price=terms.stop if terms else None,
+        resolved_target_price=terms.target if terms else None,
+        stop_loss_basis=stop_basis,
+        signal_terms_valid_until=min(terms.valid_until, terms.checked_at + limits.max_quote_age,
+                                     terms.quote_at + limits.max_quote_age) if terms else None,
+        terms_sha256=hashlib.sha256(json.dumps({"proposal": proposal.model_dump(mode="json"),
+            "terms": terms.model_dump(mode="json"), "quantities": quantities}, sort_keys=True).encode()).hexdigest() if approved and terms else None,
         loss_basis=measures.basis if measures else None,
         contract_metadata_source=contract_book.source if measures and is_option else None,
         contract_metadata_as_of=contract_book.as_of if measures and is_option else None,

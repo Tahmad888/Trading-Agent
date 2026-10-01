@@ -10,7 +10,7 @@ from desk.playbook.filters import MarketSize
 from desk.risk_context import Exposure
 from desk.risk_state import RiskStateError, RiskStateStore
 from tests.conftest import NOW
-from tests.risk_support import BOOK, MARKET, REGISTRY, evaluate
+from tests.risk_support import BOOK, MARKET, REGISTRY, FixtureTerms, evaluate
 from tests.test_instruments import CASES, build
 
 
@@ -145,7 +145,7 @@ def test_acknowledgements_are_exact_audited_and_not_reused(tmp_path, account, pr
     store = RiskStateStore(path)
     account = replace(account, pnl_today=-200)
     store.save_snapshot(account, "one", now=NOW)
-    kwargs = dict(now=NOW, contract_book=BOOK, market=MARKET, registry=REGISTRY)
+    kwargs = dict(now=NOW, contract_book=BOOK, market=MARKET, registry=REGISTRY, terms_source=FixtureTerms())
     decision, review = store.review(account.account_id, proposal, **kwargs)
     assert decision.approved and review
     with pytest.raises(RiskStateError):

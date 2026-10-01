@@ -6,7 +6,7 @@ no persisted boolean authorizes a trade. Plan B: retain history, deny eligibilit
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date, datetime
 import hashlib
 import json
@@ -85,6 +85,10 @@ class SignalStore:
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL,
                     state TEXT NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL);
             ''')
+            db.execute('BEGIN IMMEDIATE')
+            columns = {r[1] for r in db.execute('PRAGMA table_info(events)')}
+            if 'signal_terms' not in columns:
+                db.execute('ALTER TABLE events ADD COLUMN signal_terms TEXT')
 
     @contextmanager
     def _db(self):
@@ -213,13 +217,15 @@ class SignalStore:
                 db.execute("INSERT INTO observations VALUES (?,?,?)", (cid, end, digest))
                 c["last_bar"] = end
                 long = sig.direction == "long"
-                stopped = obs["low"] <= sig.stop if long else obs["high"] >= sig.stop
+                active = db.execute("SELECT * FROM events WHERE id=?", (c["active_event"],)).fetchone() if c["active_event"] else None
+                frozen_stop = (json.loads(active["signal_terms"])["stop"]
+                               if active and active["state"] == "triggered" and active["signal_terms"] else sig.stop)
+                stopped = frozen_stop is not None and (obs["low"] <= frozen_stop if long else obs["high"] >= frozen_stop)
                 if stopped:
                     if c["active_event"]:
                         self._transition(db, c["active_event"], "invalidated", now, "setup stop touched")
                     c["blocked"] = "setup stop touched; setup must be evaluated again"
                     break
-                active = db.execute("SELECT * FROM events WHERE id=?", (c["active_event"],)).fetchone() if c["active_event"] else None
                 if active and active["state"] == "triggered":
                     failed = obs["close"] <= active["entry_level"] if long else obs["close"] >= active["entry_level"]
                     if failed:
@@ -245,8 +251,16 @@ class SignalStore:
                 level, why = entries[0]
                 eid = _hash([cid, end, level])
                 until = min(clock(end) + pd.Timedelta(minutes=15), closed)
-                db.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)",
-                           (eid, cid, "triggered", end, _time(now), level, expiry, _time(until), why))
+                bound = sig
+                if sig.stop_basis == "session_low":
+                    stop = obs.get("session_low")
+                    if stop is None or not 0 < stop < level:
+                        raise SignalStateError("Session-low evidence missing or invalid")
+                    # Keep a visible event when width fails; eligibility explains why.
+                    bound = replace(sig, trigger=level, stop=stop)
+                db.execute("INSERT INTO events (id,candidate_id,state,trigger_at,observed_at,entry_level,expires_at,valid_until,reason,signal_terms) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                           (eid, cid, "triggered", end, _time(now), level, expiry, _time(until), why,
+                            _json(signal_payload(bound))))
                 db.execute("INSERT INTO transitions(event_id,state,at,reason) VALUES (?,?,?,?)", (eid, "triggered", _time(now), why))
                 c["active_event"] = eid
                 fresh_ids.append(eid)
@@ -264,9 +278,17 @@ class SignalStore:
         if row is None:
             raise SignalStateError("Unknown signal event")
         out = dict(row)
-        out["signal"] = json.loads(out.pop("payload"))
+        out["candidate_signal"] = json.loads(out.pop("payload"))
+        terms = out.pop("signal_terms")
+        out["signal"] = json.loads(terms) if terms else out["candidate_signal"]
+        sig = restore_signal(out["signal"])
+        out["stop_width_valid"] = (sig.stop is not None and (sig.stop_basis != "session_low" or
+            (out["entry_level"] - sig.stop) / out["entry_level"] <=
+            CARDS[sig.setup_id].p("max_stop_adr") * sig.adr_pct / 100 + 1e-12))
+        out["terms_digest"] = _hash(out["signal"]) if terms else None
         card = CARDS.get(out["setup_id"])
         out["eligible"] = (out["state"] == "triggered" and not out["suspended"] and not out["blocked"]
+                           and bool(terms) and out["stop_width_valid"]
                            and bool(card) and card.fingerprint() == out["card_version"]
                            and clock(out["observed_at"]) <= clock(now) < clock(out["valid_until"])
                            and (not out["checked_at"] or clock(out["checked_at"]) <= clock(now))

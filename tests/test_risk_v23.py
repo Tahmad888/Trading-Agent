@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from desk.contracts import Leg, TradeProposal
+from desk.playbook.cards import CARDS
 from tests.risk_support import evaluate
 from tests.conftest import NOW, TODAY
 from tests.test_risk import failed
@@ -109,7 +110,8 @@ def test_proposal_requires_setup_and_tier(proposal):
 
 
 def test_single_long_put_allowed(long_call, account):
-    put = long_call.model_copy(update={"structure": "long_put", "tier": 1, "legs": [long_call.legs[0].model_copy(update={"symbol": "AAPL261120P00230000"})]})
+    put = long_call.model_copy(update={"event_id": "aapl_short", "stop_price": 235, "setup_id": "8_raschke_holy_grail",
+        "setup_version": CARDS["8_raschke_holy_grail"].fingerprint(), "structure": "long_put", "tier": 1, "legs": [long_call.legs[0].model_copy(update={"symbol": "AAPL261120P00230000"})]})
     d = evaluate(put, account, now=NOW)
     assert d.approved, failed(d)
 

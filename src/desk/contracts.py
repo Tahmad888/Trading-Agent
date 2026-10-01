@@ -63,7 +63,11 @@ LEG_SHAPES: dict[str, tuple[int, int]] = {
 
 class TradeProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
+    event_id: Annotated[str, Field(min_length=1)]
+    stop_price: Annotated[float, Field(gt=0, allow_inf_nan=False)]  # assertion checked against event
+    target_price: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
+    sizing_mode: Literal["stop_budget", "maximum_loss_budget", "selected_quantity"]
     proposal_id: str
     plan_id: str | None = None      # the journal plan this came from
     setup_id: str                   # playbook setup, e.g. "1_trend_pullback", "2_breakout"
@@ -76,7 +80,7 @@ class TradeProposal(BaseModel):
     instrument: str
     structure: Structure
     legs: list[Leg] = Field(min_length=1)
-    max_loss_usd: Annotated[float, Field(gt=0, allow_inf_nan=False)]  # gross stop price loss, before costs
+    max_loss_usd: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None  # optional assertion; NEVER sizing authority
     # Caller assertion only: instruments.py independently verifies this amount.
     # Gross intact-strategy loss excludes costs and assignment/exit mishandling.
     worst_case_loss_usd: Annotated[float, Field(gt=0, allow_inf_nan=False)]
@@ -92,7 +96,7 @@ class TradeProposal(BaseModel):
 
     @model_validator(mode="after")
     def _loss_fields_consistent(self) -> TradeProposal:
-        if self.worst_case_loss_usd < self.max_loss_usd:
+        if self.max_loss_usd is not None and self.worst_case_loss_usd < self.max_loss_usd:
             raise ValueError("worst_case_loss_usd cannot be below max_loss_usd")
         return self
 
@@ -118,12 +122,21 @@ class RiskDecision(BaseModel):
     checks: list[RuleCheck]
     risk_budget_usd: float | None = None
     final_leg_quantities: list[int] = Field(default_factory=list)
-    estimated_stop_loss_usd: float = 0.0  # gross price loss for approved quantity
+    estimated_stop_loss_usd: float | None = None  # gross price loss for approved quantity
     cost_reserve_usd: float = 0.0
-    estimated_total_risk_usd: float = 0.0  # gross stop loss + reserved costs
+    estimated_total_risk_usd: float | None = None  # gross stop loss + reserved costs
     computed_max_loss_usd: float | None = None  # gross; excludes fees/assignment mishandling
     net_premium_usd: float | None = None  # positive = debit, negative = credit
     estimated_funding_usd: float | None = None  # conservative local estimate, NOT broker margin
+    requested_leg_quantities: list[int] = Field(default_factory=list)
+    requested_max_loss_usd: float | None = None
+    requested_stop_loss_usd: float | None = None
+    resolved_stop_price: float | None = None
+    resolved_target_price: float | None = None
+    stop_loss_basis: str = "unavailable"
+    signal_terms_valid_until: AwareDatetime | None = None
+    terms_sha256: str | None = None  # G4 must bind approval; this is not authorization
+    order_authorized: Literal[False] = False
     broker_buying_power_required_usd: float | None = None
     broker_requirement_verified: bool = False
     loss_basis: str | None = None

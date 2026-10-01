@@ -144,7 +144,7 @@ def _sig(s: Signal, **extra) -> dict:
 
 
 def _event_signal(sig: Signal, event: dict) -> dict:
-    return _sig(sig, event_id=event["id"], trigger_at=event["trigger_at"],
+    return _sig(restore_signal(event["signal"]), event_id=event["id"], trigger_at=event["trigger_at"],
                 observed_at=event["observed_at"], expires_at=event["expires_at"],
                 valid_until=event["valid_until"], entry_level=event["entry_level"], why=event["reason"])
 
@@ -326,7 +326,8 @@ def entry_observations(sig: Signal, bars: pd.DataFrame) -> list[dict]:
                 entries.append((level, "fresh crossing of trigger and opening range"))
         observations.append({"bar_end": (start + pd.Timedelta(minutes=15)).isoformat(),
                              "open": float(row.open), "high": float(row.high),
-                             "low": float(row.low), "close": float(row.close), "entries": entries})
+                             "low": float(row.low), "close": float(row.close), "entries": entries,
+                             "session_low": float(bars.low.iloc[:i + 1].min())})
     return observations
 
 
@@ -724,8 +725,10 @@ def revalidate_signal(source: BarSource, log: ScanLog, event_id: str, now: datet
         return {"event_id": event_id, "eligible": False, "reasons": ["removed from current watchlist"],
                 "checked_at": clock(now).isoformat(), "purpose": "signal prerequisite only; not approval or order"}
     sig = restore_signal(event["signal"])
+    candidate = restore_signal(event["candidate_signal"])
     card = CARDS.get(sig.setup_id)
-    if event["state"] != "triggered" or event["blocked"] or not card or card.fingerprint() != sig.setup_version:
+    if (event["state"] != "triggered" or event["blocked"] or not event["terms_digest"]
+            or sig.stop is None or not card or card.fingerprint() != sig.setup_version):
         return {"event_id": event_id, "eligible": False,
                 "reasons": ["event is terminal or its setup version changed"],
                 "checked_at": clock(now).isoformat(), "card_version": event["card_version"],
@@ -735,13 +738,13 @@ def revalidate_signal(source: BarSource, log: ScanLog, event_id: str, now: datet
     checked = decision_clock() if decision_clock else now
     reasons = []
     if sig.symbol not in bars:
-        log.signals.suspend(sig, clock(checked).date(), "fresh bars unavailable")
+        log.signals.suspend(candidate, clock(checked).date(), "fresh bars unavailable")
         reasons.append("fresh bars unavailable")
     else:
         try:
-            observe_signal(log.signals, sig, bars[sig.symbol], checked)
+            observe_signal(log.signals, candidate, bars[sig.symbol], checked)
         except (BarDataError, KeyError, SignalStateError) as exc:
-            log.signals.suspend(sig, clock(checked).date(), str(exc))
+            log.signals.suspend(candidate, clock(checked).date(), str(exc))
             reasons.append("fresh bar/action validation failed")
     event = log.signals.get(event_id, checked)
     if not event["eligible"]:
@@ -759,7 +762,7 @@ def revalidate_signal(source: BarSource, log: ScanLog, event_id: str, now: datet
             log.signals.invalidate(event_id, checked, "fresh underlying quote breached the stop")
     if (price < event["entry_level"] if long else price > event["entry_level"]):
         reasons.append("price is on the wrong side of entry")
-    moved = (price / sig.trigger - 1) * (1 if long else -1)
+    moved = (price / candidate.trigger - 1) * (1 if long else -1)
     chase = min(limits.max_already_moved_pct,
                 CARDS[sig.setup_id].p("max_chase") if "max_chase" in CARDS[sig.setup_id].params else float("inf"))
     if moved > chase + 1e-12:

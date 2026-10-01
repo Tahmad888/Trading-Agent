@@ -1,6 +1,7 @@
 """Behavioral acceptance for Taz's chosen budget, independent of analyst grade."""
 
 from decimal import Decimal
+from fractions import Fraction
 
 import pytest
 from pydantic import ValidationError
@@ -38,7 +39,7 @@ def test_invalid_loss_and_cost_estimates_cannot_produce_size(proposal, account, 
 @pytest.mark.parametrize("grade", ["A", "B", "C", None])
 def test_grade_never_changes_the_selected_budget_or_size(long_call, account, grade):
     trade = long_call.model_copy(update={
-        "grade": grade, "risk_usd": 150, "max_loss_usd": 180, "est_costs_usd": 0,
+        "event_id": "aapl_wide", "grade": grade, "risk_usd": 150, "max_loss_usd": 180, "est_costs_usd": 0,
     })
     result = evaluate(trade, account, now=NOW)
     assert result.approved
@@ -69,15 +70,15 @@ def test_integer_ratio_sizing_never_produces_a_fractional_leg(proposal):
     # Arithmetic only: this does not assert these legs form an allowed vertical.
     legs = [leg.model_copy(update={"qty": q}) for leg, q in zip(proposal.legs, [2, 3])]
     trade = proposal.model_copy(update={"legs": legs, "risk_usd": 12})
-    assert _size(trade)[0] == [0, 0]  # A half unit cannot become one and 1.5 contracts.
+    assert _size(trade, Fraction(20))[0] == [0, 0]  # A half unit cannot become one and 1.5 contracts.
     legs = [leg.model_copy(update={"qty": q}) for leg, q in zip(proposal.legs, [4, 6])]
-    assert _size(trade.model_copy(update={"legs": legs}))[0] == [2, 3]
+    assert _size(trade.model_copy(update={"legs": legs}), Fraction(20))[0] == [2, 3]
 
 
 def test_exact_decimal_budget_boundary(shares, account):
     trade = shares.model_copy(update={
         "legs": [shares.legs[0].model_copy(update={"qty": 3})],
-        "worst_case_loss_usd": 750, "max_loss_usd": 0.3, "est_costs_usd": 0, "risk_usd": 0.3,
+        "event_id": "msft_tight", "stop_price": 249.9, "worst_case_loss_usd": 750, "max_loss_usd": 0.3, "est_costs_usd": 0, "risk_usd": 0.3,
     })
     assert evaluate(trade, account, now=NOW).final_leg_quantities == [3]
     assert evaluate(trade.model_copy(update={"risk_usd": 0.29}), account, now=NOW).final_leg_quantities == [2]
@@ -89,7 +90,8 @@ def test_sizes_match_enumeration_of_affordable_whole_shares(shares, account):
         for unit_loss in (Decimal("0.10"), Decimal("1.25"), Decimal("20.01")):
             for reserve in (Decimal("0"), Decimal("2.75")):
                 for budget in (Decimal("0.30"), Decimal("25"), Decimal("150"), Decimal("500")):
-                    trade = shares.model_copy(update={
+                    event_id, stop = {Decimal("0.10"): ("msft_tight", 249.9), Decimal("1.25"): ("msft", 248.75), Decimal("20.01"): ("msft_wide", 229.99)}[unit_loss]
+                    trade = shares.model_copy(update={"event_id": event_id, "stop_price": stop,
                         "legs": [shares.legs[0].model_copy(update={"qty": count})],
                         "max_loss_usd": float(unit_loss * count),
                         "worst_case_loss_usd": 250 * count,

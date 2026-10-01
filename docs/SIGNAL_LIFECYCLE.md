@@ -1,5 +1,8 @@
 # Signal lifecycle — Step 07
 
+G2 adds event-bound session-low stops and independent risk resolution; see
+[RISK_TERMS.md](RISK_TERMS.md). Old events without bound terms require rebuilding.
+
 The scanner's `data/signals.sqlite` is the durable signal record. It contains no
 approval tokens, broker orders or positions. Keep it alongside the scan log and
 account/action databases; don't delete it to retry a scan.

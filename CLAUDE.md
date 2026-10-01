@@ -3,10 +3,11 @@
 ## Active repair work
 
 Current priority (2026-10-01): gap repairs G1–G5 in `docs/GAP_REPAIR_PLAN.md`,
-then resume unfinished Step 09. Read `docs/checkpoints/G1-earnings-isolation.md`
+then resume unfinished Step 09. Read `docs/checkpoints/G2-stop-risk.md`
 for the active checkpoint. Later user decisions supersede maximum-loss-only
 option sizing proposals: show full exposure and supported stop-loss estimates
-separately; Taz approves exact quantity/exposure on the final ticket. No hardcoded
+separately; Taz approves exact quantity/exposure on the final ticket. Read `docs/RISK_TERMS.md`: schema 3 requires an independently resolved event and
+explicit sizing mode; G4 exact-ticket approval is still unfinished. No hardcoded
 dollar cap or silent over-budget execution. Step 09/10 and runner activation are
 not completed by these repairs.
 

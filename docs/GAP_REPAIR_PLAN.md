@@ -8,7 +8,9 @@ has reviewed the resulting implementation yet. Codex owns shared contracts and
 integration. No messages have been sent to either reviewer by this task.
 
 G1 status: implemented and locally verified, **803 strict tests** on Python 3.12
-and 3.14. See `checkpoints/G1-earnings-isolation.md`. G2–G5 remain outstanding.
+and 3.14. See `checkpoints/G1-earnings-isolation.md`. G2 is implemented and locally verified: **856 strict tests** on both Python
+versions. Evidence is recorded in `checkpoints/G2-stop-risk.md`.
+G3–G5 remain outstanding. G2 hashes are not G4 approval enforcement.
 
 ## Latest user policy
 

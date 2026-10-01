@@ -195,6 +195,8 @@ class RiskStateStore:
             deadlines = [evidence.as_of + limits.max_account_state_age,
                          proposal.quote_as_of + limits.max_quote_age,
                          decision.market_context_as_of + limits.max_market_context_age]
+            if decision.signal_terms_valid_until:
+                deadlines.append(decision.signal_terms_valid_until)
             if decision.contract_metadata_as_of:
                 deadlines.append(decision.contract_metadata_as_of + limits.max_contract_metadata_age)
             expires = min(deadlines)

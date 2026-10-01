@@ -30,7 +30,7 @@ def proposal() -> TradeProposal:
     # A 1-lot put credit spread risking $20 at the stop plus $2 reserved costs; Taz selects $22.
     return TradeProposal(
         setup_version=CARDS["1_qullamaggie_breakout"].fingerprint(), quote_source="fixture", stop_estimate_source="fixture stop model",
-        proposal_id="p1",
+        proposal_id="p1", event_id="spy", stop_price=495, sizing_mode="stop_budget",
         plan_id="plan1",
         setup_id="1_qullamaggie_breakout",
         tier=1,
@@ -59,7 +59,7 @@ def long_call() -> TradeProposal:
     # 3 calls at $1.50: $450 of premium at risk in the worst case, $60 at the stop.
     return TradeProposal(
         setup_version=CARDS["1_qullamaggie_breakout"].fingerprint(), quote_source="fixture", stop_estimate_source="fixture stop model",
-        proposal_id="c1",
+        proposal_id="c1", event_id="aapl", stop_price=225, sizing_mode="stop_budget",
         setup_id="1_qullamaggie_breakout",
         tier=1,
         grade="A",
@@ -84,7 +84,7 @@ def shares() -> TradeProposal:
     # 20 shares at $250 with a $1.25 stop: $25 at the stop, $5,000 of cost.
     return TradeProposal(
         setup_version=CARDS["1_qullamaggie_breakout"].fingerprint(), quote_source="fixture", stop_estimate_source="fixture stop model",
-        proposal_id="s1",
+        proposal_id="s1", event_id="msft", stop_price=248.75, sizing_mode="stop_budget",
         setup_id="1_qullamaggie_breakout",
         tier=1,
         grade="B",

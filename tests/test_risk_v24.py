@@ -52,7 +52,7 @@ def test_small_account_spread_now_fits(proposal, account):
     five_k = replace(account, equity=5_000, equity_high_water_mark=5_000,
                      buying_power=5_000, margin_excess=5_000)
     spread = _lots(proposal, 1, 30, 70).model_copy(update={
-        "risk_usd": 50,
+        "risk_usd": 50, "event_id": "small_spread",
         "legs": [proposal.legs[0], proposal.legs[1].model_copy(update={"limit_price": 0.90})],
     })
     d = evaluate(spread, five_k, now=NOW)
