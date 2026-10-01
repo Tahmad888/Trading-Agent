@@ -1,6 +1,6 @@
 # Step 06 follow-up C — Price and volume compatibility
 
-Status: protective implementation verified locally; provider acceptance still open. Base: `76298b6`.
+Status: protective implementation verified locally and iMac pass reported by Taz; provider acceptance still open. Base: `76298b6`.
 Function: watch / analyze. Implementer: Codex; self-review only.
 
 Requirement: replace arbitrary matching scale labels with security-specific,
@@ -70,7 +70,10 @@ runner activation, credentials or trading-state migration.
   isolation and price-only diagnostics.
 - Full strict Python 3.12.14 suite: `.venv/bin/python -m pytest -q -W error`:
   **391 passed in 1.73s**. Python 3.14.6: `../verify-python314/bin/python -m pytest
-  -q -W error`: **391 passed in 1.93s**. Taz's iMac re-run remains pending.
+  -q -W error`: **391 passed in 1.93s**. Taz subsequently reported **391 passed**
+  on the iMac after the pull/test instructions for `d617dc5` (2026-10-01).
+  This is user-reported offline verification, not an independently observed
+  terminal run or live provider acceptance; no duration was supplied.
 - `git diff --check` passed; remote repair branch still matched base `76298b6`
   before publication. Deliver this checkpoint to `codex/repair-step-01-baseline`
   under Taz's existing per-checkpoint push authorization; no merge.

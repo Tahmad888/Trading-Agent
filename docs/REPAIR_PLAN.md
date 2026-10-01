@@ -11,7 +11,8 @@ and the current six-item status. RTH freshness, corporate actions and daily-volu
 definitions remain unresolved; the zero delay field is not real-time proof.
 [06c-price-volume-basis.md](checkpoints/06c-price-volume-basis.md) records the
 subsequent action/identity and volume-comparability safeguards, with 391 passing
-tests on Python 3.12 and 3.14. Real action-source and volume-definition acceptance
+tests on Python 3.12 and 3.14; Taz also reported 391 passed on the iMac on
+2026-10-01. Real action-source and volume-definition acceptance
 remain open; [DATA_BASIS_ACCEPTANCE.md](DATA_BASIS_ACCEPTANCE.md) contains the
 evidence request. Step 07 remains paused.
 
