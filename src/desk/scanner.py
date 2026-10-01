@@ -48,6 +48,7 @@ from desk.indicators import daily_features
 from desk.data_basis import price_basis, volume_basis
 from desk.signal_state import SignalStore, SignalStateError, restore_signal
 from desk.security import securities
+from desk.symbols import canonical_symbol
 from desk.playbook.cards import CARDS, INDEX_ETFS
 from desk.playbook.filters import GateResult, MarketSize, market_filter, trend_template
 from desk.playbook.triggers import Context, Signal, connors_rsi2, episodic_pivot, minimum_history, scan
@@ -83,6 +84,7 @@ def scheduled_slots(d: date) -> list[datetime]:
 def fetch(source: BarSource, symbols: Sequence[str], timespan: str, count: int,
           skipped: dict[str, str]) -> dict[str, pd.DataFrame]:
     """Bars in batches of 20 per category. A name that fails is skipped and logged."""
+    symbols = list(dict.fromkeys(canonical_symbol(s) for s in symbols))
     out: dict[str, pd.DataFrame] = {}
     metadata = securities(source, symbols, skipped)
     for cat in ("US_ETF", "US_STOCK"):
@@ -147,6 +149,7 @@ def _event_signal(sig: Signal, event: dict) -> dict:
 
 def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, decision_clock: Callable[[], datetime] | None = None,
                preparing: bool = False) -> tuple[ScanRecord, list[Signal]]:
+    watchlist = list(dict.fromkeys(canonical_symbol(s) for s in watchlist))
     rec = ScanRecord("close", now.astimezone(ET).isoformat(), None)
     symbols = sorted(set(watchlist) | {"SPY", "QQQ"})
     bars = fetch(source, symbols, "D", DAILY_BARS, rec.skipped)
@@ -374,7 +377,7 @@ def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skippe
     from desk.watchlist import movers
 
     today = now.astimezone(ET).date()
-    names = movers(source, skipped) if candidates is None else list(candidates)
+    names = movers(source, skipped) if candidates is None else list(dict.fromkeys(canonical_symbol(s) for s in candidates))
     daily = fetch(source, names, "D", DAILY_BARS, skipped)
     intraday = fetch(source, names, "M15", 40, skipped)
     now = decision_clock() if decision_clock else now
@@ -612,7 +615,7 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
     try:
         picks = log.picks()
         watchlist = overlay_picks(watchlist, picks)
-        removed = {s.strip().upper() for s in picks.get("remove", [])} - set(ALWAYS)
+        removed = {canonical_symbol(s) for s in picks.get("remove", [])} - set(ALWAYS)
         log.signals.suspend_symbols(removed, "removed from current watchlist")
         if slot == leader_slot:
             rec = leader_scan_job(source, log, now, decision_clock=decision_clock)
@@ -692,7 +695,7 @@ def revalidate_signal(source: BarSource, log: ScanLog, event_id: str, now: datet
 
     event = log.signals.get(event_id, now)
     from desk.watchlist import ALWAYS
-    removed = {s.strip().upper() for s in log.picks().get("remove", [])} - set(ALWAYS)
+    removed = {canonical_symbol(s) for s in log.picks().get("remove", [])} - set(ALWAYS)
     if event["signal"]["symbol"] in removed:
         log.signals.suspend_symbols(removed, "removed from current watchlist")
         return {"event_id": event_id, "eligible": False, "reasons": ["removed from current watchlist"],

@@ -20,6 +20,7 @@ import pandas as pd
 
 from desk.bars import BarDataError
 from desk.security import securities
+from desk.symbols import canonical_symbol
 from desk.data_basis import volume_basis
 from desk.indicators import daily_features
 from desk.playbook.filters import trend_template
@@ -104,10 +105,10 @@ def build_watchlist(leaders: Iterable[str], movers: Iterable[str] = (), added: I
                     removed: Iterable[str] = (), *, bearish: Iterable[str] = ()) -> dict[str, list[str]]:
     """Symbol -> where it came from. Taz's removals win over every source except SPY, QQQ and IWM."""
     out: dict[str, list[str]] = {}
-    gone = {s.upper().strip() for s in removed}
+    gone = {canonical_symbol(s) for s in removed}
     for source, names in (("always", ALWAYS), ("leader scan", leaders), ("mover", movers), ("bearish", bearish), ("Taz", added)):
         for s in names:
-            s = s.upper().strip()
+            s = canonical_symbol(s)
             if s and (source == "always" or s not in gone):
                 if source not in out.setdefault(s, []):
                     out[s].append(source)
@@ -151,7 +152,7 @@ def _rankings(source, lists, skipped: dict[str, str]) -> list[dict]:
 def universe(source, skipped: dict[str, str]) -> list[str]:
     """Friday candidate universe: top lists over $10 with supported security metadata."""
     rows = _rankings(source, UNIVERSE_LISTS, skipped)
-    names = sorted({r["symbol"].strip().upper() for r in rows if _price(r) > MIN_PRICE})
+    names = sorted({canonical_symbol(r["symbol"]) for r in rows if _price(r) > MIN_PRICE})
     return sorted(securities(source, names, skipped))
 
 
@@ -166,7 +167,7 @@ def movers(source, skipped: dict[str, str]) -> list[str]:
             big = (_num(r, "relative_volume_10d") >= 2.0 if arg == "RELATIVE_VOLUME_10D"
                    else _num(r, "change_ratio") >= MIN_GAP)
             if big and _price(r) > MIN_PRICE:
-                out.add(r["symbol"].strip().upper())
+                out.add(canonical_symbol(r["symbol"]))
     return sorted(securities(source, sorted(out), skipped))
 
 
@@ -177,7 +178,7 @@ def bearish_candidates(source, skipped: dict[str, str]) -> list[str]:
     Optionability and borrow availability are deliberately not discovery filters.
     """
     rows = _rankings(source, BEARISH_LISTS, skipped)
-    names = sorted({r["symbol"].strip().upper() for r in rows
+    names = sorted({canonical_symbol(r["symbol"]) for r in rows
                     if _price(r) > MIN_PRICE and _num(r, "change_ratio") < 0})
     return sorted(securities(source, names, skipped))
 
@@ -191,15 +192,15 @@ def overlay_picks(watchlist, picks):
         raise BarDataError("user picks must contain add/remove lists of ticker strings")
     if isinstance(watchlist, str):
         raise BarDataError("watchlist must be a symbol list or a source mapping")
-    removed = {s.strip().upper() for s in picks.get("remove", [])}
+    removed = {canonical_symbol(s) for s in picks.get("remove", [])}
     out = {}
     entries = watchlist.items() if isinstance(watchlist, Mapping) else ((s, ["watchlist"]) for s in watchlist)
     for symbol, origins in entries:
         if not isinstance(symbol, str) or not isinstance(origins, (list, tuple)) or any(not isinstance(tag, str) for tag in origins):
             raise BarDataError("malformed watchlist symbol/source mapping")
-        symbol = symbol.strip().upper()
+        symbol = canonical_symbol(symbol)
         if symbol and (symbol not in removed or symbol in ALWAYS):
-            out[symbol] = list(dict.fromkeys(origins))
+            out[symbol] = list(dict.fromkeys(out.get(symbol, []) + list(origins)))
     for symbol, origins in build_watchlist([], added=picks.get("add", []), removed=removed).items():
         out[symbol] = list(dict.fromkeys(out.get(symbol, []) + origins))
     return out

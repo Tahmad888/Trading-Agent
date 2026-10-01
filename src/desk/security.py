@@ -5,11 +5,13 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 
 from desk.bars import BarDataError
+from desk.symbols import canonical_symbol
 
 
 class SecurityMetadata(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
     symbol: Annotated[str, Field(pattern=r"^[A-Z0-9][A-Z0-9.-]{0,19}$")]
+    provider_symbol: str | None = None
     instrument_id: Annotated[str, Field(min_length=1)]
     name: Annotated[str, Field(min_length=1)]
     category: Literal["US_STOCK"]
@@ -25,7 +27,7 @@ class SecurityMetadata(BaseModel):
 
 def securities(source, symbols, skipped):
     """Resolve explicit US securities in batches; reject ambiguous or missing IDs."""
-    names = sorted(set(symbols))
+    names = sorted({canonical_symbol(s) for s in symbols})
     out = {}
     for i in range(0, len(names), 100):
         batch = names[i:i + 100]

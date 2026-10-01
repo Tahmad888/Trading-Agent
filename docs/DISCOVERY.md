@@ -46,7 +46,19 @@ Plan B: keep the previous list with visible degraded status and independently
 validate core/user names. An S&P/Nasdaq constituent fallback is not implemented.
 The ranked lists are limited candidate pools, not exhaustive market coverage.
 
-Provider acceptance remains separate: the new reference route has documentation
-and synthetic tests, but its entitlement and payload on your configured host
-still need a read-only check before activation. No paid access or live execution
-is implied. See `checkpoints/08-discovery.md` for evidence and verification.
+Provider verification: Taz's iMac reports confirmed NVDA/SPY metadata and daily-bar
+identity matches on 2026-10-01. Berkshire metadata was returned only for `BRK B`,
+ID 916040668. The desk now accepts `BRK.B`, `BRK-B` and `BRK B` as this one reviewed
+identity, stores `BRK.B`, and requests `BRK B` from Webull. Other share classes are
+not silently rewritten. A different/missing instrument ID rejects the mapping.
+
+After pulling the repair on the credentialed host, run:
+
+```bash
+python -m desk.metadata_check --symbols NVDA SPY BRK.B
+```
+
+This probes metadata plus D/M15 identities, with no price profiles, scanner or
+orders. Berkshire's repaired live bar path still needs this result; do not infer
+it from synthetic tests. The probe prints the host and suppresses raw exceptions.
+No paid access or live execution is implied. See `checkpoints/08a-webull-symbols.md`.

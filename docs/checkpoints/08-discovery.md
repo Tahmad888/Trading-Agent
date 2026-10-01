@@ -1,6 +1,6 @@
 # Step 08 — Discovery and watchlist coverage
 
-Status: complete, verified locally on Python 3.12 and 3.14. Base c49ecd8; upstream matched. Serves watch.
+Status: code complete, verified locally on Python 3.12 and 3.14. Base c49ecd8; upstream matched. Serves watch.
 Codex implements and self-reviews; no independent agent dispatched. Taz authorized
 this step and verified checkpoint pushes, not activation or orders.
 
@@ -97,6 +97,10 @@ All market data in the new tests is synthetic, not live provider evidence.
 - Codex self-review only; no independent reviewer or Claude run claimed.
 
 ## Limits and handoff
+
+Update: later iMac observations and the resulting alias repair are recorded in
+`08a-webull-symbols.md`; its final provider probe remains pending. The following
+paragraph describes the initial implementation checkpoint.
 
 No authenticated Webull metadata request was made. Route/SDK research and mocked
 transport tests do not prove sandbox or live entitlement. Before activation,

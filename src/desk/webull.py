@@ -40,6 +40,7 @@ import pandas as pd
 from desk.bars import BarDataError, bars_from_webull
 from desk.bar_contract import BarProvenance
 from desk.data_basis import VolumeBasis
+from desk.symbols import canonical_symbol, webull_symbol, WEBULL_IDENTITIES
 
 HOST = "api.webull.com"
 SANDBOX_HOST = "api.sandbox.webull.com"   # Sandbox delay_minutes=0 is NOT proof of real-time data.
@@ -202,6 +203,7 @@ class WebullData:
         not a guarantee of complete coverage or completed bars. The real-time flag
         controls the request, not entitlement or independent completion checks.
         """
+        symbols = list(dict.fromkeys(canonical_symbol(s) for s in symbols))
         if not 1 <= len(symbols) <= MAX_SYMBOLS_PER_BARS_CALL:
             raise WebullError(f"1 to {MAX_SYMBOLS_PER_BARS_CALL} symbols per call")
         if timespan not in TIMESPANS or category not in ("US_STOCK", "US_ETF"):
@@ -229,7 +231,7 @@ class WebullData:
                     raise WebullError(f"{name} outside supported timestamp range") from exc
         if start_time is not None and end_time is not None and start_time > end_time:
             raise WebullError("start_time must not follow end_time")
-        payload = {"symbols": list(symbols), "category": category, "timespan": timespan,
+        payload = {"symbols": [webull_symbol(s) for s in symbols], "category": category, "timespan": timespan,
                    "count": count, "real_time_required": real_time_required}
         if selected is not None:
             payload["trading_sessions"] = sessions
@@ -245,6 +247,8 @@ class WebullData:
             raise WebullError("unexpected bars reply")
         out = {}
         for item in reply:
+            if isinstance(item, Mapping) and isinstance(item.get("symbol"), str):
+                item = self._normalize_identity(item)
             if isinstance(item, Mapping) and item.get("symbol") in symbols:
                 try:
                     raw_delay = item["delay_minutes"]
@@ -275,6 +279,7 @@ class WebullData:
                 if df.empty:
                     raise WebullError(f"no bars for {symbol} in requested window")
                 df.attrs["webull_request"] = dict(payload)
+                df.attrs["provider_identity_raw"] = {"symbol": item["provider_symbol"], "instrument_id": item.get("instrument_id")}
                 df.attrs["provider_identity"] = {"symbol": symbol, "instrument_id": item.get("instrument_id")}
                 # This identifies the native channel, not its undocumented trade
                 # inclusion or share-adjustment rules. No cross-channel equivalence.
@@ -306,13 +311,26 @@ class WebullData:
             raise WebullError(f"no bars for {missing}")
         return out
 
+    @staticmethod
+    def _normalize_identity(row):
+        raw_symbol = row.get("symbol")
+        if not isinstance(raw_symbol, str):
+            raise WebullError("invalid provider symbol")
+        symbol = canonical_symbol(raw_symbol)
+        reviewed = WEBULL_IDENTITIES.get(symbol)
+        if reviewed and row.get("instrument_id") != reviewed[1]:
+            raise WebullError("Webull alias instrument identity differs from reviewed mapping")
+        return {**row, "symbol": symbol, "provider_symbol": raw_symbol}
+
     def security_metadata(self, symbols: Sequence[str]) -> list[dict]:
         """Read-only instrument lookup; five-minute in-process cache, no option gate.
 
         Sourced: retail instrument-list docs and official SDK 3.0.2 request v3.
         Explicit-symbol pagination is followed without silently accepting truncation.
         """
-        names = list(dict.fromkeys(symbols))
+        if any(not isinstance(s, str) or not s.strip() for s in symbols):
+            raise WebullError("instrument lookup requires ticker strings")
+        names = list(dict.fromkeys(canonical_symbol(s) for s in symbols))
         if not names or len(names) > 100 or any(not isinstance(n, str) or not n for n in names):
             raise WebullError("instrument lookup requires 1..100 symbols")
         current = time.monotonic()
@@ -321,14 +339,14 @@ class WebullData:
         cursor, seen = None, set()
         if needed:
             while True:
-                query = {"symbols": ",".join(needed), "category": "US_STOCK"}
+                query = {"symbols": ",".join(webull_symbol(s) for s in needed), "category": "US_STOCK"}
                 if cursor:
                     query["pagination_key"] = cursor
                 reply = self._call("GET", INSTRUMENTS_PATH, query)
                 rows = reply.get("data") if isinstance(reply, dict) else reply
                 if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
                     raise WebullError("unexpected instrument reference response")
-                received.extend({**row, "observed_at": self._clock().isoformat()} for row in rows)
+                received.extend({**self._normalize_identity(row), "observed_at": self._clock().isoformat()} for row in rows)
                 cursor = reply.get("pagination_key") if isinstance(reply, dict) else None
                 if not cursor:
                     break
@@ -344,7 +362,7 @@ class WebullData:
         return received + [self._security_cache[n][1] for n in names if n not in needed]
 
     def snapshot(self, symbols: Sequence[str], *, category: str) -> list[dict]:
-        reply = self._call("GET", SNAPSHOT_PATH, {"symbols": ",".join(symbols), "category": category,
+        reply = self._call("GET", SNAPSHOT_PATH, {"symbols": ",".join(webull_symbol(s) for s in symbols), "category": category,
                                                   "extend_hour_required": "false",
                                                   "overnight_required": "false"})
         if not isinstance(reply, list):
@@ -353,7 +371,7 @@ class WebullData:
 
     def earnings_calendar(self, symbol: str) -> list[dict]:
         """Past and expected reports for one US stock (ETFs aren't covered)."""
-        reply = self._call("GET", EARNINGS_PATH, {"symbol": symbol, "category": "US_STOCK"})
+        reply = self._call("GET", EARNINGS_PATH, {"symbol": webull_symbol(symbol), "category": "US_STOCK"})
         if not isinstance(reply, list):
             raise WebullError("unexpected earnings reply")
         return reply
@@ -371,7 +389,7 @@ class WebullData:
     def _partial_action_rows(self, path: str, symbol: str, category: str) -> list[dict]:
         if not isinstance(symbol, str) or not symbol.strip():
             raise WebullError("A nonempty symbol is required")
-        reply = self._call("GET", path, {"symbol": symbol, "category": category})
+        reply = self._call("GET", path, {"symbol": webull_symbol(symbol), "category": category})
         if not isinstance(reply, list) or not all(isinstance(row, dict) for row in reply):
             raise WebullError("Unexpected partial corporate-action reply")
         return reply

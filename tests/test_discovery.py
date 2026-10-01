@@ -174,7 +174,7 @@ def test_failed_weekly_build_preserves_last_list_and_labels_staleness(tmp_path):
     assert log.watchlist_status(now(day=date(2026,10,5)))["stale"]
 
 
-def metadata_row(symbol="BRK.B"):
+def metadata_row(symbol="ABC"):
     return {"symbol":symbol,"instrument_id":"id:"+symbol,"name":"Example class B",
             "category":"US_STOCK","sub_category":"COMMON_STOCK","currency":"USD","exchange_code":"NYS"}
 
@@ -182,12 +182,12 @@ def metadata_row(symbol="BRK.B"):
 def test_webull_reference_request_is_read_only_and_cached():
     transport=FakeTransport({"data":[metadata_row()]})
     source=client(transport)
-    assert source.security_metadata(["BRK.B"])[0]["sub_category"]=="COMMON_STOCK"
-    source.security_metadata(["BRK.B"])
+    assert source.security_metadata(["ABC"])[0]["sub_category"]=="COMMON_STOCK"
+    source.security_metadata(["ABC"])
     assert len(transport.requests)==1
     req=transport.requests[0]
     assert req.method=="GET" and "/trading/instruments/stocks/profiles/list?" in req.full_url
-    assert "category=US_STOCK" in req.full_url and "symbols=BRK.B" in req.full_url
+    assert "category=US_STOCK" in req.full_url and "symbols=ABC" in req.full_url
     assert req.data is None
 
 
@@ -267,17 +267,17 @@ def test_reference_cache_expires(monkeypatch):
     monkeypatch.setattr(webull.time,"monotonic",lambda:stamp[0])
     transport=FakeTransport({"data":[metadata_row()]})
     source=client(transport)
-    source.security_metadata(["BRK.B"])
+    source.security_metadata(["ABC"])
     stamp[0]+=301
-    source.security_metadata(["BRK.B"])
+    source.security_metadata(["ABC"])
     assert len(transport.requests)==2
 
 
 def test_reference_pagination_loop_rejected():
     transport=FakeTransport({"data":[metadata_row()],"pagination_key":"loop"})
     errors={}
-    assert securities(client(transport),["BRK.B"],errors)=={}
-    assert "pagination" in errors["BRK.B"]
+    assert securities(client(transport),["ABC"],errors)=={}
+    assert "pagination" in errors["ABC"]
     assert len(transport.requests)==2
 
 
