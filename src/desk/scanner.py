@@ -780,9 +780,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         from desk.action_source import configured_source
-        source: BarSource = earnings_source(configured_source(WebullData.from_env(), os.environ), os.environ)
-    except BarDataError as e:
-        why = str(e)
+        raw_source = WebullData.from_env()
+        from desk.earnings_refresh import refresh_configured
+        refresh_configured(raw_source, os.environ)
+        source: BarSource = earnings_source(configured_source(raw_source, os.environ), os.environ)
+    except (BarDataError, ValueError, OSError) as e:
+        why = f"source configuration unavailable ({type(e).__name__})"
 
         class NoKeys:                                 # the due scan is still logged, as failed
             def security_metadata(self, symbols):

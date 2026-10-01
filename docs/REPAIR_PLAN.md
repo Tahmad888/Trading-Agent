@@ -259,8 +259,12 @@ metadata, empty healthy result and failed preparation have distinct observable o
 Reopened. See `checkpoints/09b-automatic-sources.md` for the complete remaining
 work and exit criteria. Passing gates and a manually prepared NVDA review do not
 complete automatic watchlist coverage. Follow-up `checkpoints/09c-source-normalization.md`
-repairs eight source interpretation findings; full-archive iMac acceptance remains
-separate. Keep Step 10 paused until Step 09 exit criteria are resolved.
+repairs eight source interpretation findings. NVDA/AAPL/MSFT supplied historical
+iMac mappings passed (MSFT through reviewed issuer fallback). Follow-up
+`checkpoints/09e-refresh-catalysts.md` adds bounded opt-in refresh, cache and catalyst
+review integration; see `EARNINGS_REFRESH.md` for one consolidated host check.
+Live refresh, real catalyst review and broader watchlist coverage remain open.
+Keep Step 10 paused until Step 09 exit criteria are resolved.
 
 Depends on 06, 08. Targets: `webull.py`/provider adapter, setup context, scanner and
 growth tests. Separate upcoming report dates from actual reported quarterly results.

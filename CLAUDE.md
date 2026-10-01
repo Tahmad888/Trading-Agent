@@ -21,6 +21,13 @@ user additions. Read docs/checkpoints/08-discovery.md and docs/DISCOVERY.md.
 Step 08 provider verification is complete: NVDA, SPY and BRK.B metadata/D/M15
 identities passed on the iMac sandbox connection, 2026-10-01. Read
 docs/checkpoints/08a-webull-symbols.md and docs/evidence/step08-metadata-imac.md.
+Step 09e adds opt-in bounded retrieval/cache, original SEC catalyst candidates,
+content-bound reviews and scanner/revalidation integration. Read
+`docs/checkpoints/09e-refresh-catalysts.md` and `docs/EARNINGS_REFRESH.md`.
+NVDA/AAPL/MSFT historical iMac mappings are accepted for their supplied scope;
+current live refresh, real catalyst review and final integrated host acceptance
+remain open. No scheduler/runtime activation; no Step 10 work.
+
 Step 09 is REOPENED / IN PROGRESS. Earlier closure after 688 passing tests and the
 NVDA iMac replay was premature: automatic reported results, upcoming dates,
 catalyst retrieval/review, refresh/integration and actual-host acceptance remain.

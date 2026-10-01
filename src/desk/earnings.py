@@ -285,13 +285,20 @@ class ReviewedEarningsSource:
 def configured_source(source, env=None):
     env = os.environ if env is None else env
     path = env.get("DESK_EARNINGS_EVIDENCE")
+    cache, policy = env.get('DESK_EARNINGS_CACHE'), env.get('DESK_EARNINGS_POLICY')
+    if cache or policy:
+        if path or not (cache and policy):
+            raise ValueError('choose one complete earnings source configuration')
+        from desk.earnings_refresh import CachedEarningsSource
+        return CachedEarningsSource(source, cache, policy)
     return ReviewedEarningsSource(source, path) if path else source
 
 
 def qualify(source, signal, at, *, trigger_at=None):
     try:
+        timed_method = getattr(source, "earnings_evidence_at", None)
         method = getattr(source, "earnings_evidence", None)
-        evidence = method(signal.symbol) if method else None
+        evidence = timed_method(signal.symbol, at) if timed_method else method(signal.symbol) if method else None
         return evaluate(signal.setup_id, signal.symbol, (signal.price_basis or {}).get("security_id"),
                         evidence, at, trigger_at=trigger_at)
     except Exception:

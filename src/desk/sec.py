@@ -48,12 +48,12 @@ class SecData:
         self._monotonic, self._sleep, self._clock = monotonic, sleep, clock
         self._last = None
 
-    def _get(self, url):
+    def _bytes(self, url, accept="application/json"):
         if self._last is not None:
             wait = .25 - (self._monotonic() - self._last)
             if wait > 0:
                 self._sleep(wait)
-        req = request.Request(url, headers={"User-Agent": self._user_agent, "Accept": "application/json"})
+        req = request.Request(url, headers={"User-Agent": self._user_agent, "Accept": accept})
         try:
             raw = self._transport(req, 20)
         except error.HTTPError as exc:
@@ -65,6 +65,10 @@ class SecData:
             self._last = self._monotonic()
         if len(raw) > MAX_BYTES:
             raise SecError("RESPONSE_TOO_LARGE")
+        return raw
+
+    def _get(self, url):
+        raw = self._bytes(url)
         try:
             payload = json.loads(raw, parse_constant=_reject_constant)
             if not isinstance(payload, dict) or any(k in payload for k in ("error", "errors", "message", "Information")):
@@ -72,6 +76,22 @@ class SecData:
         except (TypeError, ValueError, UnicodeError):
             raise SecError("INVALID_JSON_RESPONSE") from None
         return {"source_url": url, "received_at": self._clock().isoformat(), "payload": payload}
+
+    def document(self, cik, accession, filename):
+        """Original public filing, confined to a validated SEC archive path."""
+        if not re.fullmatch(r"\d{10}", str(cik)) or int(cik) == 0 or not re.fullmatch(r"\d{10}-\d{2}-\d{6}", accession):
+            raise SecError("INVALID_DOCUMENT_IDENTITY")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+\.(?:htm|html|txt)", filename):
+            raise SecError("UNSUPPORTED_DOCUMENT_NAME")
+        url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession.replace('-', '')}/{filename}"
+        raw = self._bytes(url, "text/html,text/plain")
+        try:
+            body = raw.decode("utf-8")
+            if not body.strip() or "Your Request Originates from an Undeclared Automated Tool" in body or "Request Rate Threshold Exceeded" in body:
+                raise ValueError
+        except (UnicodeError, ValueError):
+            raise SecError("DOCUMENT_UNAVAILABLE") from None
+        return {"source_url": url, "received_at": self._clock().isoformat(), "body": body}
 
     def ticker_index(self):
         return self._get(TICKERS_URL)

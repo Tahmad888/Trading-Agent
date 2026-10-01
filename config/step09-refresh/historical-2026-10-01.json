@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "review_ref": "Step 09e historical iMac acceptance only; source identities checked in Step 08/09; no runtime activation",
+  "valid_until": "2026-10-01T21:00:00Z",
+  "refresh_seconds": 3600,
+  "retry_seconds": 60,
+  "catalyst_lookback_days": 7,
+  "catalyst_limit": 3,
+  "symbols": [
+    {"symbol": "NVDA", "security_id": "913257561", "cik": "0001045810"},
+    {"symbol": "AAPL", "security_id": "913256135", "cik": "0000320193"},
+    {"symbol": "MSFT", "security_id": "913323997", "cik": "0000789019", "issuer_evidence": "../step09-review/MSFT-2026-10-01.json"}
+  ]
+}

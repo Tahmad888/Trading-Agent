@@ -55,3 +55,11 @@ Checkpoint implementation complete; MSFT actual-host merged replay still pending
 NVDA/AAPL actual-host checks are accepted for their reported scope only. This does
 not close Step 09: automatic source refresh, catalyst retrieval and remaining
 scanner-to-review acceptance from 09b are still open. No Step 10 changes.
+
+## Subsequent actual-host result
+
+Taz supplied the MSFT merged archive replay after this checkpoint: mapped issuer
+fallback, EPS growth 31.7808%, sales growth 17.7470%, cup fundamentals qualified,
+EP pending catalyst and next earnings estimated Oct 27–Nov 2. The earlier pending
+MSFT replay statement is superseded for that historical scope. This does not
+certify current live supply or close Step 09; follow-up 09e continues integration.
