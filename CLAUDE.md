@@ -2,6 +2,14 @@
 
 ## Active repair work
 
+Current priority (2026-10-01): gap repairs G1–G5 in `docs/GAP_REPAIR_PLAN.md`,
+then resume unfinished Step 09. Read `docs/checkpoints/G1-earnings-isolation.md`
+for the active checkpoint. Later user decisions supersede maximum-loss-only
+option sizing proposals: show full exposure and supported stop-loss estimates
+separately; Taz approves exact quantity/exposure on the final ticket. No hardcoded
+dollar cap or silent over-budget execution. Step 09/10 and runner activation are
+not completed by these repairs.
+
 Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify and
 checkpoint each numbered step before advancing under Taz's current authorization.
 Taz chooses each trade's dollar risk budget, with no hard $100 ceiling or automatic
@@ -38,8 +46,8 @@ empty Webull income. Follow-up 09c implements the eight interpretation repairs;
 read docs/checkpoints/09c-source-normalization.md and docs/EARNINGS_NORMALIZATION.md.
 NVDA/AAPL full-archive iMac mapping and fundamental evaluation passed. MSFT
 needs explicit issuer Q4 evidence; follow-up 09d supplies the reviewed fallback
-and passes 767 strict tests on both local Python versions. The merged MSFT
-iMac replay remains pending. Read docs/checkpoints/09d-msft-issuer-fallback.md.
+and passes 767 strict tests on both local Python versions. Taz subsequently supplied a passing merged MSFT
+iMac replay for its dated historical scope. Read docs/checkpoints/09d-msft-issuer-fallback.md.
 These checks do not establish automatic coverage or complete Step 09 acceptance.
 Do not call a source probe or one reviewed file complete automatic coverage.
 Step 10 has not started. Earlier descriptions retain historical status.

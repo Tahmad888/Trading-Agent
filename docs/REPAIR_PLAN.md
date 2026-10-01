@@ -1,5 +1,13 @@
 # Trading desk repair plan and step tracker
 
+**Current priority, 2026-10-01:** execute gap repairs G1–G5 in
+[GAP_REPAIR_PLAN.md](GAP_REPAIR_PLAN.md) before resuming unfinished Step 09.
+The prior numbered checkpoints below retain their bounded historical scope;
+they are not claims that the identified operational gaps are resolved.
+G1 isolates earnings failures; G2 repairs actual stop construction and risk terms;
+G3 tests scalable vendor-basis/revision handling; G4 binds ticket confirmation;
+G5 verifies integration. No Step 10 or operational runner start is implied.
+
 Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–08 complete for their documented scope. **Step 09 is reopened and IN PROGRESS.** Closing it after the single-company reviewed-file check was premature. 688 tests and the iMac replay verified the existing gates/fallback, not automatic earnings supply. See `checkpoints/09b-automatic-sources.md` for the remaining source access, reported-results, calendar, catalyst, integration and actual-host acceptance work. Step 10 has not started. Earlier checkpoint closure statements are historical and superseded by this correction.
 
 Installation follow-up: [06a-resource-cleanup.md](checkpoints/06a-resource-cleanup.md)

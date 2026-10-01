@@ -1,6 +1,7 @@
 # Step 09e: earnings refresh and catalyst review
 
-This is an opt-in implementation checkpoint, not Step 09 closure. No scheduler,
+This is an opt-in implementation checkpoint, not Step 09 closure. Gap repairs
+now take priority; see `GAP_REPAIR_PLAN.md`. No scheduler,
 scanner, approval or order execution is activated by the commands below.
 
 ## What it does
@@ -10,6 +11,11 @@ identities, reuses the reviewed full-archive normalizer, and stores immutable
 SQLite snapshots. Each attempt makes the previous success ineligible until the
 new attempt finishes. Failure is negatively cached until the configured retry
 time. Cache reads happen again at scanner qualification and signal revalidation.
+Scanner earnings initialization/refresh failures preserve working price/action
+adapters. Required EP/cup evidence stays pending; unrelated setups continue.
+Sanitized startup failures appear in the persisted scan discovery report under
+`earnings_source`; per-read failures appear in qualification reasons. This is not
+a bypass for invalid prices, missing benchmarks or expired required evidence.
 A policy/reviewer-file change immediately invalidates the old snapshot. File
 locking prevents concurrent refreshers on macOS/Linux. Historical replay must
 use a separate database; a backwards timestamp cannot replace a newer snapshot.

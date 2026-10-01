@@ -294,6 +294,38 @@ def configured_source(source, env=None):
     return ReviewedEarningsSource(source, path) if path else source
 
 
+class UnavailableEarningsSource:
+    """Keep prices/discovery usable without falling back to older earnings."""
+    earnings_source_issue = "earnings configuration or refresh unavailable"
+
+    def __init__(self, source):
+        self.source = source
+
+    def __getattr__(self, name):
+        return getattr(self.source, name)
+
+    def earnings_evidence_at(self, symbol, at):
+        raise ValueError(self.earnings_source_issue)
+
+    def earnings_evidence(self, symbol):
+        raise ValueError(self.earnings_source_issue)
+
+
+def scanner_source(source, env, *, refresh_source):
+    """Optional earnings setup must never disable working price/action adapters."""
+    try:
+        result = configured_source(source, env)
+        from desk.earnings_refresh import load_policy, refresh_configured
+        if env.get('DESK_EARNINGS_POLICY'):
+            load_policy(env['DESK_EARNINGS_POLICY'])
+        refresh_configured(refresh_source, env)
+        return result
+    except Exception:
+        # Includes SQLite/configuration/provider failures, but not process interrupts.
+        # Never expose the raw exception or silently use old/underlying earnings.
+        return UnavailableEarningsSource(source)
+
+
 def qualify(source, signal, at, *, trigger_at=None):
     try:
         timed_method = getattr(source, "earnings_evidence_at", None)

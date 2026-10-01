@@ -49,7 +49,7 @@ from desk.data_basis import price_basis, volume_basis
 from desk.signal_state import SignalStore, SignalStateError, restore_signal
 from desk.security import securities
 from desk.symbols import canonical_symbol
-from desk.earnings import qualify, configured_source as earnings_source
+from desk.earnings import qualify
 from desk.playbook.cards import CARDS, INDEX_ETFS
 from desk.playbook.filters import GateResult, MarketSize, market_filter, trend_template
 from desk.playbook.triggers import Context, Signal, connors_rsi2, episodic_pivot, minimum_history, scan
@@ -695,6 +695,9 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
         if key not in rec.qualification:
             rec.qualification[key] = qualify(source, restore_signal(payload), clock(rec.at))
     rec.discovery.setdefault("watchlist_build", log.watchlist_status(now))
+    if getattr(source, "earnings_source_issue", None):
+        rec.discovery["earnings_source"] = {
+            "status": "UNAVAILABLE", "reason": "earnings configuration or refresh unavailable"}
     rec.slot = slot.isoformat()
     log.write(rec)
     return rec
@@ -781,9 +784,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         from desk.action_source import configured_source
         raw_source = WebullData.from_env()
-        from desk.earnings_refresh import refresh_configured
-        refresh_configured(raw_source, os.environ)
-        source: BarSource = earnings_source(configured_source(raw_source, os.environ), os.environ)
+        source: BarSource = configured_source(raw_source, os.environ)
     except (BarDataError, ValueError, OSError) as e:
         why = f"source configuration unavailable ({type(e).__name__})"
 
@@ -794,6 +795,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             def bars(self, *a, **k):
                 raise RuntimeError(f"no Webull connection: {why}")
         source = NoKeys()
+    else:
+        from desk.earnings import scanner_source
+        source = scanner_source(source, os.environ, refresh_source=raw_source)
     wl_path = Path(args.watchlist)
     watchlist = json.loads(wl_path.read_text()) if wl_path.exists() else ["SPY", "QQQ", "IWM"]
     rec = run(source, watchlist, ScanLog(Path(args.data_dir)), datetime.now(timezone.utc),
