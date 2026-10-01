@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "securities": [
+    {
+      "symbol": "MSFT",
+      "security_id": "913323997",
+      "review_ref": "docs/evidence/step09-msft-issuer-review.md",
+      "reviewed_at": "2026-10-01T20:23:34Z",
+      "valid_until": "2026-10-01T21:00:00Z",
+      "latest_fiscal_year": 2026,
+      "latest_fiscal_quarter": 4,
+      "current": {
+        "source_ref": "https://www.microsoft.com/en-us/investor/earnings/fy-2026-q4/press-release-webcast",
+        "published_on": "2026-07-29",
+        "received_at": "2026-10-01T20:23:34Z",
+        "fiscal_year": 2026,
+        "fiscal_quarter": 4,
+        "period_kind": "quarter",
+        "period_start": "2026-04-01",
+        "period_end": "2026-06-30",
+        "eps": {
+          "value": "4.81",
+          "scale": "1",
+          "currency": "USD",
+          "unit": "currency/share",
+          "accounting_basis": "US_GAAP",
+          "definition": "diluted_eps",
+          "share_basis": "Microsoft FY2026 Q4 GAAP comparative diluted EPS presentation"
+        },
+        "sales": {
+          "value": "90007",
+          "scale": "1000000",
+          "currency": "USD",
+          "unit": "currency",
+          "accounting_basis": "US_GAAP",
+          "definition": "total_revenue",
+          "share_basis": null
+        }
+      },
+      "prior": {
+        "source_ref": "https://www.microsoft.com/en-us/investor/earnings/fy-2026-q4/press-release-webcast",
+        "published_on": "2026-07-29",
+        "received_at": "2026-10-01T20:23:34Z",
+        "fiscal_year": 2025,
+        "fiscal_quarter": 4,
+        "period_kind": "quarter",
+        "period_start": "2025-04-01",
+        "period_end": "2025-06-30",
+        "eps": {
+          "value": "3.65",
+          "scale": "1",
+          "currency": "USD",
+          "unit": "currency/share",
+          "accounting_basis": "US_GAAP",
+          "definition": "diluted_eps",
+          "share_basis": "Microsoft FY2026 Q4 GAAP comparative diluted EPS presentation"
+        },
+        "sales": {
+          "value": "76441",
+          "scale": "1000000",
+          "currency": "USD",
+          "unit": "currency",
+          "accounting_basis": "US_GAAP",
+          "definition": "total_revenue",
+          "share_basis": null
+        }
+      },
+      "catalysts": [],
+      "calendar": []
+    }
+  ]
+}

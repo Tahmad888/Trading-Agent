@@ -29,8 +29,11 @@ The multi-company source collector passed 715 strict tests; the iMac report
 confirmed SEC access and Webull alert/calendar data for NVDA/AAPL/MSFT, with
 empty Webull income. Follow-up 09c implements the eight interpretation repairs;
 read docs/checkpoints/09c-source-normalization.md and docs/EARNINGS_NORMALIZATION.md.
-Full-archive actual-host mapping remains to be checked; source access is not
-automatic coverage or complete Step 09 acceptance.
+NVDA/AAPL full-archive iMac mapping and fundamental evaluation passed. MSFT
+needs explicit issuer Q4 evidence; follow-up 09d supplies the reviewed fallback
+and passes 767 strict tests on both local Python versions. The merged MSFT
+iMac replay remains pending. Read docs/checkpoints/09d-msft-issuer-fallback.md.
+These checks do not establish automatic coverage or complete Step 09 acceptance.
 Do not call a source probe or one reviewed file complete automatic coverage.
 Step 10 has not started. Earlier descriptions retain historical status.
 Step 06 adds bounded exchange-calendar timing, completed-bar checks and explicit

@@ -112,3 +112,18 @@ def test_cli_rejects_naive_replay_time():
         main(["--file", str(REVIEW), "--symbol", "NVDA", "--security-id", "913257561",
               "--at", "2026-10-01T19:00:20"])
     assert error.value.code == 2
+
+
+def test_msft_explicit_issuer_q4_review_arithmetic_and_review_window():
+    path = ROOT / 'config/step09-review/MSFT-2026-10-01.json'
+    at = datetime(2026, 10, 1, 20, 23, 34, tzinfo=timezone.utc)
+    result = check(path, 'MSFT', '913323997', at, replay=True)
+    cup, ep = result['checks']['cup'], result['checks']['ep']
+    assert result['status'] == 'EVALUATED' and cup['status'] == 'QUALIFIED'
+    assert Decimal(cup['growth']['eps']) == Decimal('1.16') / Decimal('3.65')
+    assert Decimal(cup['growth']['sales']) == Decimal(13566) / Decimal(76441)
+    assert ep['status'] == 'PENDING_EVIDENCE' and 'catalyst' in ep['reasons'][0]
+    assert cup['next_earnings']['status'] == 'UNKNOWN'  # archive supplies calendar, not this issuer file
+    for invalid_time in (at.replace(second=33), at.replace(hour=21, minute=0, second=1)):
+        assert check(path, 'MSFT', '913323997', invalid_time)['status'] == 'UNAVAILABLE'
+    assert check(path, 'MSFT', 'wrong', at)['status'] == 'UNAVAILABLE'
