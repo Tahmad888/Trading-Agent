@@ -46,6 +46,7 @@ HOST = "api.webull.com"
 SANDBOX_HOST = "api.sandbox.webull.com"   # Sandbox delay_minutes=0 is NOT proof of real-time data.
 BARS_PATH = "/market-data/stocks/bars/list"
 SNAPSHOT_PATH = "/market-data/stocks/snapshots/list"
+INCOME_PATH = "/market-data/fundamentals/income-statements/get"
 EARNINGS_PATH = "/market-data/fundamentals/earnings-calendars/list"
 DIVIDENDS_PATH = "/market-data/fundamentals/dividend-calendars/list"
 FUND_SPLITS_PATH = "/market-data/fundamentals/fund-splits/get"
@@ -375,6 +376,15 @@ class WebullData:
         if not isinstance(reply, list):
             raise WebullError("unexpected earnings reply")
         return reply
+
+    def quarterly_income(self, symbol: str, *, count: int = 5):
+        """Raw observations only; SDK 3.0.2 route. No inferred accounting/time basis."""
+        if type(count) is not int or not 1 <= count <= 20:
+            raise WebullError("income observation count must be 1..20")
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise WebullError("income observations require a symbol")
+        return self._call("GET", INCOME_PATH, {"symbol": webull_symbol(symbol),
+                          "category": "US_STOCK", "type": "QUARTERLY", "count": str(count)})
 
     def dividend_calendar(self, symbol: str) -> list[dict]:
         """Recent stock dividends only; NOT complete action or split coverage."""

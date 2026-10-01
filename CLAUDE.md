@@ -14,14 +14,17 @@ and checks a trusted setup registry. No user approval UI/order adapter exists ye
 Current status: Step 06 is closed for the scoped NVDA/SPY sandbox checks and
 iMac verification; read docs/evidence/step06-integrated-results.md. Step 07 is
 complete: read docs/checkpoints/07-signal-lifecycle.md and docs/SIGNAL_LIFECYCLE.md.
-The scanner now persists signal lifecycle separately from approvals/orders, with
-621 strict tests passing on both local Python versions after Step 08. Discovery
+The scanner persists signal lifecycle separately from approvals/orders.
+Step 08 closed with 621 strict tests on both local Python versions. Discovery
 now uses security metadata, distinct bearish sources, per-setup history and next-scan
 user additions. Read docs/checkpoints/08-discovery.md and docs/DISCOVERY.md.
 Step 08 provider verification is complete: NVDA, SPY and BRK.B metadata/D/M15
 identities passed on the iMac sandbox connection, 2026-10-01. Read
 docs/checkpoints/08a-webull-symbols.md and docs/evidence/step08-metadata-imac.md.
-Step 09 is next, awaiting Taz’s continuation. Earlier follow-up descriptions below retain historical status.
+Step 09 implementation is in progress: earnings/catalyst gates and a reviewed
+evidence adapter pass 670 strict tests on Python 3.12/3.14; Webull calendar/income mapping
+still needs the iMac observation probe. Read docs/checkpoints/09-earnings.md
+and docs/EARNINGS_EVIDENCE.md. Do not promote raw provider payloads to qualification. Earlier follow-up descriptions below retain historical status.
 Step 06 adds bounded exchange-calendar timing, completed-bar checks and explicit
 provenance; live Webull semantic acceptance remains Step 20. Taz authorized pushing
 verified checkpoints to the dedicated repair branch, without an implicit merge.

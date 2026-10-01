@@ -277,7 +277,7 @@ def growth_group(card: Card, eps_growth: float | None, sales_growth: float | Non
     groups trade the same size with the same rules; only the tag differs.
     Missing numbers fail the gate (fail closed).
     """
-    best = max((g for g in (eps_growth, sales_growth) if g is not None), default=None)
+    best = max((g for g in (eps_growth, sales_growth) if g is not None and math.isfinite(g)), default=None)
     if best is None or best < card.p("min_growth"):
         return None
     return "50%+" if best >= card.p("strong_growth") else "25-50%"

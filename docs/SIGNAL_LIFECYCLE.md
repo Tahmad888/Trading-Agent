@@ -76,3 +76,11 @@ never replace it with a blank database to resume automatically.
 For rollback, stop the runner, preserve signals.sqlite, revert scanner/store changes
 together and rebuild the next-session armed list. A leftover legacy JSON file may
 be outdated. This development checkpoint did not start any runner.
+
+## Step 09 fundamental qualification
+
+The store's `eligible` field remains technical lifecycle state. Scanner trigger
+output adds separate fundamental qualification; `revalidate_signal` enforces
+required earnings/catalyst gates and records the evaluation in
+`earnings-reviews.jsonl`. Persisted chart eligibility is not a substitute for this
+fresh check. See `EARNINGS_EVIDENCE.md`; no approval/order is granted here.

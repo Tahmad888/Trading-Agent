@@ -49,6 +49,7 @@ from desk.data_basis import price_basis, volume_basis
 from desk.signal_state import SignalStore, SignalStateError, restore_signal
 from desk.security import securities
 from desk.symbols import canonical_symbol
+from desk.earnings import qualify, configured_source as earnings_source
 from desk.playbook.cards import CARDS, INDEX_ETFS
 from desk.playbook.filters import GateResult, MarketSize, market_filter, trend_template
 from desk.playbook.triggers import Context, Signal, connors_rsi2, episodic_pivot, minimum_history, scan
@@ -133,6 +134,7 @@ class ScanRecord:
     skipped: dict[str, str] = field(default_factory=dict)
     error: str | None = None
     discovery: dict = field(default_factory=dict)
+    qualification: dict = field(default_factory=dict)
 
 
 def _sig(s: Signal, **extra) -> dict:
@@ -145,6 +147,12 @@ def _event_signal(sig: Signal, event: dict) -> dict:
     return _sig(sig, event_id=event["id"], trigger_at=event["trigger_at"],
                 observed_at=event["observed_at"], expires_at=event["expires_at"],
                 valid_until=event["valid_until"], entry_level=event["entry_level"], why=event["reason"])
+
+
+def _qualified_event(source, sig, event, now):
+    result = qualify(source, sig, now, trigger_at=event["trigger_at"])
+    return {**_event_signal(sig, event), "fundamentals": result,
+            "qualified_for_analysis": result["status"] in {"QUALIFIED", "NOT_REQUIRED"}}
 
 
 def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, decision_clock: Callable[[], datetime] | None = None,
@@ -199,6 +207,7 @@ def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, de
         except BarDataError as e:
             rec.skipped[sym] = str(e)
     rec.armed = [_sig(s) for s in armed]
+    rec.qualification = {f"{s.symbol}/{s.setup_id}": qualify(source, s, now) for s in armed}
     rec.discovery["prepared"] = sorted(s for s in watchlist if s in feats)
     return rec, armed
 
@@ -357,7 +366,7 @@ def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime, *, 
         try:
             if store:
                 events = observe_signal(store, sig, bars[sig.symbol], now)
-                rec.triggered.extend(_event_signal(sig, e) for e in events)
+                rec.triggered.extend(_qualified_event(source, sig, e, now) for e in events)
                 continue
             # Stateless diagnostic only; run() always supplies the durable store.
             hit, level, why = entry_hit(sig, bars[sig.symbol], now)
@@ -367,7 +376,9 @@ def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime, *, 
                 store.suspend(sig, clock(now).date(), str(e))
             continue
         if hit:
-            rec.triggered.append(_sig(sig, entry_level=round(level, 2), why=why))
+            rec.triggered.append(_sig(sig, entry_level=round(level, 2), why=why,
+                fundamentals={"status": "PENDING_EVIDENCE", "reasons": ["stateless diagnostic has no durable trigger time"]},
+                qualified_for_analysis=False))
     return rec
 
 
@@ -480,7 +491,7 @@ def rsi2_estimate(source: BarSource, watchlist: Sequence[str], market: MarketSiz
                 out.append(sig)
                 if store is not None and triggered is not None:
                     for e in observe_signal(store, sig, intraday[sym], now):
-                        triggered.append(_event_signal(sig, e))
+                        triggered.append(_qualified_event(source, sig, e, now))
         except BarDataError as exc:
             skipped[sym] = str(exc)
     return out
@@ -501,6 +512,10 @@ class ScanLog:
     def write(self, rec: ScanRecord) -> None:
         with self.path.open("a") as fh:
             fh.write(json.dumps(asdict(rec), default=str) + "\n")
+
+    def write_qualification(self, event_id, result):
+        with (self.root / "earnings-reviews.jsonl").open("a") as fh:
+            fh.write(json.dumps({"event_id": event_id, **result}, allow_nan=False) + "\n")
 
     def records(self) -> list[dict]:
         if not self.path.exists():
@@ -675,6 +690,10 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
         rec = ScanRecord(kind, now.isoformat(), None, error=f"{type(e).__name__}: {e}")
         if kind == "leader":
             log.build_status(now, "FAILED", {"build": rec.error})
+    for payload in rec.armed:
+        key = f"{payload['symbol']}/{payload['setup_id']}"
+        if key not in rec.qualification:
+            rec.qualification[key] = qualify(source, restore_signal(payload), clock(rec.at))
     rec.discovery.setdefault("watchlist_build", log.watchlist_status(now))
     rec.slot = slot.isoformat()
     log.write(rec)
@@ -688,7 +707,8 @@ def revalidate_signal(source: BarSource, log: ScanLog, event_id: str, now: datet
 
     The future broker/review adapter supplies a trusted current underlying quote.
     Price, stop and chase checks are symmetric. This does not replace risk sizing,
-    earnings/catalyst gates, quote identity validation by the broker, or approval.
+    quote identity validation by the broker, or approval. Required earnings/catalyst
+    gates are reevaluated here from current evidence with the original trigger cutoff.
     """
     import math
     from desk.risk import RiskLimits
@@ -741,7 +761,12 @@ def revalidate_signal(source: BarSource, log: ScanLog, event_id: str, now: datet
                 CARDS[sig.setup_id].p("max_chase") if "max_chase" in CARDS[sig.setup_id].params else float("inf"))
     if moved > chase + 1e-12:
         reasons.append("price exceeds the existing chase limit")
+    fundamentals = qualify(source, sig, checked, trigger_at=event["trigger_at"])
+    log.write_qualification(event_id, fundamentals)
+    if fundamentals["required"] and fundamentals["status"] != "QUALIFIED":
+        reasons.extend(fundamentals["reasons"] or ["required earnings/catalyst evidence not qualified"])
     return {"event_id": event_id, "eligible": not reasons, "reasons": reasons,
+            "fundamentals": fundamentals,
             "checked_at": clock(checked).isoformat(), "card_version": event["card_version"],
             "expires_at": event["expires_at"], "purpose": "signal prerequisite only; not approval or order"}
 
@@ -755,7 +780,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         from desk.action_source import configured_source
-        source: BarSource = configured_source(WebullData.from_env(), os.environ)
+        source: BarSource = earnings_source(configured_source(WebullData.from_env(), os.environ), os.environ)
     except BarDataError as e:
         why = str(e)
 
