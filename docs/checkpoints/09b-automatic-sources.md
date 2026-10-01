@@ -124,3 +124,11 @@ here. Do not guess a production normalizer for an unseen income/alert payload.
 This is completion of the collector implementation, not source acceptance or
 Step 09. Source collection result is needed to choose/verify normalization; items
 2–6 are still pending, including fallback choice if the actual host also fails.
+
+## Follow-up 09c
+
+The iMac source report subsequently confirmed SEC access and populated Webull
+calendar/alert responses for all three companies; income was empty. See
+`09c-source-normalization.md` for the eight researched interpretation repairs,
+new mapper and actual-host dependency. Earlier source-access stopping statements
+above are historical. Complete Step 09 exit criteria remain open.

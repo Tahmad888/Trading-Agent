@@ -16,6 +16,11 @@ from desk.webull import WebullData, EARNINGS_PATH, INCOME_PATH, FINANCIAL_ALERT_
 
 WEBULL_ROUTES = (("financial_alert", FINANCIAL_ALERT_PATH), ("earnings_calendar", EARNINGS_PATH),
                  ("quarterly_income", INCOME_PATH))
+EPS_CONCEPTS = ("EarningsPerShareDiluted", "EarningsPerShareBasic")
+REVENUE_CONCEPTS = ("Revenues", "SalesRevenueNet",
+                    "RevenueFromContractWithCustomerExcludingAssessedTax",
+                    "RevenueFromContractWithCustomerIncludingAssessedTax")
+FINANCIAL_FORMS = {"10-Q", "10-Q/A", "10-K", "10-K/A", "8-K", "8-K/A", "20-F", "20-F/A", "6-K"}
 
 
 def safe_json(value, secrets=()):
@@ -55,16 +60,18 @@ def sec_summary(kind, data):
         lengths = {len(recent[k]) for k in keys if isinstance(recent.get(k), list)}
         if len(lengths) > 1:
             raise SecError("FILINGS_COLUMNS_MISMATCH")
+        financial = [i for i, form in enumerate(recent.get("form", [])) if form in FINANCIAL_FORMS]
         return {"name": data.get("name"), "tickers": data["tickers"],
                 "recent_rows": len(recent["accessionNumber"]),
+                "financial_rows": len(financial),
+                "financial_sample": [{k: recent[k][i] for k in keys if isinstance(recent.get(k), list)}
+                                     for i in financial[:12]],
                 "sample": {k: recent[k][:12] for k in keys if isinstance(recent.get(k), list)}}
     facts = data["facts"]
     gaap = facts.get("us-gaap", {})
     if not isinstance(gaap, dict):
         raise SecError("FACTS_SCHEMA_UNAVAILABLE")
-    names = [k for k in gaap if "EarningsPerShare" in k or k in {
-        "Revenues", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax",
-        "RevenueFromContractWithCustomerIncludingAssessedTax"}]
+    names = [k for k in (*EPS_CONCEPTS, *REVENUE_CONCEPTS) if k in gaap]
     concepts = {}
     for name in names:
         units = gaap[name].get("units", {})

@@ -25,13 +25,14 @@ class Published(Record):
     source_ref: Text
     published_at: AwareDatetime | None = None
     published_on: date | None = None
+    first_observed_at: AwareDatetime | None = None
     received_at: AwareDatetime
 
     @model_validator(mode="after")
     def time_order(self):
-        if (self.published_at is None) == (self.published_on is None):
-            raise ValueError("provide exactly one publication timestamp or date")
-        earliest = self.published_at or datetime.combine(self.published_on, time(), timezone(timedelta(hours=14)))
+        if sum(v is not None for v in (self.published_at, self.published_on, self.first_observed_at)) != 1:
+            raise ValueError("provide exactly one publication timestamp/date or first observation")
+        earliest = self.published_at or self.first_observed_at or datetime.combine(self.published_on, time(), timezone(timedelta(hours=14)))
         if self.received_at < earliest:
             raise ValueError("receipt precedes possible publication")
         return self
@@ -40,6 +41,8 @@ class Published(Record):
     def known_published_by(self):
         if self.published_at is not None:
             return self.published_at
+        if self.first_observed_at is not None:
+            return self.first_observed_at  # availability bound, not a claimed publication time
         # Date-only evidence: latest possible local day end, or earlier actual receipt.
         # This is an availability upper bound, NOT a claimed exact publication time.
         end = datetime.combine(self.published_on + timedelta(days=1), time(), timezone(timedelta(hours=-12)))
@@ -76,7 +79,7 @@ class Quarter(Published):
     @model_validator(mode="after")
     def actual_period(self):
         publication_day = self.published_at.date() if self.published_at else self.published_on
-        if not self.period_start < self.period_end < publication_day:
+        if publication_day is None or not self.period_start < self.period_end < publication_day:
             raise ValueError("reported quarter must end before publication")
         if self.eps and (self.eps.unit != "currency/share" or not self.eps.share_basis or self.eps.definition not in {"diluted_eps", "basic_eps"}):
             raise ValueError("EPS requires per-share units and explicit share basis")
@@ -95,9 +98,25 @@ class Catalyst(Published):
 
 class EarningsDate(Published):
     fiscal_period: Text
-    report_date: date
+    report_date: date | None = None
+    range_start: date | None = None
+    range_end: date | None = None
     confidence: Literal["estimated", "confirmed"]
     time_window: Literal["before_open", "after_close", "unknown"] = "unknown"
+
+    @model_validator(mode="after")
+    def date_precision(self):
+        if self.report_date is not None:
+            if self.range_start is not None or self.range_end is not None:
+                raise ValueError("use an exact date or an estimated range")
+        elif (self.range_start is None or self.range_end is None
+              or self.range_start > self.range_end or self.confidence != "estimated"):
+            raise ValueError("ordered date range must remain estimated")
+        return self
+
+    @property
+    def bounds(self):
+        return (self.report_date, self.report_date) if self.report_date else (self.range_start, self.range_end)
 
 
 class EarningsEvidence(Record):
@@ -113,6 +132,7 @@ class EarningsEvidence(Record):
     period_comparability_ref: Text | None = None  # required if quarter durations differ
     catalysts: tuple[Catalyst, ...] = ()
     calendar: tuple[EarningsDate, ...] = ()
+    calendar_source_issues: tuple[Text, ...] = ()
 
     @model_validator(mode="after")
     def reviewed_window(self):
@@ -138,21 +158,37 @@ def metric_growth(current, prior):
 
 def next_earnings(evidence, at):
     known = [r for r in evidence.calendar if r.known_published_by <= at and r.received_at <= at]
-    upcoming = {r.fiscal_period for r in known if r.report_date >= clock(at).date()}
+    upcoming = {r.fiscal_period for r in known if r.bounds[1] >= clock(at).date()}
     eligible = [r for r in known if r.fiscal_period in upcoming]
     if not eligible:
+        if evidence.calendar_source_issues:
+            return {"status": "UNAVAILABLE", "reason": "calendar source incomplete",
+                    "source_issues": list(evidence.calendar_source_issues)}
         return {"status": "UNKNOWN", "reason": "no current supported future earnings date"}
     # Conflicting dates for a fiscal period cannot be resolved by choosing a convenient source.
-    for period in {r.fiscal_period for r in eligible}:
+    events = []
+    for period in sorted({r.fiscal_period for r in eligible}):
         claims = [r for r in eligible if r.fiscal_period == period]
-        if len({r.report_date for r in claims}) > 1 or len({r.time_window for r in claims if r.time_window != "unknown"}) > 1:
+        start, end = max(r.bounds[0] for r in claims), min(r.bounds[1] for r in claims)
+        if start > end or len({r.time_window for r in claims if r.time_window != "unknown"}) > 1:
             return {"status": "CONFLICT", "fiscal_period": period,
                     "source_refs": [r.source_ref for r in claims]}
-    day = min(r.report_date for r in eligible)
-    claims = [r for r in eligible if r.report_date == day]
-    return {"status": "CONFIRMED" if any(r.confidence == "confirmed" for r in claims) else "ESTIMATED",
-            "date": day.isoformat(), "time_windows": sorted({r.time_window for r in claims}),
-            "source_refs": [r.source_ref for r in claims]}
+        events.append((start, end, period, claims))
+    start, end, period, claims = min(events, key=lambda r: (r[0], r[2]))
+    result = {"status": "CONFIRMED" if any(r.confidence == "confirmed" for r in claims) else "ESTIMATED",
+              "fiscal_period": period, "time_windows": sorted({r.time_window for r in claims}),
+              "source_refs": [r.source_ref for r in claims]}
+    if evidence.calendar_source_issues:
+        result.update(coverage="PARTIAL", source_issues=list(evidence.calendar_source_issues))
+    # Preserve every source interval; an intersection is not issuer confirmation.
+    if all(r.report_date is not None for r in claims):
+        result["date"] = start.isoformat()
+    else:
+        result.update(range_start=start.isoformat(), range_end=end.isoformat(),
+                      claims=[r.model_dump(mode="json") for r in claims])
+        if any(r.report_date is not None for r in claims):
+            result["date"] = start.isoformat()
+    return result
 
 
 def evaluate(setup_id, symbol, security_id, evidence, at, *, trigger_at=None):

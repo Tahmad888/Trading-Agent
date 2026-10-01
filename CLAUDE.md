@@ -25,8 +25,12 @@ Step 09 is REOPENED / IN PROGRESS. Earlier closure after 688 passing tests and t
 NVDA iMac replay was premature: automatic reported results, upcoming dates,
 catalyst retrieval/review, refresh/integration and actual-host acceptance remain.
 Read docs/checkpoints/09b-automatic-sources.md for research and exit criteria.
-The multi-company source collector passes 715 strict tests on both local Python
-versions; actual-host Webull/SEC observations are pending.
+The multi-company source collector passed 715 strict tests; the iMac report
+confirmed SEC access and Webull alert/calendar data for NVDA/AAPL/MSFT, with
+empty Webull income. Follow-up 09c implements the eight interpretation repairs;
+read docs/checkpoints/09c-source-normalization.md and docs/EARNINGS_NORMALIZATION.md.
+Full-archive actual-host mapping remains to be checked; source access is not
+automatic coverage or complete Step 09 acceptance.
 Do not call a source probe or one reviewed file complete automatic coverage.
 Step 10 has not started. Earlier descriptions retain historical status.
 Step 06 adds bounded exchange-calendar timing, completed-bar checks and explicit
