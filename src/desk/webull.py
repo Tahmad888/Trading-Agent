@@ -2,8 +2,8 @@
 
 Blueprint v2.3/v2.4 step 3, serving the watch and analyze steps. Plain HTTPS
 with Webull OpenAPI's HMAC-SHA1 request signing, so no SDK is needed. Only
-market-data endpoints are here; this module has no order, account or trading
-calls, and none may be added (CLAUDE.md: Webull is market data only).
+market data and read-only security reference lookups are here. No order or account
+operations are allowed (CLAUDE.md: Webull is market data only).
 
 Keys come from environment variables only (names in .env.example):
 WEBULL_APP_KEY, WEBULL_APP_SECRET, and WEBULL_ACCESS_TOKEN when the app has
@@ -52,6 +52,7 @@ DISPLAY_ACTIONS_PATH = "/market-data/instruments/stocks/corporate-actions/list"
 # Rankings, top 200 each, not paginated (Sourced: webull-openapi-python-sdk 3.0.2, screener requests v2).
 GAINERS_PATH = "/market-data/screeners/gainers-losers/list"
 ACTIVES_PATH = "/market-data/screeners/top-actives/list"
+INSTRUMENTS_PATH = "/trading/instruments/stocks/profiles/list"  # GET reference data only
 GAINER_PERIODS = frozenset({"PRE_MARKET", "AFTER_MARKET", "MIN_3", "MIN_5", "DAY_1", "DAY_5",
                             "MONTH_1", "MONTH_3", "WEEK_52"})
 ACTIVE_KINDS = frozenset({"VOLUME", "RELATIVE_VOLUME_10D", "TURNOVER", "TURNOVER_RATE", "AMPLITUDE"})
@@ -132,6 +133,7 @@ class WebullData:
         self._bar_profile, self._bar_timestamp_unit = bar_profile, bar_timestamp_unit
         self._volume_profile = volume_profile
         self._last_call: dict[str, float] = {}
+        self._security_cache: dict[str, tuple[float, dict]] = {}
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ, **kw) -> WebullData:
@@ -303,6 +305,43 @@ class WebullData:
         if missing:
             raise WebullError(f"no bars for {missing}")
         return out
+
+    def security_metadata(self, symbols: Sequence[str]) -> list[dict]:
+        """Read-only instrument lookup; five-minute in-process cache, no option gate.
+
+        Sourced: retail instrument-list docs and official SDK 3.0.2 request v3.
+        Explicit-symbol pagination is followed without silently accepting truncation.
+        """
+        names = list(dict.fromkeys(symbols))
+        if not names or len(names) > 100 or any(not isinstance(n, str) or not n for n in names):
+            raise WebullError("instrument lookup requires 1..100 symbols")
+        current = time.monotonic()
+        needed = [n for n in names if n not in self._security_cache or current - self._security_cache[n][0] >= 300]
+        received = []
+        cursor, seen = None, set()
+        if needed:
+            while True:
+                query = {"symbols": ",".join(needed), "category": "US_STOCK"}
+                if cursor:
+                    query["pagination_key"] = cursor
+                reply = self._call("GET", INSTRUMENTS_PATH, query)
+                rows = reply.get("data") if isinstance(reply, dict) else reply
+                if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                    raise WebullError("unexpected instrument reference response")
+                received.extend({**row, "observed_at": self._clock().isoformat()} for row in rows)
+                cursor = reply.get("pagination_key") if isinstance(reply, dict) else None
+                if not cursor:
+                    break
+                if not isinstance(cursor, str) or cursor in seen or len(seen) >= 100:
+                    raise WebullError("invalid instrument pagination")
+                seen.add(cursor)
+            # Only cache unambiguous identities; callers validate every row's fields.
+            unambiguous = all(row.get("symbol") in needed for row in received) and len({row.get("symbol") for row in received}) == len(received)
+            for name in needed if unambiguous else []:
+                matches = [row for row in received if row.get("symbol") == name]
+                if len(matches) == 1:
+                    self._security_cache[name] = (time.monotonic(), matches[0])
+        return received + [self._security_cache[n][1] for n in names if n not in needed]
 
     def snapshot(self, symbols: Sequence[str], *, category: str) -> list[dict]:
         reply = self._call("GET", SNAPSHOT_PATH, {"symbols": ",".join(symbols), "category": category,

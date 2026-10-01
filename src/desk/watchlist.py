@@ -3,22 +3,23 @@
 Blueprint v2.4 section 3, step 4; serves the watch step. No fixed favourites
 list (Taz, 29 Sep 2026): the list is the weekly leaders that pass the Trend
 Template, the day's news and earnings movers, SPY, QQQ and IWM always, and any
-ticker Taz adds. Taz can remove anything on Fridays.
+ticker Taz adds. User changes apply on the next scheduled scan; core ETFs remain.
 
-Plan B (blueprint section 13): if pulling ~1,000 names' daily bars a week hits
-data limits, the leader scan ranks only the S&P 500 and Nasdaq-100 members;
-if that fails too, it pauses, the Friday note says so, and last week's list
-keeps running.
+Plan B: a partial or failed weekly build preserves the previous list with an
+explicit status and age. Core and user names still require independently valid
+metadata and bars. A constituent-universe fallback is not implemented.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+import math
 
 import pandas as pd
 
 from desk.bars import BarDataError
+from desk.security import securities
 from desk.data_basis import volume_basis
 from desk.indicators import daily_features
 from desk.playbook.filters import trend_template
@@ -29,6 +30,7 @@ ALWAYS = ("SPY", "QQQ", "IWM")
 UNIVERSE_LISTS = (("gainers", "DAY_5"), ("gainers", "MONTH_1"), ("gainers", "MONTH_3"),
                   ("gainers", "WEEK_52"), ("most_active", "TURNOVER"), ("most_active", "VOLUME"))
 MOVER_LISTS = (("gainers", "PRE_MARKET"), ("gainers", "DAY_1"), ("most_active", "RELATIVE_VOLUME_10D"))
+BEARISH_LISTS = (("losers", "DAY_1"), ("losers", "DAY_5"), ("losers", "MONTH_1"))
 MIN_GAP = 0.10                   # [Sourced] Kullamägi: episodic pivots gap 10% or more
 MIN_PRICE = 10.0                 # [Sourced] blueprint section 3: price above $10
 MIN_AVG_VOLUME = 1_000_000       # [Sourced] blueprint section 3: over 1 million shares a day
@@ -99,21 +101,23 @@ def leader_scan(bars: Mapping[str, pd.DataFrame], spy_close: pd.Series,
 
 
 def build_watchlist(leaders: Iterable[str], movers: Iterable[str] = (), added: Iterable[str] = (),
-                    removed: Iterable[str] = ()) -> dict[str, list[str]]:
+                    removed: Iterable[str] = (), *, bearish: Iterable[str] = ()) -> dict[str, list[str]]:
     """Symbol -> where it came from. Taz's removals win over every source except SPY, QQQ and IWM."""
     out: dict[str, list[str]] = {}
-    gone = {s.upper() for s in removed}
-    for source, names in (("always", ALWAYS), ("leader scan", leaders), ("mover", movers), ("Taz", added)):
+    gone = {s.upper().strip() for s in removed}
+    for source, names in (("always", ALWAYS), ("leader scan", leaders), ("mover", movers), ("bearish", bearish), ("Taz", added)):
         for s in names:
             s = s.upper().strip()
-            if s and (source in ("always", "Taz") or s not in gone):
-                out.setdefault(s, []).append(source)
+            if s and (source == "always" or s not in gone):
+                if source not in out.setdefault(s, []):
+                    out[s].append(source)
     return out
 
 
 def _num(row: Mapping, key: str) -> float:
     try:
-        return float(row.get(key) or 0)
+        value = float(row.get(key) or 0)
+        return value if math.isfinite(value) else 0.0
     except (TypeError, ValueError):
         return 0.0
 
@@ -126,16 +130,29 @@ def _rankings(source, lists, skipped: dict[str, str]) -> list[dict]:
     rows = []
     for kind, arg in lists:
         try:
-            rows += getattr(source, kind)(arg)
-        except BarDataError as e:                    # one list failing doesn't stop the others; it's logged
+            result = source.gainers(arg, losers=True) if kind == "losers" else getattr(source, kind)(arg)
+            if not isinstance(result, list) or any(not isinstance(r, Mapping) or not isinstance(r.get("symbol"), str) or not r["symbol"].strip() for r in result):
+                raise BarDataError("malformed ranking rows")
+            for row in result:
+                try:
+                    if _price(row) <= 0:
+                        raise ValueError("missing positive price")
+                    for key in ("price", "close", "change_ratio", "relative_volume_10d"):
+                        if row.get(key) is not None and not math.isfinite(float(row[key])):
+                            raise ValueError("nonfinite ranking field")
+                    rows.append(row)
+                except (TypeError, ValueError):
+                    skipped[f"{kind}:{arg}:{row['symbol']}"] = "malformed numeric ranking data"
+        except (BarDataError, AttributeError) as e:                    # one list failing doesn't stop the others; it's logged
             skipped[f"{kind}:{arg}"] = str(e)
     return rows
 
 
 def universe(source, skipped: dict[str, str]) -> list[str]:
-    """Names for the Friday leader scan: Webull's top lists, over $10, common-stock tickers only."""
+    """Friday candidate universe: top lists over $10 with supported security metadata."""
     rows = _rankings(source, UNIVERSE_LISTS, skipped)
-    return sorted({r["symbol"] for r in rows if _price(r) > MIN_PRICE and r["symbol"].isalpha()})
+    names = sorted({r["symbol"].strip().upper() for r in rows if _price(r) > MIN_PRICE})
+    return sorted(securities(source, names, skipped))
 
 
 def movers(source, skipped: dict[str, str]) -> list[str]:
@@ -148,6 +165,41 @@ def movers(source, skipped: dict[str, str]) -> list[str]:
         for r in _rankings(source, [(kind, arg)], skipped):
             big = (_num(r, "relative_volume_10d") >= 2.0 if arg == "RELATIVE_VOLUME_10D"
                    else _num(r, "change_ratio") >= MIN_GAP)
-            if big and _price(r) > MIN_PRICE and r["symbol"].isalpha():
-                out.add(r["symbol"])
-    return sorted(out)
+            if big and _price(r) > MIN_PRICE:
+                out.add(r["symbol"].strip().upper())
+    return sorted(securities(source, sorted(out), skipped))
+
+
+def bearish_candidates(source, skipped: dict[str, str]) -> list[str]:
+    """Declining liquid-universe candidates; setup rules determine bearish eligibility.
+
+    Source selection is a coverage assumption, not a new short-entry threshold.
+    Optionability and borrow availability are deliberately not discovery filters.
+    """
+    rows = _rankings(source, BEARISH_LISTS, skipped)
+    names = sorted({r["symbol"].strip().upper() for r in rows
+                    if _price(r) > MIN_PRICE and _num(r, "change_ratio") < 0})
+    return sorted(securities(source, names, skipped))
+
+
+def overlay_picks(watchlist, picks):
+    """Apply current operator changes every run, preserving independent source tags."""
+    if not isinstance(picks, Mapping) or any(
+        not isinstance(picks.get(k, []), list) or any(not isinstance(s, str) or not s.strip() for s in picks.get(k, []))
+        for k in ("add", "remove")
+    ):
+        raise BarDataError("user picks must contain add/remove lists of ticker strings")
+    if isinstance(watchlist, str):
+        raise BarDataError("watchlist must be a symbol list or a source mapping")
+    removed = {s.strip().upper() for s in picks.get("remove", [])}
+    out = {}
+    entries = watchlist.items() if isinstance(watchlist, Mapping) else ((s, ["watchlist"]) for s in watchlist)
+    for symbol, origins in entries:
+        if not isinstance(symbol, str) or not isinstance(origins, (list, tuple)) or any(not isinstance(tag, str) for tag in origins):
+            raise BarDataError("malformed watchlist symbol/source mapping")
+        symbol = symbol.strip().upper()
+        if symbol and (symbol not in removed or symbol in ALWAYS):
+            out[symbol] = list(dict.fromkeys(origins))
+    for symbol, origins in build_watchlist([], added=picks.get("add", []), removed=removed).items():
+        out[symbol] = list(dict.fromkeys(out.get(symbol, []) + origins))
+    return out

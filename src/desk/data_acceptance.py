@@ -15,9 +15,11 @@ from desk.bars import BarDataError
 from desk.calendar import clock, session, trading_day, latest_closed_session
 from desk.data_basis import compatible_volume, price_basis, volume_basis
 from desk.indicators import daily_features
-from desk.scanner import category
 from desk.webull import WebullData
 
+
+# This diagnostic is explicitly bounded to the reviewed Step 06 identities.
+ACCEPTANCE_CATEGORIES = {"NVDA": "US_STOCK", "SPY": "US_ETF"}
 
 def check(source, symbols, *, clock_fn=lambda: datetime.now(timezone.utc)):
     result = {"purpose": "read-only integrated data acceptance; no signal/order activation", "checks": []}
@@ -25,7 +27,9 @@ def check(source, symbols, *, clock_fn=lambda: datetime.now(timezone.utc)):
         item = {"symbol": symbol, "stages": {}}
         stage = "fetch_daily"
         try:
-            daily = source.bars([symbol], category=category(symbol), timespan="D", count=1000)[symbol]
+            if symbol not in ACCEPTANCE_CATEGORIES:
+                raise BarDataError("Symbol outside reviewed acceptance scope")
+            daily = source.bars([symbol], category=ACCEPTANCE_CATEGORIES[symbol], timespan="D", count=1000)[symbol]
             stage = "completed_daily_and_price_basis"
             now = clock_fn()
             d = completed_daily(daily, now)
@@ -53,7 +57,7 @@ def check(source, symbols, *, clock_fn=lambda: datetime.now(timezone.utc)):
             in_session = trading_day(stamp.date()) and session(stamp.date())[0] <= stamp < session(stamp.date())[1]
             day = stamp.date() if in_session else latest_closed_session(now)
             opened, closed = session(day)
-            m = source.bars([symbol], category=category(symbol), timespan='M15', count=40,
+            m = source.bars([symbol], category=ACCEPTANCE_CATEGORIES[symbol], timespan='M15', count=40,
                 sessions='RTH', start_time=int(opened.timestamp()*1000),
                 end_time=int((closed.timestamp()-1)*1000))[symbol]
             stage = 'completed_minutes_and_price_compatibility'

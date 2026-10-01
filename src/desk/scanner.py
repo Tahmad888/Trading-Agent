@@ -47,9 +47,10 @@ from desk.bar_contract import (completed_daily, completed_intraday, provenance,
 from desk.indicators import daily_features
 from desk.data_basis import price_basis, volume_basis
 from desk.signal_state import SignalStore, SignalStateError, restore_signal
+from desk.security import securities
 from desk.playbook.cards import CARDS, INDEX_ETFS
-from desk.playbook.filters import MarketSize, market_filter, trend_template
-from desk.playbook.triggers import Context, Signal, connors_rsi2, episodic_pivot, scan
+from desk.playbook.filters import GateResult, MarketSize, market_filter, trend_template
+from desk.playbook.triggers import Context, Signal, connors_rsi2, episodic_pivot, minimum_history, scan
 
 ET = ZoneInfo("America/New_York")
 DAILY_BARS = 1000                 # rule 6: warm-up for the 200-day and the 52-week values
@@ -79,16 +80,13 @@ def scheduled_slots(d: date) -> list[datetime]:
     return slots
 
 
-def category(symbol: str) -> str:
-    return "US_ETF" if symbol in INDEX_ETFS else "US_STOCK"
-
-
 def fetch(source: BarSource, symbols: Sequence[str], timespan: str, count: int,
           skipped: dict[str, str]) -> dict[str, pd.DataFrame]:
     """Bars in batches of 20 per category. A name that fails is skipped and logged."""
     out: dict[str, pd.DataFrame] = {}
+    metadata = securities(source, symbols, skipped)
     for cat in ("US_ETF", "US_STOCK"):
-        names = [s for s in symbols if category(s) == cat]
+        names = [s for s in symbols if s in metadata and metadata[s].bar_category == cat]
         for i in range(0, len(names), 20):
             batch = names[i:i + 20]
             try:
@@ -103,6 +101,16 @@ def fetch(source: BarSource, symbols: Sequence[str], timespan: str, count: int,
                         out.update(source.bars([s], category=cat, timespan=timespan, count=count))
                     except BarDataError as e1:
                         skipped[s] = str(e1)
+    for symbol in list(out):
+        if symbol not in metadata:
+            out.pop(symbol)
+            continue
+        observed = out[symbol].attrs.get("provider_identity")
+        if observed and observed != {"symbol": symbol, "instrument_id": metadata[symbol].instrument_id}:
+            out.pop(symbol)
+            skipped[symbol] = "bar identity disagrees with security metadata"
+            continue
+        out[symbol].attrs["security_metadata"] = metadata[symbol].model_dump(mode="json")
     for symbol in symbols:
         if symbol not in out:
             skipped.setdefault(symbol, "no bars returned")
@@ -122,6 +130,7 @@ class ScanRecord:
     leaders: list[dict] = field(default_factory=list)
     skipped: dict[str, str] = field(default_factory=dict)
     error: str | None = None
+    discovery: dict = field(default_factory=dict)
 
 
 def _sig(s: Signal, **extra) -> dict:
@@ -136,7 +145,8 @@ def _event_signal(sig: Signal, event: dict) -> dict:
                 valid_until=event["valid_until"], entry_level=event["entry_level"], why=event["reason"])
 
 
-def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> tuple[ScanRecord, list[Signal]]:
+def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, decision_clock: Callable[[], datetime] | None = None,
+               preparing: bool = False) -> tuple[ScanRecord, list[Signal]]:
     rec = ScanRecord("close", now.astimezone(ET).isoformat(), None)
     symbols = sorted(set(watchlist) | {"SPY", "QQQ"})
     bars = fetch(source, symbols, "D", DAILY_BARS, rec.skipped)
@@ -148,18 +158,18 @@ def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, de
     feats: dict[str, pd.DataFrame] = {}
     for sym, df in bars.items():
         try:
-            if clock(now) < session(clock(now).date())[1]:
+            if not preparing and clock(now) < session(clock(now).date())[1]:
                 raise BarDataError("close scan requires a completed session")
             df = completed_daily(df, now)
             price_basis(df, now, symbol=sym)
-            require(df, min_bars=MIN_DAILY_BARS)
+            require(df, min_bars=200 if sym in {"SPY", "QQQ"} else 1)
             bars[sym] = df
             feats[sym] = daily_features(df)
         except BarDataError as e:
             rec.skipped[sym] = str(e)
     rec.scanned = len(feats)
     if "SPY" not in feats or "QQQ" not in feats:
-        rec.error = "no SPY or QQQ bars: nothing armed"
+        rec.error = "no SPY or QQQ bars: nothing armed" + ("; " + rec.skipped.get("SPY", rec.skipped.get("QQQ", "")) if rec.skipped else "")
         return rec, []
     try:
         size, why = market_filter(feats["SPY"], feats["QQQ"])
@@ -173,13 +183,20 @@ def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, de
         if sym not in feats:
             continue
         try:
-            gate = None if sym in INDEX_ETFS else trend_template(feats[sym], spy)
+            gate = None
+            if sym not in INDEX_ETFS:
+                try:
+                    gate = trend_template(feats[sym], spy)
+                except BarDataError as exc:
+                    gate = GateResult({"template history available": False})
+                    rec.skipped[f"{sym}/trend_template"] = str(exc)
             armed += [replace(sig, price_scale_id=provenance(bars[sym], "D").price_scale_id,
                               price_basis=price_basis(bars[sym], now, symbol=sym).model_dump(mode="json"))
                       for sig in scan(feats[sym], Context(sym, size, gate, spy), skipped=rec.skipped)]
         except BarDataError as e:
             rec.skipped[sym] = str(e)
     rec.armed = [_sig(s) for s in armed]
+    rec.discovery["prepared"] = sorted(s for s in watchlist if s in feats)
     return rec, armed
 
 
@@ -351,12 +368,13 @@ def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime, *, 
     return rec
 
 
-def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skipped: dict[str, str], *, decision_clock: Callable[[], datetime] | None = None) -> list[Signal]:
+def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skipped: dict[str, str], *, decision_clock: Callable[[], datetime] | None = None,
+                    candidates: Sequence[str] | None = None) -> list[Signal]:
     """At 10:00: this morning's movers checked for an episodic pivot, from the gap and the first 30 minutes."""
     from desk.watchlist import movers
 
     today = now.astimezone(ET).date()
-    names = movers(source, skipped)
+    names = movers(source, skipped) if candidates is None else list(candidates)
     daily = fetch(source, names, "D", DAILY_BARS, skipped)
     intraday = fetch(source, names, "M15", 40, skipped)
     now = decision_clock() if decision_clock else now
@@ -369,8 +387,8 @@ def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skippe
             d = completed_daily(d, now)
             m = completed_intraday(m, now)
             check_price_scale(price_basis(d, now, symbol=sym).model_dump(mode="json"), m, now, symbol=sym)
-            if len(m) < 2 or len(d) < MIN_DAILY_BARS:
-                raise BarDataError("not enough bars for the episodic pivot")
+            if len(m) < 2 or len(d) < minimum_history("5_qullamaggie_episodic_pivot"):
+                raise BarDataError(f"EP needs {minimum_history('5_qullamaggie_episodic_pivot')} completed daily bars and two completed M15 bars")
             volume_basis(m.iloc[:2])
             ctx = Context(sym, market, None, today_open=float(m["open"].iloc[0]),
                           early_volume=float(m["volume"].iloc[:2].sum()),
@@ -386,6 +404,14 @@ def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skippe
 
 
 def leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> ScanRecord:
+    rec = _leader_scan_job(source, log, now, decision_clock=decision_clock)
+    status = ("PARTIAL" if rec.scanned else "FAILED") if rec.error else "EMPTY" if not rec.leaders else "READY"
+    log.build_status(datetime.fromisoformat(rec.at), status, rec.skipped, success=not rec.error)
+    rec.discovery["watchlist_build"] = log.watchlist_status(datetime.fromisoformat(rec.at))
+    return rec
+
+
+def _leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> ScanRecord:
     """Fridays after the close: rank the universe and write next week's watchlist with Taz's picks."""
     from desk.watchlist import build_watchlist, leader_scan, universe
 
@@ -409,10 +435,12 @@ def leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *, decisio
         rec.error = "no valid completed SPY bars"
         return rec
     scan_ = leader_scan({s: b for s, b in clean.items() if s != "SPY"}, clean["SPY"]["close"])
+    failures = {k: v for k, v in rec.skipped.items() if not v.startswith("unsupported security type")}
+    failures.update({k: v for k, v in scan_.skipped.items() if v.startswith("bad data:") and "under a year" not in v})
     rec.skipped.update(scan_.skipped)
     rec.scanned = scan_.ranked
-    if not scan_.leaders:
-        rec.error = "no leaders found: last week's watchlist stays"
+    if failures:
+        rec.error = "incomplete watchlist preparation: previous list retained"
         return rec
     picks = log.picks()
     wl = build_watchlist([l.symbol for l in scan_.leaders], added=picks.get("add", []),
@@ -481,8 +509,52 @@ class ScanLog:
         p = self.root / "taz-picks.json"
         return json.loads(p.read_text()) if p.exists() else {}
 
+    def write_json(self, name: str, value) -> None:
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", dir=self.root, delete=False) as fh:
+            path = Path(fh.name)
+            try:
+                json.dump(value, fh, indent=1, allow_nan=False)
+                fh.flush()
+                os.fsync(fh.fileno())
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+        try:
+            path.replace(self.root / name)
+        finally:
+            path.unlink(missing_ok=True)
+
     def write_watchlist(self, wl: Mapping[str, list[str]]) -> None:
-        (self.root / "watchlist.json").write_text(json.dumps(wl, indent=1))
+        self.write_json("watchlist.json", wl)
+
+    def build_status(self, now, status, reasons, *, success=False) -> None:
+        old = self.watchlist_status(now)
+        self.write_json("watchlist-status.json", {
+            "attempted_at": clock(now).isoformat(), "status": status, "reasons": reasons,
+            "last_success_at": clock(now).isoformat() if success else old.get("last_success_at")})
+
+    def watchlist_status(self, now) -> dict:
+        p = self.root / "watchlist-status.json"
+        if not p.exists():
+            return {"status": "UNKNOWN", "stale": True, "last_success_at": None}
+        try:
+            state = json.loads(p.read_text())
+            if not isinstance(state, dict):
+                raise ValueError("invalid status")
+            stamp = state.get("last_success_at")
+            # Weekly freshness label; data still validates independently per scan.
+            state["stale"] = not stamp or not timedelta(0) <= clock(now) - clock(stamp) <= timedelta(days=7)
+            return state
+        except (ValueError, TypeError, BarDataError):
+            return {"status": "INVALID", "stale": True, "last_success_at": None}
+
+    def prepared_users(self, day, kind="daily") -> set[str]:
+        p = self.root / f"user-prepared-{kind}-{day}.json"
+        return set(json.loads(p.read_text())) if p.exists() else set()
+
+    def mark_prepared_users(self, day, names, kind="daily"):
+        self.write_json(f"user-prepared-{kind}-{day}.json", sorted(self.prepared_users(day, kind) | set(names)))
 
     def add_armed(self, day: date, market: MarketSize, sigs: Sequence[Signal]) -> None:
         self.load_armed(day)  # import a legacy candidate list once, if present
@@ -534,33 +606,73 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
         return None
     if any(r.get("slot") == slot.isoformat() and not r.get("error") for r in log.records()):
         return None                                   # this slot already ran
+    from desk.watchlist import ALWAYS, bearish_candidates, movers, overlay_picks
     closed = session(slot.date())[1]
     close_slot, leader_slot = closed + timedelta(minutes=10), closed + timedelta(minutes=40)
     try:
+        picks = log.picks()
+        watchlist = overlay_picks(watchlist, picks)
+        removed = {s.strip().upper() for s in picks.get("remove", [])} - set(ALWAYS)
+        log.signals.suspend_symbols(removed, "removed from current watchlist")
         if slot == leader_slot:
             rec = leader_scan_job(source, log, now, decision_clock=decision_clock)
         elif slot == close_slot:
-            rec, _ = close_scan(source, watchlist, now, decision_clock=decision_clock)
+            discovery_errors = {}
+            moving = movers(source, discovery_errors)
+            declining = bearish_candidates(source, discovery_errors)
+            sources = {s: list(tags) for s, tags in watchlist.items()}
+            for label, names in (("mover", moving), ("bearish", declining)):
+                for symbol in names:
+                    if symbol not in removed:
+                        sources.setdefault(symbol, []).append(label)
+            rec, _ = close_scan(source, sources, now, decision_clock=decision_clock)
+            rec.discovery.update(sources=sources, source_errors=discovery_errors,
+                                 status="PARTIAL" if discovery_errors else "READY")
             log.save_armed(next_trading_day(slot.date()), rec)
         else:
             market, armed = log.load_armed(slot.date())
+            armed = [s for s in armed if s.symbol not in removed]
+            users = {s for s, tags in watchlist.items() if "Taz" in tags}
+            pending = sorted(users - log.prepared_users(slot.date()))
+            preparation = None
+            user_new = []
+            if pending:
+                preparation, user_new = close_scan(source, pending, now, decision_clock=decision_clock, preparing=True)
+                if not preparation.error:
+                    market = MarketSize(preparation.market)
+                    log.add_armed(slot.date(), market, user_new)
+                    log.mark_prepared_users(slot.date(), preparation.discovery.get("prepared", []))
+                    armed += user_new
             new: list[Signal] = []
-            if slot.time() == EP_SCAN and market is not None:
+            ep_pending = users - log.prepared_users(slot.date(), "ep")
+            ep_due = (slot.time() == EP_SCAN or (ep_pending and slot.time() > EP_SCAN)) and market is not None
+            if ep_due:
                 skipped: dict[str, str] = {}
-                new = episodic_pivots(source, market, now, skipped, decision_clock=decision_clock)
+                candidates = sorted((set(movers(source, skipped)) if slot.time() == EP_SCAN else set()) | ep_pending)
+                candidates = [s for s in candidates if s not in removed]
+                new = episodic_pivots(source, market, now, skipped, decision_clock=decision_clock, candidates=candidates)
                 log.add_armed(slot.date(), market, new)
+                log.mark_prepared_users(slot.date(), ep_pending - set(skipped), "ep")
                 armed = [*armed, *new]
             rec = intraday_scan(source, armed, now, decision_clock=decision_clock, store=log.signals)
-            if slot.time() == EP_SCAN and market is not None:
+            if ep_due:
                 rec.skipped.update(skipped)
+                rec.discovery["ep_candidates"] = {"symbols": candidates, "errors": skipped}
+            if preparation:
+                rec.discovery["user_preparation"] = {"requested": pending, "error": preparation.error,
+                    "prepared": preparation.discovery.get("prepared", []), "skipped": preparation.skipped}
+            rec.discovery["sources"] = watchlist
             if slot == closed - timedelta(minutes=15) and market is not None:
                 new = rsi2_estimate(source, watchlist, market, now, rec.skipped,
                                     decision_clock=decision_clock, store=log.signals, triggered=rec.triggered)
-            rec.armed = [_sig(s) for s in new]
+            rec.armed = [_sig(s) for s in [*user_new, *new]]
     except Exception as e:                            # any failure is logged as a failed scan, never silent
         log.signals.suspend_all("scan failed; fresh validation required")
         kind = "leader" if slot == leader_slot else "close" if slot == close_slot else "intraday"
         rec = ScanRecord(kind, now.isoformat(), None, error=f"{type(e).__name__}: {e}")
+        if kind == "leader":
+            log.build_status(now, "FAILED", {"build": rec.error})
+    rec.discovery.setdefault("watchlist_build", log.watchlist_status(now))
     rec.slot = slot.isoformat()
     log.write(rec)
     return rec
@@ -579,6 +691,12 @@ def revalidate_signal(source: BarSource, log: ScanLog, event_id: str, now: datet
     from desk.risk import RiskLimits
 
     event = log.signals.get(event_id, now)
+    from desk.watchlist import ALWAYS
+    removed = {s.strip().upper() for s in log.picks().get("remove", [])} - set(ALWAYS)
+    if event["signal"]["symbol"] in removed:
+        log.signals.suspend_symbols(removed, "removed from current watchlist")
+        return {"event_id": event_id, "eligible": False, "reasons": ["removed from current watchlist"],
+                "checked_at": clock(now).isoformat(), "purpose": "signal prerequisite only; not approval or order"}
     sig = restore_signal(event["signal"])
     card = CARDS.get(sig.setup_id)
     if event["state"] != "triggered" or event["blocked"] or not card or card.fingerprint() != sig.setup_version:
@@ -639,11 +757,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         why = str(e)
 
         class NoKeys:                                 # the due scan is still logged, as failed
+            def security_metadata(self, symbols):
+                raise BarDataError(f"no Webull connection: {why}")
+
             def bars(self, *a, **k):
                 raise RuntimeError(f"no Webull connection: {why}")
         source = NoKeys()
     wl_path = Path(args.watchlist)
-    watchlist = list(json.loads(wl_path.read_text())) if wl_path.exists() else ["SPY", "QQQ", "IWM"]
+    watchlist = json.loads(wl_path.read_text()) if wl_path.exists() else ["SPY", "QQQ", "IWM"]
     rec = run(source, watchlist, ScanLog(Path(args.data_dir)), datetime.now(timezone.utc),
               decision_clock=lambda: datetime.now(timezone.utc))
     if rec is None:

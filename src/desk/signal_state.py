@@ -139,6 +139,11 @@ class SignalStore:
         with self._db() as db:
             db.execute("UPDATE candidates SET suspended=? WHERE id=?", (reason, candidate_id(sig, day)))
 
+    def suspend_symbols(self, symbols, reason):
+        with self._db() as db:
+            db.executemany("UPDATE candidates SET suspended=? WHERE symbol=? AND blocked IS NULL",
+                           [(reason, symbol) for symbol in symbols])
+
     def suspend_all(self, reason):
         with self._db() as db:
             db.execute("UPDATE candidates SET suspended=? WHERE blocked IS NULL", (reason,))

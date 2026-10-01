@@ -38,8 +38,13 @@ class Fake:
     def __init__(self, frames, fail=(), lists=None):
         self.frames, self.fail, self.calls, self.lists = frames, set(fail), [], lists or {}
 
-    def gainers(self, period):
-        return self.lists.get(period, [])
+    def security_metadata(self, symbols):
+        return [{"symbol": s, "instrument_id": f"fixture:{s}", "name": s, "currency": "USD",
+                 "category": "US_STOCK", "sub_category": "ETF" if s in sc.INDEX_ETFS else "COMMON_STOCK",
+                 "exchange_code": "TEST", "observed_at": "2026-09-29T00:00:00+00:00"} for s in symbols]
+
+    def gainers(self, period, *, losers=False):
+        return self.lists.get(("losers", period) if losers else period, [])
 
     def most_active(self, by="TURNOVER"):
         return self.lists.get(by, [])
@@ -138,7 +143,10 @@ def test_run_writes_one_line_per_slot_and_the_funnel_counts_it(tmp_path):
 
 
 def test_a_crash_is_logged_as_a_failed_scan(tmp_path):
-    class Broken:
+    class Broken(Fake):
+        def __init__(self):
+            super().__init__({})
+
         def bars(self, *a, **k):
             raise RuntimeError("boom")
     log = sc.ScanLog(tmp_path)
@@ -162,7 +170,7 @@ def test_friday_leader_scan_writes_the_watchlist(tmp_path):
              "TURNOVER": [{"symbol": "SPY", "price": "400"}, {"symbol": "BRK.B", "price": "480"}]}
     stale = sc.run(Fake(frames(), lists=lists), [], log, datetime(2026, 10, 2, 16, 41, tzinfo=ET))
     assert "no SPY bars for today" in stale.error        # Tuesday's bars on a Friday: nothing written
-    rec = sc.run(Fake(frames(date(2026, 10, 2)), lists=lists), [], log, datetime(2026, 10, 2, 16, 42, tzinfo=ET))
+    rec = sc.run(Fake({**frames(date(2026, 10, 2)), ("BRK.B", "D"): daily(np.full(len(UP), 100.0), end=date(2026, 10, 2))}, lists=lists), [], log, datetime(2026, 10, 2, 16, 42, tzinfo=ET))
     assert rec.kind == "leader" and not rec.error, rec.error
     assert [l["symbol"] for l in rec.leaders] == ["LEAD"]
     wl = json.loads((tmp_path / "watchlist.json").read_text())

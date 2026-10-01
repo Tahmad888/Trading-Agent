@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–07 complete. Step 06 includes scoped NVDA/SPY sandbox integration and iMac verification; Step 07 has 564 passing strict tests on both local Python versions. Step 08 is next and has not started. Earlier checkpoint paragraphs below retain their historical status; the closure result supersedes their pending items.
+Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–08 complete. Step 06 includes scoped NVDA/SPY sandbox integration and iMac verification. Step 08 has 599 passing strict tests on both local Python versions; live metadata endpoint access remains unverified. Step 09 is next and has not started. Earlier checkpoint paragraphs below retain their historical status; the closure result supersedes their pending items.
 
 Installation follow-up: [06a-resource-cleanup.md](checkpoints/06a-resource-cleanup.md)
 records the Python 3.14 iMac test failure, its verified cleanup fix, and the six
@@ -110,7 +110,7 @@ workflow. No agent has been dispatched by creating this plan.
 | [x] | 05 | Market/account gates and persistent risk state | Codex / Claude | Trusted setup eligibility; user-overridable account/market warnings; manual stop and exposure recover after restart; no count caps. |
 | [x] | 06 | Market-data timing, provenance and trading calendar | Codex / Claude | Timeframe-aware freshness/completion, session and corporate-action handling tested; live-only uncertainties explicitly separated. |
 | [x] | 07 | Persistent signal lifecycle | Codex / Claude | Unique events survive scans/restarts; stale or expired approval eligibility cannot persist; long/short rules and re-entry policy explicit. |
-| [ ] | 08 | Discovery and watchlist coverage | Claude / Codex | Leaders, movers, bearish candidates, ETFs and user additions reach appropriate setup checks; options do not gate stock discovery. |
+| [x] | 08 | Discovery and watchlist coverage | Codex / self-review | Leaders, movers, bearish candidates, ETFs and user additions reach appropriate setup checks; options do not gate stock discovery. |
 | [ ] | 09 | Earnings growth and catalyst evidence | Claude / Codex | Reported results separated from upcoming earnings; point-in-time growth/catalyst gates and unknown-data behavior tested. |
 | [ ] | 10 | Qullamaggie breakout and EP fidelity | Claude / Codex | Structural stops, completed entry ranges, growth/volume/chase gates and positive/negative chart examples agree with approved cards. |
 | [ ] | 11 | Instrument selection and executable exits | Codex / Claude | Shares/options compared on fresh executable inputs; whole-contract exits explicit; no automatic substitution of a full first-target exit. |
@@ -239,6 +239,10 @@ Acceptance: restart, missing bar, delayed approval, failed breakout, new eligibl
 duplicate scan and long/short symmetry. Plan B: retain history but suspend new eligibility.
 
 ### 08 — Discovery (watch)
+
+Completed 2026-10-01. Read `checkpoints/08-discovery.md` and `DISCOVERY.md`.
+599 strict tests pass on Python 3.12/3.14; provider metadata access is not inferred
+from synthetic tests. No runner activation.
 
 Depends on 06–07. Targets: `watchlist.py`, `scanner.py`, provider metadata and tests.
 Keep leadership, gap/momentum movers, declining/bearish candidates, core ETFs and

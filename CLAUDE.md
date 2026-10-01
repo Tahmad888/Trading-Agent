@@ -15,7 +15,10 @@ Current status: Step 06 is closed for the scoped NVDA/SPY sandbox checks and
 iMac verification; read docs/evidence/step06-integrated-results.md. Step 07 is
 complete: read docs/checkpoints/07-signal-lifecycle.md and docs/SIGNAL_LIFECYCLE.md.
 The scanner now persists signal lifecycle separately from approvals/orders, with
-564 strict tests passing on both local Python versions. Step 08 has not started. Earlier follow-up descriptions below retain historical status.
+599 strict tests passing on both local Python versions after Step 08. Discovery
+now uses security metadata, distinct bearish sources, per-setup history and next-scan
+user additions. Read docs/checkpoints/08-discovery.md and docs/DISCOVERY.md.
+Step 09 is next; live metadata endpoint access has not been verified. Earlier follow-up descriptions below retain historical status.
 Step 06 adds bounded exchange-calendar timing, completed-bar checks and explicit
 provenance; live Webull semantic acceptance remains Step 20. Taz authorized pushing
 verified checkpoints to the dedicated repair branch, without an implicit merge.

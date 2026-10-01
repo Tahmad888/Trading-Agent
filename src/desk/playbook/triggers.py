@@ -226,6 +226,7 @@ def darvas_box(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     _need(last, "high_52w", "adr_pct_20")
     recent = f["high"].iloc[-int(card.p("new_high_bars")):]
     t = len(f) - len(recent) + int(recent.to_numpy().argmax())
+    _need(f.iloc[t], "high_52w")  # the selected box top needs its own complete year
     top = f["high"].iloc[t]
     after = f.iloc[t + 1:]
     if top < f["high_52w"].iloc[t] or len(after) < card.p("confirm_bars") or (after["high"] >= top).any():
@@ -244,6 +245,8 @@ def darvas_box(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
 def episodic_pivot(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     if ctx.today_open is None:
         return None
+    if len(f) < minimum_history(card.id):
+        raise BarDataError(f"EP needs {minimum_history(card.id)} completed daily bars")
     last = f.iloc[-1]                                     # the day before the gap
     _need(last, "adr_pct_20")
     gap = ctx.today_open / last["close"] - 1
@@ -418,11 +421,29 @@ CHECKS: dict[str, Callable[[pd.DataFrame, Card, Context], Signal | None]] = {
 }
 
 
+def minimum_history(setup_id: str) -> int:
+    """Required existing lookbacks, not an arbitrary all-setups age threshold."""
+    card = CARDS[setup_id]
+    if setup_id == "5_qullamaggie_episodic_pivot":
+        return max(50, 20, int(card.p("sideways_bars")))
+    if setup_id == "8_raschke_holy_grail":
+        return max(50, 28 + int(card.p("swing_bars")) + int(card.p("adx_rising_bars")))
+    if setup_id == "9_weinstein_stage4_breakdown":
+        return 150 + max(int(card.p("top_bars")), int(card.p("turn_bars")))
+    if setup_id == "10_connors_rsi2":
+        return 200
+    # All remaining stock setups require the existing 252-session Trend Template.
+    return 252
+
+
 def scan(features: pd.DataFrame, ctx: Context, *, skipped: dict[str, str] | None = None) -> list[Signal]:
     """Every setup armed on this ticker's last daily bar."""
     out = []
     for setup_id, check in CHECKS.items():
         try:
+            required = minimum_history(setup_id)
+            if len(features) < required:
+                raise BarDataError(f"insufficient history for {setup_id}: {len(features)} daily bars; need {required}")
             sig = check(features, CARDS[setup_id], ctx)
         except BarDataError as exc:
             if skipped is None:

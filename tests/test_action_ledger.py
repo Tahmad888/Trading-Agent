@@ -163,8 +163,14 @@ def native_source(at, *, instrument='913257561'):
                  close='121', volume='10000', trading_session='RTH')
             for t in ('13:30', '13:45', '14:00', '14:15', '14:30')]
     payload = {'result': [dict(symbol='NVDA', instrument_id=instrument, delay_minutes=0, result=rows)]}
+    def transport(req, timeout):
+        if "/instruments/stocks/profiles/list" in req.full_url:
+            return json.dumps({"data": [{"symbol": "NVDA", "instrument_id": instrument,
+                "category": "US_STOCK", "sub_category": "COMMON_STOCK", "currency": "USD",
+                "name": "fictional NVDA metadata", "exchange_code": "NSQ"}]}).encode()
+        return json.dumps(payload).encode()
     return WebullData('fictional-key','fictional-secret', host='api.sandbox.webull.com',
-        clock=lambda: at, min_interval=0, transport=lambda *a: json.dumps(payload).encode())
+        clock=lambda: at, min_interval=0, transport=transport)
 
 
 def wrapped(store, at=NOW+timedelta(seconds=1), **kw):
