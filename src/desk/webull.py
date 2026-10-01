@@ -38,6 +38,7 @@ import pandas as pd
 
 from desk.bars import BarDataError, bars_from_webull
 from desk.bar_contract import BarProvenance
+from desk.data_basis import VolumeBasis
 
 HOST = "api.webull.com"
 SANDBOX_HOST = "api.sandbox.webull.com"   # Sandbox delay_minutes=0 is NOT proof of real-time data.
@@ -98,6 +99,7 @@ class WebullData:
                  transport: Transport = _urlopen,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                  bar_profile: Callable[[str, str], BarProvenance | None] | None = None,
+                 volume_profile: Callable[[str, str], VolumeBasis | None] | None = None,
                  bar_timestamp_unit: str | None = None):
         if not app_key or not app_secret:
             raise WebullError("Webull app key and secret are not set")
@@ -105,6 +107,7 @@ class WebullData:
         self._host, self._timeout, self._min_interval = host, timeout, min_interval
         self._transport, self._clock = transport, clock
         self._bar_profile, self._bar_timestamp_unit = bar_profile, bar_timestamp_unit
+        self._volume_profile = volume_profile
         self._last_call: dict[str, float] = {}
 
     @classmethod
@@ -248,11 +251,26 @@ class WebullData:
                 if df.empty:
                     raise WebullError(f"no bars for {symbol} in requested window")
                 df.attrs["webull_request"] = dict(payload)
+                df.attrs["provider_identity"] = {"symbol": symbol, "instrument_id": item.get("instrument_id")}
+                # This identifies the native channel, not its undocumented trade
+                # inclusion or share-adjustment rules. No cross-channel equivalence.
+                df.attrs["volume_basis"] = {"source": "Webull OpenAPI",
+                    "evidence_ref": "https://developer.webull.com/apis/docs/reference/historical-bars/",
+                    "channel": "minute:" + ",".join(selected) if minute_bars else "native:" + timespan,
+                    "definition_id": None, "units": "shares", "share_basis_id": None}
                 if minute_bars:
                     df.attrs["provider_sessions"] = sorted({row["trading_session"] for row in rows})
                 profile = self._bar_profile(symbol, timespan) if self._bar_profile else None
                 if minute_bars and selected != ["RTH"]:
                     profile = None  # extended-session diagnostics cannot claim a regular-only profile
+                volume = self._volume_profile(symbol, timespan) if self._volume_profile else None
+                if volume and (not minute_bars or selected == ["RTH"]):
+                    df.attrs["volume_basis"] = volume.model_dump(mode="json")
+                if profile and profile.price_basis and (
+                    profile.price_basis.symbol != symbol or item.get("instrument_id") is None or
+                    profile.price_basis.security_id != str(item["instrument_id"])
+                ):
+                    raise WebullError("Price evidence does not match returned Webull instrument identity")
                 # Unknown provider semantics remain readable, but cannot produce a signal.
                 df.attrs["bar_provenance"] = (profile.model_copy(update={"delay_minutes": delay}).model_dump()
                     if profile else {"source": "Webull OpenAPI", "timeframe": timespan, "delay_minutes": delay,

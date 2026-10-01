@@ -11,6 +11,7 @@ from desk.bar_contract import BarProvenance
 from desk import scanner as sc
 from desk.playbook.triggers import Signal
 from tests.charts import chart, line
+from tests.basis_support import price_evidence, volume_evidence
 from tests.test_triggers import QULL, RSI2_DIP
 
 ET = sc.ET
@@ -24,10 +25,12 @@ def daily(cl, spread=0.005, end=DAY):
     return stamp(df, "D")
 
 
-def stamp(df, timeframe):
+def stamp(df, timeframe, symbol="LEAD"):
     df.attrs["bar_provenance"] = BarProvenance(source="synthetic fixture", evidence_ref="test generator",
         timeframe=timeframe, timestamp_semantics="session_label" if timeframe == "D" else "start",
-        session="regular", delay_minutes=0, adjustment="split_adjusted", price_scale_id="fixture-scale").model_dump()
+        session="regular", delay_minutes=0, adjustment="split_adjusted", price_scale_id="fixture-scale",
+        price_basis=price_evidence(str(df.index[-1].tz_convert(ET).date()), symbol)).model_dump(mode="json")
+    df.attrs["volume_basis"] = volume_evidence("synthetic " + timeframe)
     return df
 
 
@@ -45,7 +48,12 @@ class Fake:
         self.calls.append((tuple(symbols), category, timespan))
         if self.fail & set(symbols):
             raise BarDataError("Webull HTTP 429 rate limit")
-        return {s: self.frames[(s, timespan)] for s in symbols if (s, timespan) in self.frames}
+        out = {s: self.frames[(s, timespan)].copy() for s in symbols if (s, timespan) in self.frames}
+        for s, frame in out.items():
+            basis = frame.attrs.get("bar_provenance", {}).get("price_basis")
+            if basis:
+                basis.update(symbol=s, security_id=f"fixture:{s}")
+        return out
 
 
 UP = line((0, 300), (len(QULL) - 1, 420))
@@ -94,7 +102,8 @@ def m15(rows, day=DAY):
 
 
 def sig(setup="1_qullamaggie_breakout", d="long", trigger=100.0, stop=95.0):
-    return Signal(setup, "LEAD", d, pd.Timestamp("2026-09-28", tz=ET), trigger, stop, price_scale_id="fixture-scale")
+    return Signal(setup, "LEAD", d, pd.Timestamp("2026-09-28", tz=ET), trigger, stop,
+                  price_scale_id="fixture-scale", price_basis=price_evidence("2026-09-28"))
 
 
 def test_entry_rules():

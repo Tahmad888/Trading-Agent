@@ -15,6 +15,11 @@ Step 06 adds bounded exchange-calendar timing, completed-bar checks and explicit
 provenance; live Webull semantic acceptance remains Step 20. Taz authorized pushing
 verified checkpoints to the dedicated repair branch, without an implicit merge.
 The tracker records actual completion, not just approved intent.
+Step 06 follow-up C replaces label-only price compatibility with structured action
+coverage and isolates unknown volume definitions. Read its checkpoint and
+`docs/DATA_BASIS_ACCEPTANCE.md` before provider work. No live profile is enabled;
+real action-source, daily-volume and RTH-timing acceptance remain open. Step 07 is
+paused until Taz's six Step 06 verification items are resolved.
 
 Read the six rules before doing anything. They come from Trading Desk Blueprint v2.4
 (29 Sep 2026), amended by Taz's later decisions in the repair plan:

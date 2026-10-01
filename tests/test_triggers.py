@@ -6,11 +6,14 @@ from desk.playbook import triggers as t
 from desk.playbook.cards import CARDS
 from desk.playbook.filters import GateResult, MarketSize, trend_template
 from tests.charts import chart, features, line
+from tests.basis_support import volume_evidence
 
 PASS, FAIL = GateResult({"ok": True}), GateResult({"ok": False})
 
 
 def ctx(symbol="XYZ", market=MarketSize.FULL, template=PASS, **kw):
+    if "early_volume" in kw:
+        kw.setdefault("early_volume_basis", volume_evidence("synthetic first 30m"))
     return t.Context(symbol, market, template, **kw)
 
 

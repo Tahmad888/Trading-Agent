@@ -1,0 +1,138 @@
+"""Evidence contracts, not a corporate-action feed or an adjustment calculator.
+
+Only trusted data producers may attest coverage/definitions. A matching user-made
+label is not proof. Unknown data remains readable but cannot qualify a decision.
+"""
+from datetime import date
+from typing import Annotated, Literal
+
+import pandas as pd
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+from desk.bars import BarDataError
+from desk.calendar import ET, clock
+
+Text = Annotated[str, Field(min_length=1)]
+
+
+class Evidence(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    source: Text
+    evidence_ref: Text
+
+
+class CorporateAction(Evidence):
+    event_id: Text
+    revision: Text
+    kind: Literal["split", "cash_dividend", "unsupported"]
+    effective_session: date
+
+
+class PriceBasis(Evidence):
+    symbol: Text
+    security_id: Text
+    currency: Text
+    coverage_start: date
+    basis_session: date
+    verified_at: AwareDatetime
+    coverage_complete: Literal[True]  # explicit; no default/no-action inference
+    normalization: Literal["unadjusted", "split_adjusted", "split_dividend_adjusted"]
+    actions: tuple[CorporateAction, ...]  # explicit empty tuple means an attested empty ledger
+
+    @field_validator("coverage_complete", mode="before")
+    @classmethod
+    def explicit_coverage(cls, value):
+        if value is not True:
+            raise ValueError("Coverage must be explicitly verified complete")
+        return value
+
+    @model_validator(mode="after")
+    def consistent(self):
+        if self.coverage_start > self.basis_session or self.basis_session > clock(self.verified_at).date():
+            raise ValueError("Corporate-action coverage dates are inconsistent")
+        if len({a.event_id for a in self.actions}) != len(self.actions):
+            raise ValueError("Duplicate corporate-action identity")
+        if any(not self.coverage_start <= a.effective_session <= self.basis_session for a in self.actions):
+            raise ValueError("Action outside attested coverage")
+        return self
+
+
+def _price(raw, now) -> PriceBasis:
+    try:
+        basis = PriceBasis.model_validate(raw)
+    except ValidationError as exc:
+        raise BarDataError("Unknown/incomplete corporate-action price basis; rebuild with verified coverage") from exc
+    if clock(basis.verified_at) > clock(now):
+        raise BarDataError("Corporate-action evidence is later than the decision clock")
+    if any(a.kind == "unsupported" for a in basis.actions):
+        raise BarDataError("Unsupported corporate action; rebuild from verified normalized data")
+    return basis
+
+
+def price_basis(df: pd.DataFrame, now, *, symbol: str | None = None) -> PriceBasis:
+    meta = df.attrs.get("bar_provenance", {})
+    basis = _price(meta.get("price_basis"), now)
+    if symbol is not None and basis.symbol != symbol:
+        raise BarDataError("Price basis belongs to a different symbol/security")
+    if meta.get("adjustment") != basis.normalization:
+        raise BarDataError("Bar adjustment and attested price normalization disagree")
+    if df.empty:
+        return basis
+    first, last = df.index.tz_convert(ET).date[[0, -1]]
+    if basis.coverage_start > first or basis.basis_session < last:
+        raise BarDataError("Corporate-action coverage does not cover the supplied price history")
+    # Native raw history cannot cross an action or remain on yesterday's share basis.
+    # A split-only series cannot bridge a dividend when comparing adjusted levels.
+    unapplied = [a for a in basis.actions if first < a.effective_session <= basis.basis_session
+                 and (basis.normalization == "unadjusted" or
+                      basis.normalization == "split_adjusted" and a.kind == "cash_dividend")]
+    if unapplied:
+        raise BarDataError("Price history crosses an unapplied corporate action; rebuild normalized history")
+    return basis
+
+
+def compatible_prices(previous: dict | None, current: pd.DataFrame, now, *, symbol=None):
+    old, new = _price(previous, now), price_basis(current, now, symbol=symbol)
+    if (old.symbol, old.security_id, old.currency) != (new.symbol, new.security_id, new.currency):
+        raise BarDataError("Corporate-action price basis security/currency mismatch")
+    if new.basis_session != clock(now).date() or new.coverage_start > old.coverage_start or new.basis_session < old.basis_session:
+        raise BarDataError("Current corporate-action coverage cannot revalidate the signal")
+
+    def events(basis):
+        return sorted((a.event_id, a.revision, a.kind, a.effective_session)
+                      for a in basis.actions if a.effective_session >= old.coverage_start)
+
+    if events(old) != events(new):
+        raise BarDataError("Changed corporate-action price basis; rebuild the signal")
+    return new
+
+
+class VolumeBasis(Evidence):
+    channel: Text
+    definition_id: Text | None  # sale/session inclusion definition, not simply 'volume'
+    units: Literal["shares"]
+    share_basis_id: Text | None  # separately attested share adjustment; never inferred from prices
+
+
+def volume_basis(df: pd.DataFrame, *, allow_developing=False) -> VolumeBasis:
+    try:
+        basis = VolumeBasis.model_validate(df.attrs.get("volume_basis"))
+    except ValidationError as exc:
+        raise BarDataError("Unknown volume definition/share basis") from exc
+    if not basis.definition_id or not basis.share_basis_id:
+        raise BarDataError("Unverified volume definition/share basis")
+    if df.attrs.get("developing_as_of") and not allow_developing:
+        raise BarDataError("Developing intraday volume is not a completed daily-volume observation")
+    return basis
+
+
+def compatible_volume(daily: pd.DataFrame, early: dict | None):
+    baseline = volume_basis(daily)
+    try:
+        observed = VolumeBasis.model_validate(early)
+    except ValidationError as exc:
+        raise BarDataError("Unknown early-volume definition/share basis") from exc
+    if not observed.definition_id or not observed.share_basis_id or (
+        baseline.definition_id, baseline.units, baseline.share_basis_id
+    ) != (observed.definition_id, observed.units, observed.share_basis_id):
+        raise BarDataError("Daily and intraday volume definitions/share bases are not verified compatible")

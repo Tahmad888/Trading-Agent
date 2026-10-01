@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from desk.bars import BarDataError, COLUMNS, validate
 from desk.calendar import ET, clock, latest_closed_session, session, sessions, trading_day
+from desk.data_basis import PriceBasis, price_basis, compatible_prices
 
 
 class BarProvenance(BaseModel):
@@ -17,8 +18,9 @@ class BarProvenance(BaseModel):
     timestamp_semantics: Literal["start", "session_label"]
     session: Literal["regular"]
     delay_minutes: Annotated[int, Field(ge=0, strict=True)]
-    adjustment: Literal["unadjusted", "split_adjusted", "total_return"]
-    price_scale_id: Annotated[str, Field(min_length=1)]  # corporate-action basis, NOT timeframe
+    adjustment: Literal["unadjusted", "split_adjusted", "split_dividend_adjusted", "total_return"]
+    price_scale_id: Annotated[str, Field(min_length=1)]  # legacy display label; no eligibility authority
+    price_basis: PriceBasis | None = None  # legacy labels remain readable, not decision evidence
 
 
 def provenance(df: pd.DataFrame, timeframe: str) -> BarProvenance:
@@ -55,6 +57,7 @@ def completed_daily(df: pd.DataFrame, now: datetime, *, require_latest=True) -> 
         raise BarDataError("Missing or non-session daily bars")
     if require_latest and dates[-1] != cutoff:
         raise BarDataError(f"Stale daily data: expected completed session {cutoff}")
+    price_basis(out, now)
     out.attrs["validated_at"] = stamp.isoformat()
     return out
 
@@ -76,6 +79,8 @@ def completed_intraday(df: pd.DataFrame, now: datetime, *, require_latest=True, 
         return out
     if require_latest and not out.index.equals(expected):
         raise BarDataError("missing, stale, or misaligned completed M15 session bars")
+    if not out.empty:
+        price_basis(out, now)
     out.attrs["validated_at"] = stamp.isoformat()
     return out
 
@@ -91,9 +96,12 @@ def _available_at(df, decision_clock):
     return received
 
 
-def check_price_scale(daily_or_signal_scale: str | None, intraday: pd.DataFrame):
-    if not daily_or_signal_scale or provenance(intraday, "M15").price_scale_id != daily_or_signal_scale:
-        raise BarDataError("Unknown or changed corporate-action price scale; rebuild the signal")
+def check_price_scale(basis: dict | None, intraday: pd.DataFrame, now=None, *, symbol=None):
+    """Revalidate structured evidence; legacy string-only signals require rebuilding."""
+    if now is None:
+        raise BarDataError("Price scale verification requires an explicit decision clock")
+    provenance(intraday, "M15")
+    return compatible_prices(basis, intraday, now, symbol=symbol)
 
 
 def _aggregate(group):
@@ -112,14 +120,21 @@ def developing_daily_from_m15(daily: pd.DataFrame, m15: pd.DataFrame, now: datet
         raise BarDataError("Developing daily snapshot requires an open regular session")
     history = completed_daily(daily, now)
     intraday = completed_intraday(m15, now)
-    check_price_scale(provenance(history, "D").price_scale_id, intraday)
+    basis = check_price_scale(price_basis(history, now).model_dump(mode="json"), intraday, now)
     if intraday.empty:
         raise BarDataError("No completed constituents for developing daily bar")
     row = pd.DataFrame([_aggregate(intraday)], columns=COLUMNS,
                        index=pd.DatetimeIndex([stamp.normalize()]).tz_convert("UTC"))
     out = pd.concat([history, row])
     out.attrs = {**history.attrs, "developing_as_of": stamp.isoformat(),
-                 "constituents_through": (intraday.index[-1] + pd.Timedelta(minutes=15)).isoformat()}
+                 "constituents_through": (intraday.index[-1] + pd.Timedelta(minutes=15)).isoformat(),
+                 "developing_components": {"open": "first completed RTH M15 open; not provider daily open",
+                                           "volume": "sum of completed RTH M15 volumes; not provider daily volume",
+                                           "volume_basis": intraday.attrs.get("volume_basis")}}
+    # History and the new row are on the revalidated current action basis. Preserve
+    # history's normalization (raw current-session prices need no double adjustment).
+    out.attrs["bar_provenance"] = {**history.attrs["bar_provenance"], "price_basis":
+        basis.model_copy(update={"normalization": price_basis(history, now).normalization}).model_dump(mode="json")}
     return out
 
 
@@ -159,6 +174,7 @@ def hourly_from_m15(df: pd.DataFrame, now: datetime) -> pd.DataFrame:
     out = pd.DataFrame(rows, columns=COLUMNS, index=pd.DatetimeIndex(labels).tz_convert("UTC"))
     out.attrs = {**df.attrs, "bar_provenance": provenance(df, "M15").model_copy(update={"timeframe": "M60"}).model_dump(),
                  "bar_ends": ends, "validated_at": stamp.isoformat()}
+    price_basis(out, now)  # per-session validation alone cannot detect a split between sessions
     return out
 
 

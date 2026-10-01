@@ -33,7 +33,9 @@ ROWS = [
 
 def table(rows_json: list[dict], s: Settings = Settings()) -> list[tuple[str, str]]:
     df = require(bars_from_webull(rows_json), min_bars=260)
-    row = latest(daily_features(df, s))
+    # This diagnostic displays price indicators only. Unknown relative-volume
+    # semantics must not suppress the screen comparison or be reported as verified.
+    row = latest(daily_features(df, s)[[col for _, col, _ in ROWS]])
     date = df.index[-1].tz_convert("America/New_York").date().isoformat()
     return [("Bar", date), ("Bars loaded", str(len(df)))] + [
         (label, f"{row[col]:.{d}f}") for label, col, d in ROWS]

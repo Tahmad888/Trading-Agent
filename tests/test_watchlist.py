@@ -2,11 +2,13 @@ import numpy as np
 
 from desk.watchlist import ALWAYS, build_watchlist, leader_scan
 from tests.test_filters import N, SPY, bars_from_path, path
+from tests.basis_support import volume_evidence
 
 
 def stock(pct, start=100.0, volume=2e6):
     df = bars_from_path(path((N, pct), start=start))
     df["volume"] = volume
+    df.attrs["volume_basis"] = volume_evidence()
     return df
 
 

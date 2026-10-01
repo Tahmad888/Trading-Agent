@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from desk.bars import BarDataError
+from desk.data_basis import volume_basis, compatible_volume
 from desk.indicators import anchored_vwap, ema, rs_line
 from desk.playbook.cards import CARDS, INDEX_ETFS, Card, Direction
 from desk.playbook.filters import GateResult, MarketSize, stage4_puts_allowed
@@ -38,6 +39,7 @@ class Context:
     spy_close: pd.Series | None = None
     today_open: float | None = None         # the episodic pivot's gap day
     early_volume: float | None = None       # first 30 minutes' volume on the gap day
+    early_volume_basis: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class Signal:
     target: float | None = None
     saw: dict[str, str] = field(default_factory=dict)   # what each check saw, in plain words
     price_scale_id: str | None = None  # attached by the validated data producer
+    price_basis: dict | None = None  # persisted structured evidence; legacy signals rebuild
 
     def __post_init__(self):
         for name in ("trigger", "stop", "target"):
@@ -151,6 +154,7 @@ def minervini_vcp(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     depths = [d for _, _, d in c]
     shrinking = all(b <= card.p("shrink") * a for a, b in zip(depths, depths[1:]))
     pivot, low, last_depth = c[-1]
+    volume_basis(f)
     vol10 = f["volume"].iloc[-10:].mean()
     vol50 = f["volume"].iloc[-50:].mean()
     close = f["close"].iloc[-1]
@@ -189,6 +193,7 @@ def oneil_cup_with_handle(f: pd.DataFrame, card: Card, ctx: Context) -> Signal |
     handle_low = handle["low"].iloc[1:].min()
     handle_depth = 1 - handle_low / R
     rounded = 0.2 <= bottom_at / (len(cup) - 1) <= 0.8
+    volume_basis(f)
     vol50 = f["volume"].iloc[-50:].mean()
     ok = (advance >= card.p("prior_advance") and card.p("cup_min_depth") <= depth <= card.p("cup_max_depth")
           and rounded and R >= card.p("right_side") * L and R <= L * 1.05
@@ -237,7 +242,12 @@ def episodic_pivot(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     hi, lo = base["high"].max(), base["low"].min()
     mid = (hi + lo) / 2
     sideways = (hi / lo - 1) <= card.p("sideways_range") and abs(last["close"] / mid - 1) <= card.p("near_middle")
+    compatible_volume(f, ctx.early_volume_basis)
     vol50 = f["volume"].iloc[-50:].mean()
+    if len(f) < 50 or not np.isfinite(vol50) or vol50 <= 0:
+        raise BarDataError("EP requires a positive, complete 50-day volume baseline")
+    if ctx.early_volume is None or not np.isfinite(ctx.early_volume) or ctx.early_volume < 0:
+        raise BarDataError("EP early volume must be a finite nonnegative share count")
     heavy = ctx.early_volume is not None and ctx.early_volume >= card.p("early_volume") * vol50
     if gap < card.p("min_gap") or not sideways or not heavy:
         return None
@@ -301,6 +311,7 @@ def luk_reclaim(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     ema50 = ema(f["close"], 50).iloc[-1]
     if max(runs.values()) < card.p("min_run") or not last["ema_9"] > last["ema_21"] > ema50:
         return None
+    volume_basis(f)
     anchor_bars = f.iloc[-int(card.p("anchor_bars")):]
     avwap = anchored_vwap(f, anchor_bars["low"].idxmin()).iloc[-1]
     near = card.p("near_atr") * last["atr_14"]
@@ -397,11 +408,17 @@ CHECKS: dict[str, Callable[[pd.DataFrame, Card, Context], Signal | None]] = {
 }
 
 
-def scan(features: pd.DataFrame, ctx: Context) -> list[Signal]:
+def scan(features: pd.DataFrame, ctx: Context, *, skipped: dict[str, str] | None = None) -> list[Signal]:
     """Every setup armed on this ticker's last daily bar."""
     out = []
     for setup_id, check in CHECKS.items():
-        sig = check(features, CARDS[setup_id], ctx)
+        try:
+            sig = check(features, CARDS[setup_id], ctx)
+        except BarDataError as exc:
+            if skipped is None:
+                raise
+            skipped[f"{ctx.symbol}/{setup_id}"] = str(exc)
+            continue
         if sig is not None:
             out.append(sig)
     return out

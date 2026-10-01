@@ -9,7 +9,7 @@ from desk.bar_contract import (completed_daily, completed_intraday, developing_d
                                hourly_from_m15, weekly_from_daily, check_price_scale)
 from desk.bars import BarDataError, bars_from_webull, validate
 from desk.calendar import session, trading_day
-from tests.test_scanner import daily, m15, sig, Fake, ET, frames
+from tests.test_scanner import daily, m15, sig, Fake, ET, frames, stamp
 from tests.test_webull import bar, client, FakeTransport
 
 
@@ -90,8 +90,10 @@ def test_general_entry_requires_current_complete_session(index):
 
 def test_split_scale_mismatch_rebuilds_signal():
     frame = intraday(2)
-    frame.attrs["bar_provenance"]["price_scale_id"] = "after-split"
-    with pytest.raises(BarDataError, match="price scale"):
+    frame.attrs["bar_provenance"]["price_basis"]["actions"] = [{
+        "source": "fixture", "evidence_ref": "fixture", "event_id": "split-1", "revision": "1",
+        "kind": "split", "effective_session": "2026-09-29"}]
+    with pytest.raises(BarDataError, match="price basis"):
         sc.entry_hit(sig(), frame, now())
     with pytest.raises(BarDataError):
         check_price_scale(None, frame)
@@ -114,7 +116,7 @@ def test_hourly_aggregation_has_no_partial_or_missing_constituents():
 def test_hourly_history_spans_sessions_and_shortened_day():
     first = intraday(26, date(2026, 11, 25))
     second = intraday(14, date(2026, 11, 27))
-    hourly = hourly_from_m15(pd.concat([first, second]), now("2026-11-27", "13:00"))
+    hourly = hourly_from_m15(stamp(pd.concat([first, second]), "M15"), now("2026-11-27", "13:00"))
     assert len(hourly) == 11  # 7 regular-session bars plus 4 on the early close
 
 
@@ -212,7 +214,7 @@ def test_live_scan_samples_decision_clock_after_data_arrives():
 
 
 def test_hourly_history_receipt_can_follow_historical_session_close():
-    frame = pd.concat([intraday(26, date(2026, 11, 25)), intraday(14, date(2026, 11, 27))])
+    frame = stamp(pd.concat([intraday(26, date(2026, 11, 25)), intraday(14, date(2026, 11, 27))]), "M15")
     frame.attrs["received_at"] = now("2026-11-27", "13:00").isoformat()
     assert len(hourly_from_m15(frame, now("2026-11-27", "13:01"))) == 11
 
@@ -220,8 +222,9 @@ def test_hourly_history_receipt_can_follow_historical_session_close():
 def test_explicit_synthetic_provider_profile_can_pass_the_data_boundary():
     from desk.bar_contract import BarProvenance
     from desk.webull import WebullData
-    profile = BarProvenance.model_validate(daily([100]).attrs["bar_provenance"])
-    row = {"symbol": "SPY", "delay_minutes": 0, "result": [bar("2026-09-28T04:00:00Z", 100)]}
+    profile = BarProvenance.model_validate(stamp(daily([100]), "D", "SPY").attrs["bar_provenance"])
+    row = {"symbol": "SPY", "instrument_id": "fixture:SPY", "delay_minutes": 0,
+           "result": [bar("2026-09-28T04:00:00Z", 100)]}
     source = WebullData("fixture", "fixture", transport=FakeTransport([row]), min_interval=0,
                         clock=lambda: now(time="09:59"), bar_profile=lambda symbol, tf: profile)
     frame = source.bars(["SPY"], category="US_ETF", timespan="D")["SPY"]

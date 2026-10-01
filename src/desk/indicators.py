@@ -25,6 +25,7 @@ import pandas as pd
 import talib
 
 from desk.bars import BarDataError
+from desk.data_basis import volume_basis
 
 EASTERN = "America/New_York"
 
@@ -176,7 +177,18 @@ def daily_features(df: pd.DataFrame, s: Settings = Settings()) -> pd.DataFrame:
         weighted_12m_return(c),
     ]
     out = pd.concat([df] + parts, axis=1)
-    return out.loc[:, ~out.columns.duplicated()]
+    out = out.loc[:, ~out.columns.duplicated()]
+    out.attrs = dict(df.attrs)  # concat with indicator Series otherwise loses evidence
+    try:
+        volume_basis(df, allow_developing=True)
+    except BarDataError:
+        # Math-only inputs can still produce price indicators. Unknown or mixed
+        # volume must not masquerade as a usable relative-volume observation.
+        out["rel_volume"] = np.nan
+    if df.attrs.get("developing_as_of"):
+        developing = pd.Timestamp(df.attrs["developing_as_of"]).tz_convert(EASTERN).date()
+        out.loc[out.index.tz_convert(EASTERN).date >= developing, "rel_volume"] = np.nan
+    return out
 
 
 def latest(features: pd.DataFrame) -> pd.Series:

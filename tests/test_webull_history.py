@@ -11,6 +11,7 @@ from desk.bars import BarDataError
 from desk.calendar import session
 from desk.webull import WebullData, WebullError
 from tests.test_webull import FakeTransport, bar, client
+from tests.basis_support import price_evidence
 
 
 def fixture():
@@ -49,7 +50,8 @@ def test_supplied_early_close_rows_through_public_adapter_and_calendar():
     frame.attrs["bar_provenance"] = BarProvenance(
         source="test-only historical normalization", evidence_ref=evidence["source_sha256"],
         timeframe="M15", timestamp_semantics="start", session="regular", delay_minutes=0,
-        adjustment="unadjusted", price_scale_id="TEST-ONLY-single-historical-session").model_dump()
+        adjustment="unadjusted", price_scale_id="TEST-ONLY-single-historical-session",
+        price_basis=price_evidence("2025-07-03", "SPY", "unadjusted")).model_dump(mode="json")
     assert len(completed_intraday(frame, now, session_day=opened.date())) == 14
     # Use a historical decision clock only for this offline aggregation, removing the
     # later capture clock explicitly. This is not a current trading decision.

@@ -45,6 +45,7 @@ from desk.calendar import trading_day, next_trading_day, session, clock
 from desk.bar_contract import (completed_daily, completed_intraday, provenance,
                                check_price_scale, developing_daily_from_m15)
 from desk.indicators import daily_features
+from desk.data_basis import price_basis
 from desk.playbook.cards import CARDS, INDEX_ETFS
 from desk.playbook.filters import MarketSize, market_filter, trend_template
 from desk.playbook.triggers import Context, Signal, connors_rsi2, episodic_pivot, scan
@@ -143,6 +144,7 @@ def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, de
             if clock(now) < session(clock(now).date())[1]:
                 raise BarDataError("close scan requires a completed session")
             df = completed_daily(df, now)
+            price_basis(df, now, symbol=sym)
             require(df, min_bars=MIN_DAILY_BARS)
             bars[sym] = df
             feats[sym] = daily_features(df)
@@ -165,8 +167,9 @@ def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, de
             continue
         try:
             gate = None if sym in INDEX_ETFS else trend_template(feats[sym], spy)
-            armed += [replace(sig, price_scale_id=provenance(bars[sym], "D").price_scale_id)
-                      for sig in scan(feats[sym], Context(sym, size, gate, spy))]
+            armed += [replace(sig, price_scale_id=provenance(bars[sym], "D").price_scale_id,
+                              price_basis=price_basis(bars[sym], now, symbol=sym).model_dump(mode="json"))
+                      for sig in scan(feats[sym], Context(sym, size, gate, spy), skipped=rec.skipped)]
         except BarDataError as e:
             rec.skipped[sym] = str(e)
     rec.armed = [_sig(s) for s in armed]
@@ -224,8 +227,8 @@ def entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, floa
     stamp = clock(now)
     if not trading_day(stamp.date()) or not session(stamp.date())[0] <= stamp < session(stamp.date())[1]:
         return False, sig.trigger, "outside regular session"
-    check_price_scale(sig.price_scale_id, m15)
     today = completed_intraday(m15, now)
+    check_price_scale(sig.price_basis, today, now, symbol=sig.symbol)
     if sig.setup_id == "5_qullamaggie_episodic_pivot":
         return _ep_entry_hit(sig, today if not today.empty else m15, now)
     if today.empty:
@@ -286,17 +289,19 @@ def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skippe
         try:
             d = completed_daily(d, now)
             m = completed_intraday(m, now)
-            check_price_scale(provenance(d, "D").price_scale_id, m)
+            check_price_scale(price_basis(d, now, symbol=sym).model_dump(mode="json"), m, now, symbol=sym)
             if len(m) < 2 or len(d) < MIN_DAILY_BARS:
                 raise BarDataError("not enough bars for the episodic pivot")
             ctx = Context(sym, market, None, today_open=float(m["open"].iloc[0]),
-                          early_volume=float(m["volume"].iloc[:2].sum()))
+                          early_volume=float(m["volume"].iloc[:2].sum()),
+                          early_volume_basis=m.attrs.get("volume_basis"))
             sig = episodic_pivot(daily_features(d), CARDS["5_qullamaggie_episodic_pivot"], ctx)
         except BarDataError as e:
             skipped[sym] = str(e)
             continue
         if sig:
-            out.append(replace(sig, price_scale_id=provenance(d, "D").price_scale_id))
+            out.append(replace(sig, price_scale_id=provenance(d, "D").price_scale_id,
+                               price_basis=price_basis(m, now, symbol=sym).model_dump(mode="json")))
     return out
 
 
@@ -315,7 +320,9 @@ def leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *, decisio
     clean = {}
     for symbol, frame in bars.items():
         try:
-            clean[symbol] = completed_daily(frame, now)
+            validated = completed_daily(frame, now)
+            price_basis(validated, now, symbol=symbol)
+            clean[symbol] = validated
         except BarDataError as exc:
             rec.skipped[symbol] = str(exc)
     if "SPY" not in clean:
@@ -349,12 +356,15 @@ def rsi2_estimate(source: BarSource, watchlist: Sequence[str], market: MarketSiz
             if sym not in intraday:
                 raise BarDataError("No intraday constituents for near-close snapshot")
             snapshot = developing_daily_from_m15(df, intraday[sym], now)
+            basis = price_basis(snapshot, now, symbol=sym)
             sig = connors_rsi2(daily_features(snapshot), CARDS["10_connors_rsi2"], Context(sym, market))
             if sig:
                 evidence = {**sig.saw, "snapshot_as_of": snapshot.attrs["developing_as_of"],
                             "developing_daily_ohlcv": json.dumps(snapshot.iloc[-1].to_dict(), sort_keys=True),
-                            "constituents_through": snapshot.attrs["constituents_through"]}
-                out.append(replace(sig, saw=evidence, price_scale_id=provenance(df, "D").price_scale_id))
+                            "constituents_through": snapshot.attrs["constituents_through"],
+                            "developing_components": json.dumps(snapshot.attrs["developing_components"], sort_keys=True)}
+                out.append(replace(sig, saw=evidence, price_scale_id=provenance(df, "D").price_scale_id,
+                                   price_basis=basis.model_dump(mode="json")))
         except BarDataError as exc:
             skipped[sym] = str(exc)
     return out

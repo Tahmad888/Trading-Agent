@@ -9,6 +9,11 @@ The iMac re-run passed (328 tests). [06b-sessions-and-history.md](checkpoints/06
 records subsequent sandbox adapter/history evidence, explicit session/window fixes,
 and the current six-item status. RTH freshness, corporate actions and daily-volume
 definitions remain unresolved; the zero delay field is not real-time proof.
+[06c-price-volume-basis.md](checkpoints/06c-price-volume-basis.md) records the
+subsequent action/identity and volume-comparability safeguards, with 391 passing
+tests on Python 3.12 and 3.14. Real action-source and volume-definition acceptance
+remain open; [DATA_BASIS_ACCEPTANCE.md](DATA_BASIS_ACCEPTANCE.md) contains the
+evidence request. Step 07 remains paused.
 
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through

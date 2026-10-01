@@ -7,6 +7,7 @@ import pytest
 from desk import indicators as ind
 from desk.bars import BarDataError, bars_from_webull, require, validate
 from tests import tv_reference as tv
+from tests.basis_support import volume_evidence
 
 # Compare the last 300 of 1,000 bars: by then every seed difference between
 # TA-Lib and TradingView has died out, which is why the desk loads ~1,000 bars.
@@ -21,7 +22,9 @@ def random_bars(n=1_000, seed=7, freq="B") -> pd.DataFrame:
     low = np.minimum(open_, close) * (1 - rng.uniform(0, 0.01, n))
     vol = rng.integers(1_000_000, 5_000_000, n).astype(float)
     idx = pd.date_range("2022-10-03", periods=n, freq=freq, tz="UTC")
-    return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": vol}, index=idx)
+    out = pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": vol}, index=idx)
+    out.attrs["volume_basis"] = volume_evidence()
+    return out
 
 
 @pytest.fixture(scope="module")
