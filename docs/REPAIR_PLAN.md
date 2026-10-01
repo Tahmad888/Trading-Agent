@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–08 complete. Step 06 includes scoped NVDA/SPY sandbox integration and iMac verification. Step 08 and its symbol repair have 621 passing strict tests on both local Python versions. NVDA/SPY/BRK.B metadata and D/M15 identity checks passed on the iMac sandbox connection at 18:33:18Z on 2026-10-01 (checkpoint 08a). Step 09 is in progress: normalized gates and reviewed-input integration implemented; provider mapping/acceptance pending. Earlier checkpoint paragraphs below retain their historical status; the closure result supersedes their pending items.
+Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–08 complete. Step 06 includes scoped NVDA/SPY sandbox integration and iMac verification. Step 08 and its symbol repair have 621 passing strict tests on both local Python versions. NVDA/SPY/BRK.B metadata and D/M15 identity checks passed on the iMac sandbox connection at 18:33:18Z on 2026-10-01 (checkpoint 08a). Step 09 is in progress: normalized gates and reviewed-input integration implemented, 688 strict tests pass on both versions. The iMac earnings probe returned calendar actuals but empty income data; a bounded NVDA issuer fallback passes locally, with iMac reproduction pending (checkpoint 09a). Automatic market-wide earnings coverage remains unverified. Earlier checkpoint paragraphs retain their historical status.
 
 Installation follow-up: [06a-resource-cleanup.md](checkpoints/06a-resource-cleanup.md)
 records the Python 3.14 iMac test failure, its verified cleanup fix, and the six
@@ -256,9 +256,11 @@ metadata, empty healthy result and failed preparation have distinct observable o
 
 ### 09 — Earnings and catalyst evidence (watch, analyze)
 
-In progress. See `checkpoints/09-earnings.md` and `EARNINGS_EVIDENCE.md`.
-Gate implementation passes 670 strict tests on both Python versions; actual
-Webull source mapping/acceptance remains pending.
+In progress. See `checkpoints/09-earnings.md`, `checkpoints/09a-provider-fallback.md`
+and `EARNINGS_EVIDENCE.md`. Gate implementation passes 688 strict tests on both
+Python versions. iMac calendar observations match the bounded NVDA issuer review;
+income data was empty. Offline issuer-file acceptance passes locally, with iMac
+reproduction pending. No automatic market-wide earnings feed is claimed.
 
 Depends on 06, 08. Targets: `webull.py`/provider adapter, setup context, scanner and
 growth tests. Separate upcoming report dates from actual reported quarterly results.

@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "securities": [
+    {
+      "symbol": "NVDA",
+      "security_id": "913257561",
+      "review_ref": "docs/evidence/step09-nvda-issuer-review.md",
+      "reviewed_at": "2026-10-01T19:00:20Z",
+      "valid_until": "2026-10-02T03:59:59Z",
+      "latest_fiscal_year": 2027,
+      "latest_fiscal_quarter": 2,
+      "current": {
+        "source_ref": "https://nvidianews.nvidia.com/news/nvidia-announces-financial-results-for-second-quarter-fiscal-2027",
+        "published_on": "2026-08-26",
+        "received_at": "2026-10-01T19:00:20Z",
+        "fiscal_year": 2027,
+        "fiscal_quarter": 2,
+        "period_kind": "quarter",
+        "period_start": "2026-04-27",
+        "period_end": "2026-07-26",
+        "eps": {
+          "value": "2.46",
+          "scale": "1",
+          "currency": "USD",
+          "unit": "currency/share",
+          "accounting_basis": "US_GAAP",
+          "definition": "diluted_eps",
+          "share_basis": "NVIDIA Q2 FY2027 GAAP comparative presentation"
+        },
+        "sales": {
+          "value": "96221",
+          "scale": "1000000",
+          "currency": "USD",
+          "unit": "currency",
+          "accounting_basis": "US_GAAP",
+          "definition": "total_revenue",
+          "share_basis": null
+        }
+      },
+      "prior": {
+        "source_ref": "https://nvidianews.nvidia.com/news/nvidia-announces-financial-results-for-second-quarter-fiscal-2027",
+        "published_on": "2026-08-26",
+        "received_at": "2026-10-01T19:00:20Z",
+        "fiscal_year": 2026,
+        "fiscal_quarter": 2,
+        "period_kind": "quarter",
+        "period_start": "2025-04-28",
+        "period_end": "2025-07-27",
+        "eps": {
+          "value": "1.08",
+          "scale": "1",
+          "currency": "USD",
+          "unit": "currency/share",
+          "accounting_basis": "US_GAAP",
+          "definition": "diluted_eps",
+          "share_basis": "NVIDIA Q2 FY2027 GAAP comparative presentation"
+        },
+        "sales": {
+          "value": "46743",
+          "scale": "1000000",
+          "currency": "USD",
+          "unit": "currency",
+          "accounting_basis": "US_GAAP",
+          "definition": "total_revenue",
+          "share_basis": null
+        }
+      },
+      "catalysts": [],
+      "calendar": []
+    }
+  ]
+}

@@ -32,9 +32,13 @@ verification performed by this module. It requires:
   EPS is basic or diluted with an explicit comparable share/split basis. Sales is
   company total/net revenue, not a segment. Adjusted metrics need a documented
   adjustment basis. Compare each metric only against like-for-like definitions.
-- Each quarter, catalyst and calendar claim has a source reference, publication
-  timestamp and receipt timestamp. Date-only publication cannot establish intraday
-  availability; don't assign midnight or assume that a report date means actuals.
+- Each quarter, catalyst and calendar claim has a source reference, exactly one
+  publication timestamp (`published_at`) or date (`published_on`), and an aware
+  receipt timestamp. Date-only publication retains its precision. Availability
+  is conservatively bounded by the earlier of actual receipt or that date's end
+  in UTC-12 (latest ordinary civil day end). This bound is not an exact publication
+  time. Same-day news received after a trigger cannot establish earlier availability.
+  Don't assign midnight or assume that an expected report date means actuals.
 - Catalyst evidence has an explicit reviewed connection to the symbol and entry
   session. Earnings catalysts also identify the matching report period. This is
   not sentiment scoring or automatic proof that a headline caused a price move.
@@ -97,7 +101,7 @@ This is a working reviewed-input adapter, not an automatic news or filing servic
 It does not imply that the user must manually enter every future ticker forever.
 Automatic adapters need validated source mappings for the same contract.
 
-## Webull source verification still required
+## Webull observations and supported fallback
 
 Run on the configured credentialed host:
 
@@ -111,6 +115,19 @@ configured Webull credentials and labels results OBSERVATIONS_ONLY. It does not
 start the scanner, place orders, publish normalized evidence or certify provider
 accounting/time semantics. Source fields must be checked before implementing an
 automatic mapping; the calendar alone cannot supply reported quarterly growth.
+
+The 2026-10-01 iMac probe returned two NVDA actual-labelled calendar rows and an
+empty quarterly-income payload. Its cause is unknown. A bounded issuer review
+supplies the missing GAAP prior-year comparison; see
+[review and offline command](evidence/step09-nvda-issuer-review.md) and checkpoint
+[09a](checkpoints/09a-provider-fallback.md). The calendar's latest values match
+that review, but this is not a universal Webull mapping or a market-wide feed.
+
+`desk.earnings_check` reads an explicit local file and independently supplied
+security ID. EVALUATED means the reviewed input was evaluated, not that every gate
+passes. It prints the cup/EP component statuses separately. It uses no provider
+requests; `--at` explicitly labels historical replay. Without it, expired review
+files are unavailable at the current time. No scanner environment is modified.
 
 Plan B: keep the technical candidate visible with PENDING_EVIDENCE. Supported
 issuer releases/filings can supply a reviewed bundle; unknown provider fields must

@@ -1,6 +1,10 @@
 # Step 09 — Earnings and catalyst evidence
 
-Status: gate/adapter implementation verified; provider mapping and acceptance pending. Base 3c6d58b; upstream matched. Serves watch/analyze.
+Status: initial gate/adapter implementation verified. Source follow-up is recorded
+in [09a-provider-fallback.md](09a-provider-fallback.md): iMac calendar observations,
+empty income response and a bounded issuer fallback, with 688 strict tests passing.
+The historical pending items below describe this initial checkpoint.
+Base 3c6d58b; upstream matched. Serves watch/analyze.
 Taz resumed Step 09 after the Step 08 iMac probe passed. Codex implements/self-reviews.
 
 ## Impact record before implementation

@@ -1,5 +1,5 @@
 """Point-in-time reviewed earnings evidence. No provider-field guessing or orders."""
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import json
@@ -23,14 +23,27 @@ class Record(BaseModel):
 
 class Published(Record):
     source_ref: Text
-    published_at: AwareDatetime
+    published_at: AwareDatetime | None = None
+    published_on: date | None = None
     received_at: AwareDatetime
 
     @model_validator(mode="after")
     def time_order(self):
-        if self.received_at < self.published_at:
-            raise ValueError("receipt precedes publication")
+        if (self.published_at is None) == (self.published_on is None):
+            raise ValueError("provide exactly one publication timestamp or date")
+        earliest = self.published_at or datetime.combine(self.published_on, time(), timezone(timedelta(hours=14)))
+        if self.received_at < earliest:
+            raise ValueError("receipt precedes possible publication")
         return self
+
+    @property
+    def known_published_by(self):
+        if self.published_at is not None:
+            return self.published_at
+        # Date-only evidence: latest possible local day end, or earlier actual receipt.
+        # This is an availability upper bound, NOT a claimed exact publication time.
+        end = datetime.combine(self.published_on + timedelta(days=1), time(), timezone(timedelta(hours=-12)))
+        return min(end, self.received_at)
 
 
 class Metric(Record):
@@ -62,7 +75,8 @@ class Quarter(Published):
 
     @model_validator(mode="after")
     def actual_period(self):
-        if not self.period_start < self.period_end < self.published_at.date():
+        publication_day = self.published_at.date() if self.published_at else self.published_on
+        if not self.period_start < self.period_end < publication_day:
             raise ValueError("reported quarter must end before publication")
         if self.eps and (self.eps.unit != "currency/share" or not self.eps.share_basis or self.eps.definition not in {"diluted_eps", "basic_eps"}):
             raise ValueError("EPS requires per-share units and explicit share basis")
@@ -123,7 +137,7 @@ def metric_growth(current, prior):
 
 
 def next_earnings(evidence, at):
-    known = [r for r in evidence.calendar if r.published_at <= at and r.received_at <= at]
+    known = [r for r in evidence.calendar if r.known_published_by <= at and r.received_at <= at]
     upcoming = {r.fiscal_period for r in known if r.report_date >= clock(at).date()}
     eligible = [r for r in known if r.fiscal_period in upcoming]
     if not eligible:
@@ -182,9 +196,11 @@ def evaluate(setup_id, symbol, security_id, evidence, at, *, trigger_at=None):
     if current.period_end-current.period_start != prior.period_end-prior.period_start and not evidence.period_comparability_ref:
         result["reasons"] = ["different quarter durations need comparability evidence"]
         return result
-    if any(q.published_at > cutoff or q.received_at > at for q in (current, prior)):
+    if any(q.known_published_by > cutoff or q.received_at > at for q in (current, prior)):
         result["reasons"] = ["reported results were unavailable at the evaluation/publication cutoff"]
         return result
+    result["publication_bounds"] = {"current": current.known_published_by.isoformat(),
+                                    "prior": prior.known_published_by.isoformat()}
     eps, eps_reason = metric_growth(current.eps, prior.eps)
     sales, sales_reason = metric_growth(current.sales, prior.sales)
     result["growth"] = {"eps": str(eps) if eps is not None else None,
@@ -200,7 +216,7 @@ def evaluate(setup_id, symbol, security_id, evidence, at, *, trigger_at=None):
         return result
     if ep:
         catalysts = [c for c in evidence.catalysts if c.entry_session == clock(cutoff).date()
-                     and c.published_at <= cutoff and c.received_at <= at
+                     and c.known_published_by <= cutoff and c.received_at <= at
                      and (c.kind != "earnings" or c.report_period_end == current.period_end)]
         if not catalysts:
             result["reasons"] = ["no supported catalyst published by trigger for this entry session"]
