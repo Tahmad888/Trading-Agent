@@ -45,7 +45,7 @@ from desk.calendar import trading_day, next_trading_day, session, clock
 from desk.bar_contract import (completed_daily, completed_intraday, provenance,
                                check_price_scale, developing_daily_from_m15)
 from desk.indicators import daily_features
-from desk.data_basis import price_basis
+from desk.data_basis import price_basis, volume_basis
 from desk.playbook.cards import CARDS, INDEX_ETFS
 from desk.playbook.filters import MarketSize, market_filter, trend_template
 from desk.playbook.triggers import Context, Signal, connors_rsi2, episodic_pivot, scan
@@ -292,6 +292,7 @@ def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skippe
             check_price_scale(price_basis(d, now, symbol=sym).model_dump(mode="json"), m, now, symbol=sym)
             if len(m) < 2 or len(d) < MIN_DAILY_BARS:
                 raise BarDataError("not enough bars for the episodic pivot")
+            volume_basis(m.iloc[:2])
             ctx = Context(sym, market, None, today_open=float(m["open"].iloc[0]),
                           early_volume=float(m["volume"].iloc[:2].sum()),
                           early_volume_basis=m.attrs.get("volume_basis"))

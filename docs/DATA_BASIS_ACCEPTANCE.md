@@ -202,3 +202,29 @@ regular-session observation requirement; they do not establish every session
 or subsecond candle delivery. The separate iMac operational check remains later.
 See checkpoint 06f for the implemented ledger/import/scanner bridge. Remaining
 work is reviewed real mapping/channel configuration plus price/volume acceptance.
+
+## Current update — follow-up G
+
+The current acceptance policy and its limits are documented in
+[evidence/step06-native-channels.md](evidence/step06-native-channels.md).
+Native daily and RTH minute volume keep distinct definitions. EP may compare the
+explicit reviewed source pair without asserting identical sale-condition filters.
+This supersedes the earlier requirement to document every inclusion difference
+before that specific comparison: the unresolved microstructure is recorded as a
+limitation, not replaced with an invented vendor definition. The native 50-day
+baseline, first-30-minute numerator and 0.5 threshold are unchanged.
+
+Volume evidence is bounded to current share units on/after the latest effective
+split; consumers validate only the windows they use. Unknown split-crossing
+windows still reject. Relative-volume history is masked until a full rolling
+window is covered; old price warm-up remains available. No volume or price
+multipliers are guessed or applied to already-adjusted daily bars.
+
+NVDA/SPY sandbox-only reviewed mapping/channel files are in
+`config/step06-sandbox/`, valid for the 2026-10-01 bounded integration check.
+They are not activated by installation and are not universal provider acceptance.
+Run `desk.action_import` with actual dated paired reports, then
+`desk.data_acceptance` against fresh Webull bars. The test validates the connected
+contracts without running a scan or creating signals/orders. Its actual provider
+result is the remaining acceptance dependency; local tests are not that result.
+Taz already verified 06f's 492 tests on the iMac in 5.05s.

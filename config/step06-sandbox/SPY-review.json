@@ -1,0 +1,17 @@
+{
+  "source": "Codex bounded source review, 2026-10-01",
+  "evidence_ref": "docs/evidence/step06-native-channels.md",
+  "symbol": "SPY",
+  "source_symbol": "SPY",
+  "security_id": "913243251",
+  "currency": "USD",
+  "exchange_mic": "ARCX",
+  "instrument_name": "State Street SPDR S&P 500 ETF Trust",
+  "identity_evidence_ref": "docs/evidence/step06-native-channels.md#instrument-crosswalk",
+  "coverage_evidence_ref": "docs/evidence/step06-native-channels.md#action-coverage-procedure",
+  "coverage_start": "2022-01-01",
+  "valid_through": "2026-10-01",
+  "reviewed_at": "2026-10-01T15:40:46+00:00",
+  "cash_amount_basis": "effective_date_per_share",
+  "exceptional_actions": "none_found"
+}

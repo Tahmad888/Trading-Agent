@@ -41,6 +41,13 @@ Live mapping/channel configuration and Webull price/volume acceptance remain ope
 no real decision profile or scheduled runner is activated. Earlier status notes
 above record the state at their respective checkpoints, not the current result.
 
+[06g-price-volume-acceptance.md](checkpoints/06g-price-volume-acceptance.md)
+implements the explicit native-daily/RTH-minute volume comparison, split-bounded
+volume windows, scoped NVDA/SPY configuration and `desk.data_acceptance` diagnostic.
+It retains the EP formula and applies no guessed adjustments. The credentialed
+integrated check must return an actual pass before Step 06 closes; Step 07 remains
+paused. Taz confirmed the prior 492-test checkpoint on the iMac in 5.05s.
+
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through
 watch -> analyze -> plan -> approve -> manage -> journal. Each row is a stopping point.

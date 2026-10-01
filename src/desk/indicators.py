@@ -180,7 +180,12 @@ def daily_features(df: pd.DataFrame, s: Settings = Settings()) -> pd.DataFrame:
     out = out.loc[:, ~out.columns.duplicated()]
     out.attrs = dict(df.attrs)  # concat with indicator Series otherwise loses evidence
     try:
-        volume_basis(df, allow_developing=True)
+        basis = volume_basis(df.iloc[-1:], allow_developing=True)
+        if basis.valid_from is not None:
+            # Every relative-volume point needs its own full same-share rolling window.
+            valid = pd.Series(df.index.tz_convert(EASTERN).date >= basis.valid_from, index=df.index)
+            covered = valid.rolling(s.volume_avg_length).sum() == s.volume_avg_length
+            out.loc[~covered, "rel_volume"] = np.nan
     except BarDataError:
         # Math-only inputs can still produce price indicators. Unknown or mixed
         # volume must not masquerade as a usable relative-volume observation.

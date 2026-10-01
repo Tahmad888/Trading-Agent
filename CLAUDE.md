@@ -36,6 +36,13 @@ dividends are logged but ignored economically under Taz's explicit instruction.
 Real mapping/channel configuration and price/volume acceptance remain open; do not
 promote fictional test reviews or activate the runner.
 
+Follow-up G adds the explicit native-daily/RTH volume source-pair policy, bounded
+post-split volume windows and `desk.data_acceptance`. Read checkpoint 06g and
+`docs/evidence/step06-native-channels.md`. The checked NVDA/SPY sandbox config is
+scoped to 2026-10-01; importing actual dated reports and obtaining a real integrated
+PASS remains required. Do not claim local tests or a configured key activated the
+desk. The original 50-day/0.5 EP rule is unchanged.
+
 Read the six rules before doing anything. They come from Trading Desk Blueprint v2.4
 (29 Sep 2026), amended by Taz's later decisions in the repair plan:
 https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg

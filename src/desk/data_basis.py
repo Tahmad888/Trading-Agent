@@ -112,6 +112,22 @@ class VolumeBasis(Evidence):
     definition_id: Text | None  # sale/session inclusion definition, not simply 'volume'
     units: Literal["shares"]
     share_basis_id: Text | None  # separately attested share adjustment; never inferred from prices
+    symbol: Text | None = None
+    security_id: Text | None = None
+    valid_from: date | None = None
+    valid_through: date | None = None
+    comparison_policy: Literal["webull-rth30/native-daily50-v1"] | None = None
+
+    @model_validator(mode="after")
+    def bounded_identity(self):
+        fields = (self.symbol, self.security_id, self.valid_from, self.valid_through)
+        if any(v is not None for v in fields) and not all(v is not None for v in fields):
+            raise ValueError("Bounded volume evidence requires identity and both dates")
+        if self.valid_from is not None and self.valid_from > self.valid_through:
+            raise ValueError("Invalid volume evidence interval")
+        if self.comparison_policy and self.symbol is None:
+            raise ValueError("Mixed-channel comparison requires bounded instrument evidence")
+        return self
 
 
 def volume_basis(df: pd.DataFrame, *, allow_developing=False) -> VolumeBasis:
@@ -123,6 +139,15 @@ def volume_basis(df: pd.DataFrame, *, allow_developing=False) -> VolumeBasis:
         raise BarDataError("Unverified volume definition/share basis")
     if df.attrs.get("developing_as_of") and not allow_developing:
         raise BarDataError("Developing intraday volume is not a completed daily-volume observation")
+    if basis.valid_from is not None:
+        if df.empty or not isinstance(df.index, pd.DatetimeIndex) or df.index.tz is None:
+            raise BarDataError("Volume calculation needs dated observations")
+        dates = df.index.tz_convert(ET).date
+        if min(dates) < basis.valid_from or max(dates) > basis.valid_through:
+            raise BarDataError("Volume window crosses unverified split share units or evidence dates")
+        identity = df.attrs.get("provider_identity")
+        if identity is not None and identity != {"symbol": basis.symbol, "instrument_id": basis.security_id}:
+            raise BarDataError("Volume evidence belongs to another instrument")
     return basis
 
 
@@ -133,6 +158,18 @@ def compatible_volume(daily: pd.DataFrame, early: dict | None):
     except ValidationError as exc:
         raise BarDataError("Unknown early-volume definition/share basis") from exc
     if not observed.definition_id or not observed.share_basis_id or (
-        baseline.definition_id, baseline.units, baseline.share_basis_id
-    ) != (observed.definition_id, observed.units, observed.share_basis_id):
-        raise BarDataError("Daily and intraday volume definitions/share bases are not verified compatible")
+        baseline.units, baseline.share_basis_id
+    ) != (observed.units, observed.share_basis_id):
+        raise BarDataError("Daily and intraday volume share bases are not verified compatible")
+    if (baseline.symbol, baseline.security_id) != (observed.symbol, observed.security_id):
+        raise BarDataError("Daily and intraday volume instrument identities differ")
+    if baseline.valid_through is not None and baseline.valid_through != observed.valid_through:
+        raise BarDataError("Daily and intraday volume evidence dates differ")
+    if baseline.definition_id == observed.definition_id:
+        return
+    # An explicit directional comparison is not a claim of identical trade coverage.
+    if not (baseline.comparison_policy == observed.comparison_policy == "webull-rth30/native-daily50-v1"
+            and baseline.channel == "webull:native:D" and observed.channel == "webull:minute:RTH"
+            and baseline.definition_id == "webull:native:D:provider-reported"
+            and observed.definition_id == "webull:minute:RTH:provider-reported"):
+        raise BarDataError("Daily and intraday volume definitions lack an accepted comparison policy")

@@ -71,7 +71,7 @@ def leader_scan(bars: Mapping[str, pd.DataFrame], spy_close: pd.Series,
             if df["close"].iloc[-1] <= MIN_PRICE:
                 skipped[sym] = f"price under ${MIN_PRICE:.0f}"
                 continue
-            volume_basis(df)
+            volume_basis(df.iloc[-VOLUME_AVG_BARS:])
             if df["volume"].iloc[-VOLUME_AVG_BARS:].mean() < MIN_AVG_VOLUME:
                 skipped[sym] = "under 1M shares a day"
                 continue

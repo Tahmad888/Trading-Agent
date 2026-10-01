@@ -1,0 +1,46 @@
+[
+  {
+    "source": "Webull OpenAPI sandbox",
+    "evidence_ref": "docs/evidence/step06-native-channels.md#price-channels",
+    "host": "api.sandbox.webull.com",
+    "symbol": "NVDA",
+    "timeframe": "D",
+    "normalization": "split_dividend_adjusted",
+    "volume_policy": "native_no_split_window",
+    "volume_evidence_ref": "docs/evidence/step06-native-channels.md#volume-comparison-policy",
+    "ep_volume_comparison": true
+  },
+  {
+    "source": "Webull OpenAPI sandbox",
+    "evidence_ref": "docs/evidence/step06-native-channels.md#price-channels",
+    "host": "api.sandbox.webull.com",
+    "symbol": "NVDA",
+    "timeframe": "M15",
+    "normalization": "unadjusted",
+    "volume_policy": "native_no_split_window",
+    "volume_evidence_ref": "docs/evidence/step06-native-channels.md#volume-comparison-policy",
+    "ep_volume_comparison": true
+  },
+  {
+    "source": "Webull OpenAPI sandbox",
+    "evidence_ref": "docs/evidence/step06-native-channels.md#price-channels",
+    "host": "api.sandbox.webull.com",
+    "symbol": "SPY",
+    "timeframe": "D",
+    "normalization": "split_dividend_adjusted",
+    "volume_policy": "native_no_split_window",
+    "volume_evidence_ref": "docs/evidence/step06-native-channels.md#volume-comparison-policy",
+    "ep_volume_comparison": true
+  },
+  {
+    "source": "Webull OpenAPI sandbox",
+    "evidence_ref": "docs/evidence/step06-native-channels.md#price-channels",
+    "host": "api.sandbox.webull.com",
+    "symbol": "SPY",
+    "timeframe": "M15",
+    "normalization": "unadjusted",
+    "volume_policy": "native_no_split_window",
+    "volume_evidence_ref": "docs/evidence/step06-native-channels.md#volume-comparison-policy",
+    "ep_volume_comparison": true
+  }
+]

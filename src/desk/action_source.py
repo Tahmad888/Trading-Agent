@@ -14,7 +14,7 @@ from desk.action_ledger import ActionLedger
 from desk.bar_contract import BarProvenance
 from desk.bars import BarDataError
 from desk.calendar import clock
-from desk.data_basis import Evidence
+from desk.data_basis import Evidence, VolumeBasis
 
 
 class PriceChannelReview(Evidence):
@@ -23,11 +23,37 @@ class PriceChannelReview(Evidence):
     timeframe: Literal["D", "M15"]
     normalization: Literal["unadjusted", "split_adjusted", "split_dividend_adjusted"]
 
+    volume_policy: Literal["native_no_split_window"] | None = None
+    volume_evidence_ref: str | None = Field(default=None, min_length=1)
+    ep_volume_comparison: bool = False
+
     @model_validator(mode="after")
     def native_minutes(self):
         if self.timeframe == "M15" and self.normalization != "unadjusted":
             raise ValueError("Native Webull minutes are raw; this bridge cannot adjust them")
+        if bool(self.volume_policy) != bool(self.volume_evidence_ref):
+            raise ValueError("Native volume acceptance requires a policy and evidence reference")
+        if self.ep_volume_comparison and not self.volume_policy:
+            raise ValueError("EP comparison requires native volume acceptance")
         return self
+
+
+def native_volume_basis(channel, basis):
+    """Only rows since the latest split are attested in current share units.
+
+    Never guess whether the provider adjusts older volume. Consumers must check
+    their actual window; price warm-up can extend before this volume interval.
+    """
+    splits = [a for a in basis.actions if a.kind == "split"]
+    last = max(splits, key=lambda a: a.effective_session) if splits else None
+    first = last.effective_session if last else basis.coverage_start
+    native_channel = "webull:native:D" if channel.timeframe == "D" else "webull:minute:RTH"
+    return VolumeBasis(source="Webull OpenAPI", evidence_ref=channel.volume_evidence_ref,
+        channel=native_channel, definition_id=native_channel + ":provider-reported", units="shares",
+        share_basis_id=f"webull:{basis.security_id}:since:{last.revision if last else basis.coverage_start}",
+        symbol=basis.symbol, security_id=basis.security_id, valid_from=first,
+        valid_through=basis.basis_session,
+        comparison_policy="webull-rth30/native-daily50-v1" if channel.ep_volume_comparison else None)
 
 
 class ActionBackedSource:
@@ -74,6 +100,8 @@ class ActionBackedSource:
                 timestamp_semantics="session_label" if timespan == "D" else "start",
                 session="regular", delay_minutes=0, adjustment=channel.normalization,
                 price_scale_id="reviewed-action-ledger", price_basis=basis).model_dump(mode="json")
+            if channel.volume_policy:
+                frame.attrs["volume_basis"] = native_volume_basis(channel, basis).model_dump(mode="json")
             out[symbol] = frame
         return out
 

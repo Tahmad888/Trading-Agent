@@ -154,7 +154,7 @@ def minervini_vcp(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     depths = [d for _, _, d in c]
     shrinking = all(b <= card.p("shrink") * a for a, b in zip(depths, depths[1:]))
     pivot, low, last_depth = c[-1]
-    volume_basis(f)
+    volume_basis(f.iloc[-50:])
     vol10 = f["volume"].iloc[-10:].mean()
     vol50 = f["volume"].iloc[-50:].mean()
     close = f["close"].iloc[-1]
@@ -193,7 +193,7 @@ def oneil_cup_with_handle(f: pd.DataFrame, card: Card, ctx: Context) -> Signal |
     handle_low = handle["low"].iloc[1:].min()
     handle_depth = 1 - handle_low / R
     rounded = 0.2 <= bottom_at / (len(cup) - 1) <= 0.8
-    volume_basis(f)
+    volume_basis(f.iloc[min(r + 1, len(f) - 50):])
     vol50 = f["volume"].iloc[-50:].mean()
     ok = (advance >= card.p("prior_advance") and card.p("cup_min_depth") <= depth <= card.p("cup_max_depth")
           and rounded and R >= card.p("right_side") * L and R <= L * 1.05
@@ -242,7 +242,7 @@ def episodic_pivot(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     hi, lo = base["high"].max(), base["low"].min()
     mid = (hi + lo) / 2
     sideways = (hi / lo - 1) <= card.p("sideways_range") and abs(last["close"] / mid - 1) <= card.p("near_middle")
-    compatible_volume(f, ctx.early_volume_basis)
+    compatible_volume(f.iloc[-50:], ctx.early_volume_basis)
     vol50 = f["volume"].iloc[-50:].mean()
     if len(f) < 50 or not np.isfinite(vol50) or vol50 <= 0:
         raise BarDataError("EP requires a positive, complete 50-day volume baseline")
@@ -311,9 +311,10 @@ def luk_reclaim(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     ema50 = ema(f["close"], 50).iloc[-1]
     if max(runs.values()) < card.p("min_run") or not last["ema_9"] > last["ema_21"] > ema50:
         return None
-    volume_basis(f)
     anchor_bars = f.iloc[-int(card.p("anchor_bars")):]
-    avwap = anchored_vwap(f, anchor_bars["low"].idxmin()).iloc[-1]
+    anchor = anchor_bars["low"].idxmin()
+    volume_basis(f.loc[anchor:])
+    avwap = anchored_vwap(f, anchor).iloc[-1]
     near = card.p("near_atr") * last["atr_14"]
     levels = {"21 EMA": last["ema_21"], "anchored VWAP": avwap}
     hit = {k: v for k, v in levels.items() if not pd.isna(v) and last["low"] <= v + near and last["close"] >= v - near}
