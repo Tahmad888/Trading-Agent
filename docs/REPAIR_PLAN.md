@@ -1,6 +1,10 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30. Status: Steps 01–06 complete and verified; Step 07 next, with re-entry policy awaiting the user answer.
+Prepared 2026-09-30. Status: Steps 01–06 implementation checkpointed; Step 06 follow-up verification active. Step 07 is paused until Taz's six Webull verification items are resolved; re-entry policy is resolved.
+
+Installation follow-up: [06a-resource-cleanup.md](checkpoints/06a-resource-cleanup.md)
+records the Python 3.14 iMac test failure, its verified cleanup fix, and the six
+remaining Webull checks. Local automated success does not complete live acceptance.
 
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through
@@ -373,7 +377,7 @@ Plan B: return to paper and reconcile any existing positions.
 | HALF regime (resolved) | Advisory; user-selected budget is unchanged. | 05, 13 |
 | Other account/market conditions (resolved) | Daily/weekly/drawdown and bearish-market conditions become warnings the user can override at approval. | 05 |
 | Account loss accounting (defined) | Net liquidation including realized/unrealized/fees, excluding external flows; explicit ET date and Monday week. Adapter must supply reconciled baselines. Manual stop/reset is separately audited. | 05, 15–16 |
-| Signal re-entry | After failure/closure, allow a newly qualified setup with fresh approval, or require manual re-enabling? User question pending. | 07 |
+| Signal re-entry (resolved) | Taz accepted the recommendation: newly qualified setups after failure/closure may produce new tickets, each requiring fresh approval. No blanket one-trigger-per-day cap. | 07 |
 | Relative volume/chase details | Same-time baseline, session handling, lookback and per-card thresholds; distinguish user policy from assumptions. | 10, 17 |
 | Single-contract exits | Approved exit variant or shares alternative; never increase size merely to enable fractions. | 11 |
 | Source-dependent setup changes | Cup variants, Darvas floor, Kell filter/timeframe and Luk stop anchor. | 17–19 |

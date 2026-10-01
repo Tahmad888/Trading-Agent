@@ -1,3 +1,4 @@
+from contextlib import closing
 from dataclasses import replace
 from datetime import timedelta
 import sqlite3
@@ -175,7 +176,7 @@ def test_corrupt_or_missing_state_does_not_become_empty_healthy_account(tmp_path
     with pytest.raises(RiskStateError):
         store.load(account.account_id)
     store.save_snapshot(account, "one", now=NOW)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("UPDATE accounts SET payload='{}'")
     with pytest.raises(ValidationError):
         RiskStateStore(path).load(account.account_id)
@@ -222,7 +223,7 @@ def test_new_pnl_period_requires_explicit_reconciled_snapshot(tmp_path, account,
 
 def test_state_schema_mismatch_is_not_reinitialized(tmp_path):
     path = tmp_path / "risk.sqlite"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("PRAGMA user_version=999")
     with pytest.raises(RiskStateError):
         RiskStateStore(path)

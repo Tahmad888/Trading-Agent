@@ -102,6 +102,7 @@ its planned setup-repair step. Near-close snapshots are evidence, not filled ord
 - [x] Positive/negative/calendar/cached-data and integration tests pass.
 - [x] Documentation/tracker updated. Push authorized by Taz for Steps 01–06.
 
-Next: Step 07, pending the already-asked re-entry policy choice. Later fresh setups
-could produce another ticket with fresh approval, or require explicit manual
-re-enabling; do not choose that policy silently.
+Follow-up: Taz accepted fresh qualifying setups with fresh approval for re-entry.
+He then required six Webull verification items before Step 07; those remain active.
+See [06a-resource-cleanup.md](06a-resource-cleanup.md) for the iMac installation
+acceptance repair and the remaining verification scope. Step 07 has not started.

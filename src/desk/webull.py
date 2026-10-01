@@ -145,9 +145,11 @@ class WebullData:
         try:
             raw = self._transport(req, self._timeout)
         except error.HTTPError as e:
-            hint = {401: "keys rejected", 403: "no OpenAPI market-data subscription",
-                    429: "rate limit"}.get(e.code, "")
-            raise WebullError(f"Webull HTTP {e.code} {hint}".strip()) from e
+            # HTTPError owns a response body too; translating it must close that body.
+            with e:
+                hint = {401: "keys rejected", 403: "no OpenAPI market-data subscription",
+                        429: "rate limit"}.get(e.code, "")
+                raise WebullError(f"Webull HTTP {e.code} {hint}".strip()) from e
         except (error.URLError, TimeoutError, OSError) as e:
             raise WebullError(f"Webull unreachable: {e}") from e
         finally:

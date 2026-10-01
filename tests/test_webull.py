@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 from datetime import datetime, timezone
 from urllib import error
 
@@ -70,15 +71,28 @@ def test_missing_symbol_in_reply_fails_closed():
         client(t).bars(["SPY", "QQQ"], category="US_ETF", timespan="D")
 
 
-@pytest.mark.parametrize("exc", [
-    error.HTTPError("u", 403, "Forbidden", {}, None),
-    error.HTTPError("u", 429, "Too Many", {}, None),
-    error.URLError("down"),
-    TimeoutError(),
+@pytest.mark.parametrize("make_error", [
+    lambda: error.HTTPError("u", 401, "Unauthorized", {}, BytesIO(b"response body")),
+    lambda: error.HTTPError("u", 403, "Forbidden", {}, BytesIO(b"response body")),
+    lambda: error.HTTPError("u", 429, "Too Many", {}, BytesIO(b"response body")),
+    lambda: error.HTTPError("u", 500, "Server Error", {}, BytesIO(b"response body")),
+    lambda: error.URLError("down"),
+    TimeoutError,
 ])
-def test_http_failures_fail_closed(exc):
-    with pytest.raises(BarDataError):
-        client(FakeTransport(exc=exc)).bars(["SPY"], category="US_ETF", timespan="D")
+def test_http_failures_fail_closed(make_error):
+    # Create resource-owning errors during the test, not at module collection.
+    exc = make_error()
+    try:
+        with pytest.raises(BarDataError) as caught:
+            client(FakeTransport(exc=exc)).bars(["SPY"], category="US_ETF", timespan="D")
+        assert caught.value.__cause__ is exc
+        if isinstance(exc, error.HTTPError):
+            assert exc.fp.closed
+            assert f"HTTP {exc.code}" in str(caught.value)
+            assert "response body" not in str(caught.value)
+    finally:
+        if isinstance(exc, error.HTTPError):
+            exc.close()  # also clean up if the regression assertion fails
 
 
 def test_bad_replies_and_arguments_fail_closed():
