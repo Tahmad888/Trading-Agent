@@ -59,6 +59,7 @@ python -m desk.metadata_check --symbols NVDA SPY BRK.B
 ```
 
 This probes metadata plus D/M15 identities, with no price profiles, scanner or
-orders. Berkshire's repaired live bar path still needs this result; do not infer
-it from synthetic tests. The probe prints the host and suppresses raw exceptions.
+orders. The repaired NVDA/SPY/BRK.B paths passed on the iMac sandbox connection
+on 2026-10-01; see `evidence/step08-metadata-imac.md`. The probe prints the host
+and suppresses raw exceptions. This does not establish production-host access.
 No paid access or live execution is implied. See `checkpoints/08a-webull-symbols.md`.

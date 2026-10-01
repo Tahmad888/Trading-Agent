@@ -1,6 +1,6 @@
 # Step 08 follow-up — verified Webull share-class identity
 
-Status: code complete; final iMac metadata/bar probe pending. Base 650884e; upstream matched before edits.
+Status: complete; final iMac metadata/D/M15 identity probe passed on 2026-10-01. Base 650884e; upstream matched before edits.
 Serves watch/analyze. Step 09 remains paused. Codex implements and self-reviews.
 
 ## Impact record before implementation
@@ -67,5 +67,14 @@ coverage, volume definitions, setups, earnings or orders.
   pretending the earlier invented BRK.B record represents the observed provider.
 - Self-review only. No authenticated request made from this Codex workspace.
 
-Next: user pulls this checkpoint on the iMac and runs the probe. Resolve any
-returned mismatch before closing Step 08 provider verification. Step 09 paused.
+## Final provider verification
+
+Taz supplied the repaired iMac probe at 2026-10-01T18:33:18.588768Z on
+api.sandbox.webull.com. NVDA, SPY and BRK.B all passed metadata/D/M15 identity
+checks, with no skips. Berkshire's raw provider spelling remained BRK B and its
+instrument ID was 916040668 throughout. See `../evidence/step08-metadata-imac.md`
+for the precise scope and evidence attribution. The earlier pending statements
+in the pre-implementation record describe the work before this result arrived.
+
+Step 08 provider verification is closed for this scope. Documentation-only closure;
+no test rerun needed and no activation. Step 09 is next, awaiting Taz's continuation.

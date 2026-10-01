@@ -99,7 +99,7 @@ All market data in the new tests is synthetic, not live provider evidence.
 ## Limits and handoff
 
 Update: later iMac observations and the resulting alias repair are recorded in
-`08a-webull-symbols.md`; its final provider probe remains pending. The following
+`08a-webull-symbols.md`; its final iMac metadata/D/M15 identity probe passed. The following
 paragraph describes the initial implementation checkpoint.
 
 No authenticated Webull metadata request was made. Route/SDK research and mocked

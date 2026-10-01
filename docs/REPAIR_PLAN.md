@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–08 complete. Step 06 includes scoped NVDA/SPY sandbox integration and iMac verification. Step 08 and its symbol repair have 621 passing strict tests on both local Python versions. NVDA/SPY metadata and daily-bar identity checks passed on the iMac; final verification of the repaired Berkshire alias is pending (checkpoint 08a). Step 09 is paused and has not started. Earlier checkpoint paragraphs below retain their historical status; the closure result supersedes their pending items.
+Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–08 complete. Step 06 includes scoped NVDA/SPY sandbox integration and iMac verification. Step 08 and its symbol repair have 621 passing strict tests on both local Python versions. NVDA/SPY/BRK.B metadata and D/M15 identity checks passed on the iMac sandbox connection at 18:33:18Z on 2026-10-01 (checkpoint 08a). Step 09 is next and has not started. Earlier checkpoint paragraphs below retain their historical status; the closure result supersedes their pending items.
 
 Installation follow-up: [06a-resource-cleanup.md](checkpoints/06a-resource-cleanup.md)
 records the Python 3.14 iMac test failure, its verified cleanup fix, and the six
@@ -241,9 +241,8 @@ duplicate scan and long/short symmetry. Plan B: retain history but suspend new e
 ### 08 — Discovery (watch)
 
 Completed 2026-10-01. Read `checkpoints/08-discovery.md` and `DISCOVERY.md`.
-621 strict tests pass on Python 3.12/3.14 after follow-up 08a. NVDA/SPY metadata
-and D identities passed on the iMac; repaired Berkshire D/M15 verification is
-pending. Read `checkpoints/08a-webull-symbols.md`. No runner activation.
+621 strict tests pass on Python 3.12/3.14 after follow-up 08a. NVDA/SPY/BRK.B
+metadata and D/M15 identities passed on the iMac sandbox connection. Read `checkpoints/08a-webull-symbols.md`. No runner activation.
 
 Depends on 06–07. Targets: `watchlist.py`, `scanner.py`, provider metadata and tests.
 Keep leadership, gap/momentum movers, declining/bearish candidates, core ETFs and

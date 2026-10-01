@@ -18,10 +18,10 @@ The scanner now persists signal lifecycle separately from approvals/orders, with
 621 strict tests passing on both local Python versions after Step 08. Discovery
 now uses security metadata, distinct bearish sources, per-setup history and next-scan
 user additions. Read docs/checkpoints/08-discovery.md and docs/DISCOVERY.md.
-Step 09 is paused for Step 08 provider verification. NVDA/SPY metadata and daily
-bar identities passed on the iMac. The observed Berkshire symbol requires the
-08a alias repair; its final iMac D/M15 probe is pending. Read
-docs/checkpoints/08a-webull-symbols.md. Earlier follow-up descriptions below retain historical status.
+Step 08 provider verification is complete: NVDA, SPY and BRK.B metadata/D/M15
+identities passed on the iMac sandbox connection, 2026-10-01. Read
+docs/checkpoints/08a-webull-symbols.md and docs/evidence/step08-metadata-imac.md.
+Step 09 is next, awaiting Taz’s continuation. Earlier follow-up descriptions below retain historical status.
 Step 06 adds bounded exchange-calendar timing, completed-bar checks and explicit
 provenance; live Webull semantic acceptance remains Step 20. Taz authorized pushing
 verified checkpoints to the dedicated repair branch, without an implicit merge.
