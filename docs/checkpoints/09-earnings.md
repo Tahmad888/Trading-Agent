@@ -1,5 +1,9 @@
 # Step 09 — Earnings and catalyst evidence
 
+**Correction 2026-10-01:** Step 09 is reopened. The earlier closure below verified
+only gates and a reviewed NVDA fallback, not automatic earnings supply. See
+[09b-automatic-sources.md](09b-automatic-sources.md) for the remaining work.
+
 Status: closed for normalized gates and the reviewed-input adapter after the iMac
 confirmation recorded in checkpoint 09a. Source follow-up is recorded
 in [09a-provider-fallback.md](09a-provider-fallback.md): iMac calendar observations,

@@ -47,6 +47,7 @@ SANDBOX_HOST = "api.sandbox.webull.com"   # Sandbox delay_minutes=0 is NOT proof
 BARS_PATH = "/market-data/stocks/bars/list"
 SNAPSHOT_PATH = "/market-data/stocks/snapshots/list"
 INCOME_PATH = "/market-data/fundamentals/income-statements/get"
+FINANCIAL_ALERT_PATH = "/market-data/fundamentals/financial-alerts/get"
 EARNINGS_PATH = "/market-data/fundamentals/earnings-calendars/list"
 DIVIDENDS_PATH = "/market-data/fundamentals/dividend-calendars/list"
 FUND_SPLITS_PATH = "/market-data/fundamentals/fund-splits/get"
@@ -385,6 +386,13 @@ class WebullData:
             raise WebullError("income observations require a symbol")
         return self._call("GET", INCOME_PATH, {"symbol": webull_symbol(symbol),
                           "category": "US_STOCK", "type": "QUARTERLY", "count": str(count)})
+
+    def financial_alert(self, symbol: str):
+        """Raw upcoming-earnings observations; official SDK 3.0.2 GET v3 route."""
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise WebullError("financial alert requires a symbol")
+        return self._call("GET", FINANCIAL_ALERT_PATH,
+                          {"symbol": webull_symbol(symbol), "category": "US_STOCK"})
 
     def dividend_calendar(self, symbol: str) -> list[dict]:
         """Recent stock dividends only; NOT complete action or split coverage."""

@@ -1,5 +1,9 @@
 # Step 09 source follow-up — Webull observation and issuer fallback
 
+**Correction 2026-10-01:** Step 09 is reopened. The earlier closure below verified
+only gates and a reviewed NVDA fallback, not automatic earnings supply. See
+[09b-automatic-sources.md](09b-automatic-sources.md) for the remaining work.
+
 Status: Step 09 closed for normalized gates and the reviewed-input adapter; local
 and reported iMac acceptance verified. Base 935a90d; implementation 08377a4.
 Upstream matched before follow-up. Taz supplied the iMac sandbox probe at

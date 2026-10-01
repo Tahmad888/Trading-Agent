@@ -1,5 +1,8 @@
 # Earnings and catalyst evidence
 
+**Step 09 is open.** The tested reviewed-input adapter below is not a completed
+automatic data service. See [remaining work](checkpoints/09b-automatic-sources.md).
+
 Step 09 separates a technical setup from its required fundamental qualification.
 A chart signal is still visible when evidence is missing. It cannot pass fresh
 review for an earnings-dependent setup until the evidence qualifies.
@@ -132,3 +135,46 @@ files are unavailable at the current time. No scanner environment is modified.
 Plan B: keep the technical candidate visible with PENDING_EVIDENCE. Supported
 issuer releases/filings can supply a reviewed bundle; unknown provider fields must
 remain unknown. Do not substitute estimates, future news, or unreviewed raw data.
+
+## Step 09 source access collection
+
+Run once on the iMac with its existing Webull environment and activated venv:
+
+```bash
+python -m desk.earnings_sources \
+  --symbols NVDA,AAPL,MSFT \
+  --output-dir "$HOME/Desktop/step9-sources"
+```
+
+SEC requires a declared User-Agent. If SEC_USER_AGENT is absent, the command asks
+privately for an application name and your real contact email (for example,
+`TradingDesk your-address`). This is not a new API key, purchase, or account. It is
+sent to SEC in the request header and not stored in the report. In noninteractive
+use, supply SEC_USER_AGENT in the environment; absence is a configuration failure.
+
+The three-stock default makes at most nine Webull requests (financial alert,
+calendar and quarterly income) and seven SEC requests (ticker index once, then
+submissions/companyfacts per resolved company). Each provider stops at its first
+request/schema failure; an unknown ticker is reported separately. The other
+provider can still run. No retries, no Alpha Vantage calls, no market-open need.
+Use `--sources webull` or `--sources sec` for a deliberately isolated check after
+reviewing an earlier result; do not repeatedly run around a provider restriction.
+
+Each run creates a new local subfolder containing observations and `report.json`.
+Successful observations retain request route, receipt time and a SHA-256 checksum.
+Webull credentials are redacted before writing provider text to disk. Reports
+contain samples; complete observations remain in the local files for later mapping.
+Re-running does not overwrite earlier receipt times. Files are evidence archives,
+not an automatic stale-data cache used by the scanner.
+
+- OBSERVATIONS_ONLY: a response was collected; no semantic/coverage approval.
+- EMPTY_UNVERIFIED: the endpoint returned an empty container; not proof of no events.
+- UNAVAILABLE: access, transport or schema failed; later calls to that provider stop.
+- NOT_RUN: skipped after that failure.
+- Overall INCOMPLETE (exit 1) includes any empty/unavailable/skipped response. It
+  still saves the other usable observations. Do not rerun merely to get exit 0.
+
+SEC facts are displayed without selecting a quarter: quarterly and year-to-date
+values can share a period end. Filing period labels, restatements, share basis and
+an earlier issuer release must be resolved by the next adapter work. This command
+never writes an EarningsEvidence bundle, extends a review, or activates a scanner.

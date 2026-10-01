@@ -21,14 +21,14 @@ user additions. Read docs/checkpoints/08-discovery.md and docs/DISCOVERY.md.
 Step 08 provider verification is complete: NVDA, SPY and BRK.B metadata/D/M15
 identities passed on the iMac sandbox connection, 2026-10-01. Read
 docs/checkpoints/08a-webull-symbols.md and docs/evidence/step08-metadata-imac.md.
-Step 09 is closed for earnings/catalyst gates and the reviewed-input adapter. The
-implementation passes 688 strict tests on Python 3.12/3.14. The iMac probe returned
-NVDA calendar actuals but empty income data; a bounded issuer review and offline
-check passed locally and on the iMac; Taz reported 688 passed in 8.88s and the
-matching historical replay fingerprint on 2026-10-01. Step 10 has not started.
-Read docs/checkpoints/09a-provider-fallback.md and docs/EARNINGS_EVIDENCE.md.
-Automatic market-wide earnings coverage is not established. Do not promote raw
-provider payloads to qualification. Earlier descriptions retain historical status.
+Step 09 is REOPENED / IN PROGRESS. Earlier closure after 688 passing tests and the
+NVDA iMac replay was premature: automatic reported results, upcoming dates,
+catalyst retrieval/review, refresh/integration and actual-host acceptance remain.
+Read docs/checkpoints/09b-automatic-sources.md for research and exit criteria.
+The multi-company source collector passes 715 strict tests on both local Python
+versions; actual-host Webull/SEC observations are pending.
+Do not call a source probe or one reviewed file complete automatic coverage.
+Step 10 has not started. Earlier descriptions retain historical status.
 Step 06 adds bounded exchange-calendar timing, completed-bar checks and explicit
 provenance; live Webull semantic acceptance remains Step 20. Taz authorized pushing
 verified checkpoints to the dedicated repair branch, without an implicit merge.
