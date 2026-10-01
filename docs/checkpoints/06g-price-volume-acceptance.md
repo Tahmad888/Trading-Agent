@@ -1,6 +1,6 @@
 # Step 06 follow-up G — Explicit native price/volume channels
 
-Status: implemented; local verification below, credentialed integration result pending. Base e86f3d4. Serves watch/analyze. One implementer;
+Status: implemented and scoped Step 06 acceptance complete on 2026-10-01. Base e86f3d4. Serves watch/analyze. One implementer;
 self-review. Taz authorized finishing remaining Step 06 work; the iMac passed
 492 tests in 5.05s. No Step 07, orders, scheduler or production activation.
 
@@ -83,18 +83,23 @@ producer/consumer changes together; preserve ledger/history and existing logs.
   daily bar from its previous-50-session EP denominator. That is historical
   integration evidence, not a new claim of live regular-session freshness.
 
-## Remaining external acceptance
+## Completed external acceptance
 
-The implementer has no credentialed iMac/Claude shell in this chat. A real
-ledger import plus `desk.data_acceptance` run must still be returned from that
-host. Existing same-day dated source reports should be reused; never retimestamp
-fixtures. No fresh source-connectivity or generic timing study is requested.
-If a saved report lacks its original receipt time, recover the timestamp from
-its request log or fetch just that missing source response; do not invent it.
+Taz supplied real integrated results at code commit f395c7e: NVDA in Claude cloud
+at 16:00:30Z and SPY on the iMac at 16:16:05Z on 2026-10-01. Both imported ledgers
+were READY and all five data-acceptance stages passed on current RTH data, using
+1,000 daily rows each. Taz then confirmed the iMac strict suite: 508 passed in
+5.10s. See [the reported results](../evidence/step06-integrated-results.md) for
+original receipt timestamps, source counts, environments and exact volume ratios.
 
-No local credential file was read and no authenticated API call was made here.
-The reviewed configuration is not a live deployment. Step 06 cannot be marked
-fully accepted until the real integrated result is supplied. Step 07 stays paused.
+These user-supplied observations close the six scoped Step 06 verification items.
+Codex did not repeat authenticated calls. Below-threshold EP ratios are valid
+negative volume-filter observations, not failed data acceptance. Full setup
+eligibility was NOT_EVALUATED. The 50-day/0.5/30-minute policy is unchanged.
+
+Closure does not activate the runner or extend acceptance to other symbols,
+production, extended hours or unsupported action types. Dated profiles require
+renewed review and fresh observations for later use. Step 07 has not started.
 
 ## Verification and publication
 
@@ -117,3 +122,12 @@ validated against their actual models. An initial new after-close fixture used a
 pandas chained assignment; corrected to `.loc` before final passing suites.
 Self-review only. Upstream matched e86f3d4 before implementation; rechecked before
 publication. Push to the authorized repair branch only, without merging.
+
+## Closure documentation checkpoint
+
+Base f395c7e; upstream matched before edits. Documentation only: recorded the
+reported external passes and updated the tracker. No runtime/config changes,
+API calls, new tests or trading-rule changes. `git diff --check` verifies this
+checkpoint; the existing 508-test results cover the unchanged implementation.
+Rollback this documentation commit to restore the prior pending status; no state
+migration. Next numbered step: 07, persistent signal lifecycle.

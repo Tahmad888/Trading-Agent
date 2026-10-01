@@ -228,3 +228,13 @@ Run `desk.action_import` with actual dated paired reports, then
 contracts without running a scan or creating signals/orders. Its actual provider
 result is the remaining acceptance dependency; local tests are not that result.
 Taz already verified 06f's 492 tests on the iMac in 5.05s.
+
+## Closure — 2026-10-01
+
+The pending acceptance items above are superseded by the
+[reported integrated results](evidence/step06-integrated-results.md): NVDA in
+Claude cloud and SPY on the iMac passed all five stages at f395c7e. Taz confirmed
+the iMac strict suite, 508 passed in 5.10s. Step 06 is closed for the bounded
+NVDA/SPY sandbox scope. No more source calls are required for this checkpoint.
+The date-bound profiles, unsupported-window rejection and operational limits
+remain in force. No scanner/scheduler/orders were activated.

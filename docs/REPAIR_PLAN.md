@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30. Status: Steps 01–06 implementation checkpointed; Step 06 follow-up verification active. Step 07 is paused until Taz's six Webull verification items are resolved; re-entry policy is resolved.
+Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–06 complete, including scoped NVDA/SPY sandbox integration and iMac verification. Step 07 is next and has not started; re-entry policy is resolved. Earlier checkpoint paragraphs below retain their historical status; the closure result supersedes their pending items.
 
 Installation follow-up: [06a-resource-cleanup.md](checkpoints/06a-resource-cleanup.md)
 records the Python 3.14 iMac test failure, its verified cleanup fix, and the six
@@ -45,8 +45,10 @@ above record the state at their respective checkpoints, not the current result.
 implements the explicit native-daily/RTH-minute volume comparison, split-bounded
 volume windows, scoped NVDA/SPY configuration and `desk.data_acceptance` diagnostic.
 It retains the EP formula and applies no guessed adjustments. The credentialed
-integrated check must return an actual pass before Step 06 closes; Step 07 remains
-paused. Taz confirmed the prior 492-test checkpoint on the iMac in 5.05s.
+checks now pass: NVDA in Claude cloud and SPY on the iMac, followed by Taz's
+iMac confirmation of 508 tests in 5.10s. Step 06 is closed for this bounded
+scope; see [reported results](evidence/step06-integrated-results.md). No runner
+is activated and the 2026-10-01 profiles do not authorize later-date use.
 
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through

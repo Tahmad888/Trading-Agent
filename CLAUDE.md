@@ -11,6 +11,9 @@ including calendars and iron condors. HALF must be advisory without automaticall
 changing the selected budget. Step 05 makes account-loss/drawdown and bearish-market
 conditions user-overridable warnings, persists account/exposure/manual-stop state,
 and checks a trusted setup registry. No user approval UI/order adapter exists yet.
+Current status: Step 06 is closed for the scoped NVDA/SPY sandbox checks and
+iMac verification; read docs/evidence/step06-integrated-results.md. Step 07 has
+not started. Earlier follow-up descriptions below retain historical status.
 Step 06 adds bounded exchange-calendar timing, completed-bar checks and explicit
 provenance; live Webull semantic acceptance remains Step 20. Taz authorized pushing
 verified checkpoints to the dedicated repair branch, without an implicit merge.
@@ -39,8 +42,8 @@ promote fictional test reviews or activate the runner.
 Follow-up G adds the explicit native-daily/RTH volume source-pair policy, bounded
 post-split volume windows and `desk.data_acceptance`. Read checkpoint 06g and
 `docs/evidence/step06-native-channels.md`. The checked NVDA/SPY sandbox config is
-scoped to 2026-10-01; importing actual dated reports and obtaining a real integrated
-PASS remains required. Do not claim local tests or a configured key activated the
+scoped to 2026-10-01. Actual dated imports and integrated checks passed for NVDA
+in Claude cloud and SPY on the iMac; Taz confirmed 508 tests in 5.10s on the iMac. Do not claim local tests or a configured key activated the
 desk. The original 50-day/0.5 EP rule is unchanged.
 
 Read the six rules before doing anything. They come from Trading Desk Blueprint v2.4

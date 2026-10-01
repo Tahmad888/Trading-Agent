@@ -4,7 +4,8 @@ Scope: NVDA common shares and SPY ETF, Webull retail sandbox only. Configuration
 is for a read-only integration check; no scan/order activation. Review expires
 2026-10-01. Continuing on a later date requires renewed review and fresh action
 snapshots, not a timestamp edit on old evidence. Other symbols/hosts are not
-implicitly accepted. Taz's iMac passed 492 prior-checkpoint tests in 5.05s.
+implicitly accepted. Taz's iMac passed the final 508-test suite in 5.10s.
+The [integrated results](step06-integrated-results.md) close this scoped check.
 
 ## Instrument crosswalk
 
@@ -75,8 +76,8 @@ that every native daily open/high equals the aggregated minute value.
 The RTH check at dc2ae04 verified start-labeled M1/M15 bars, current completed
 bars, and forming-bar behavior for AAPL/SPY. The timestamp/session convention is
 applied to NVDA on the same documented stock-bar interface and validated again
-by the integrated command. NVDA freshness is not claimed independently passed
-until that command returns actual results. Premarket/overnight are excluded.
+by the integrated command. The NVDA integrated result subsequently passed on current RTH data at
+2026-10-01T16:00:30.120626+00:00 in Claude cloud. Premarket/overnight are excluded.
 
 Daily levels/indicators use native daily OHLC. EP's current-session opening price
 is explicitly the first RTH minute-series open; no assumption of equality with a
@@ -114,4 +115,5 @@ Native daily same-series ratios use native daily volume; RTH calculations use
 RTH volume. EP alone uses the explicit directional pair. Current instrument IDs,
 share basis and evidence dates must match. The configuration applies this
 provider-channel policy to NVDA/SPY; it does not claim an NVDA volume study was
-performed. The integrated diagnostic must return actual per-symbol results.
+performed. The integrated diagnostic subsequently returned PASS for both symbols; see
+the linked results for timestamps and host separation.
