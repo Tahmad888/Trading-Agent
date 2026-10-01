@@ -41,8 +41,8 @@ are unchanged; no same-time-of-day or shorter baseline has been substituted.
 
 Affected consumers include VCP/cup volume, Luk's anchored VWAP, leader liquidity
 and EP. Setup-specific failures are logged without discarding unrelated eligible
-setups. Developing daily open/volume are explicitly RTH M15-derived and are not
-claimed equivalent to provider daily values. Developing relative volume is
+setups. Developing daily O/H/L/C/V are explicitly RTH M15-derived and are not
+claimed equivalent to finalized provider daily values. Developing relative volume is
 unavailable; historical compatible ratios and price-only RSI(2) remain usable.
 The price-only screen diagnostic checks only fields it actually displays.
 
@@ -121,10 +121,61 @@ request, record the exact checkout commit and read this document and checkpoint
   total does not prove a stable shared definition. Return pass/fail/unknown plus
   sanitized evidence. Fabricated profiles/factors cannot replace missing evidence.
 
-If Webull cannot document compatibility, a possible later design is to construct
-both the full-day baseline and early numerator from the same verified RTH feed,
-with enough completed history and checked share adjustment. That changes the
-explicit baseline data definition: present consequences to Taz before adopting it.
+Follow-up D supersedes the earlier proposed RTH-only fallback: after Taz asked
+for a research-based choice, retain the native daily baseline. See
+[06d-provider-repair.md](checkpoints/06d-provider-repair.md) for sources and rationale.
+Different daily/intraday totals alone are not a failure. They do not establish
+Webull's definitions either. Do not invent common definition IDs to enable EP.
+
+## Bounded corporate-action acceptance procedure
+
+`coverage_complete=True` is the producer's explicit attestation for the stated
+security, interval and receipt time under a reviewed procedure. It is not a vendor
+warranty of universal completeness. To publish it, the producer must:
+
+1. Record an accessible, entitled source and supported event types/history; finish
+   pagination for the required interval. Record outages, omissions and unresolved
+   event types; these preclude attestation for affected histories.
+2. Establish a documented security mapping to Webull's instrument ID, including
+   exchange/share class and effective dates. Matching a ticker alone is insufficient.
+3. Reconcile duplicate/cancelled/corrected events and conflicting dates or types.
+   Classify economic fields, not a dataset's name. Do not silently prefer a date
+   column over conflicting notes. Resolve the reported SPY conflicts explicitly.
+4. Retain source evidence and a stable event ID. `action_evidence.ActionRecord`
+   converts resolved split/cash-dividend terms to `CorporateAction`, including a
+   `terms-v1` content revision. Cash uses per-share effective-date amounts in the
+   mapped currency; splits use new shares for old shares. No vendor version counter
+   is required. Receipt-reference changes do not revise economics. Other action
+   kinds remain unsupported. Cancellation requires removing/reconciling the prior
+   active event, not treating it as a new active split/dividend.
+5. Check known split and dividend examples against actual supplied prices, refresh
+   action evidence before publishing a profile and compare its ledger with the
+   preceding one. Rebuild affected prices/features/signals on economic changes,
+   cancellations or new events. Record mismatches instead of auto-adjusting twice.
+
+The helper implements normalization/revision detection only. There is still no
+real source adapter, identity-map producer or automatic rebuild worker connected.
+Its tests use synthetic records. A connector-only source is insufficient for an
+unattended desk without a usable local access route. No paid source is installed.
+
+## Provider route repair and focused check
+
+The 404 route in Claude's report is documented under Display Solution. It is not
+an enabled retail fallback. Default pacing now distinguishes sandbox (30/60s) from
+production (60/60s); concurrent processes still share each app/endpoint quota.
+`python -m desk.provider_check` reads NVDA's recent dividend calendar and SPY's
+fund splits using the retail client. It reports only counts/field names and
+sanitized errors; even success or an empty result never attests full coverage.
+The fund call uses the official Python SDK's US_STOCK category convention for US
+fund fundamentals, not a category inferred from bar requests. The new calls need
+verification from the credentialed iMac; local tests use a fake transport.
+
+Unsent addendum to the support draft: the corporate-action list returned 404 on
+`api.sandbox.webull.com` with v3. Which documented server-to-server retail route
+and entitlement, if any, provides historical stock/ETF splits, cash distributions
+and revisions? Please distinguish sandbox/production and Display/Broker products.
+For the volume question, we need documented comparison semantics, not a guarantee
+that daily volume must equal summed minute volume. No support message was sent.
 
 ## Remaining exit criteria
 

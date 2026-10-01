@@ -12,8 +12,8 @@ WebullError, a BarDataError, so the caller makes no plan (fail closed).
 
 Sources (Sourced, fetched 29 Sep 2026): developer.webull.com/apis/docs/
 authentication/signature (signing), reference/historical-bars (bars),
-reference/snapshot, reference/earnings-calendar, rate-limits (60 requests a
-minute per endpoint). Daily bars come forward-adjusted for dividends; minute
+reference/snapshot, reference/earnings-calendar, rate-limits (production 60 and
+sandbox 30 requests a minute per app key/endpoint, checked 1 Oct 2026). Daily bars come forward-adjusted for dividends; minute
 bars are unadjusted.
 
 Plan B: Webull's official Python SDK (webull-openapi-python-sdk) or its
@@ -27,6 +27,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import time
 import uuid
@@ -45,6 +46,9 @@ SANDBOX_HOST = "api.sandbox.webull.com"   # Sandbox delay_minutes=0 is NOT proof
 BARS_PATH = "/market-data/stocks/bars/list"
 SNAPSHOT_PATH = "/market-data/stocks/snapshots/list"
 EARNINGS_PATH = "/market-data/fundamentals/earnings-calendars/list"
+DIVIDENDS_PATH = "/market-data/fundamentals/dividend-calendars/list"
+FUND_SPLITS_PATH = "/market-data/fundamentals/fund-splits/get"
+DISPLAY_ACTIONS_PATH = "/market-data/instruments/stocks/corporate-actions/list"
 # Rankings, top 200 each, not paginated (Sourced: webull-openapi-python-sdk 3.0.2, screener requests v2).
 GAINERS_PATH = "/market-data/screeners/gainers-losers/list"
 ACTIVES_PATH = "/market-data/screeners/top-actives/list"
@@ -59,6 +63,19 @@ TRADING_SESSIONS = frozenset({"PRE", "RTH", "ATH", "OVN"})
 
 class WebullError(BarDataError):
     """Webull didn't give usable data. Means no trade."""
+
+
+class WebullHTTPError(WebullError):
+    """Sanitized route diagnostics; never include credentials/query/body."""
+    def __init__(self, status: int, host: str, path: str):
+        self.status, self.host, self.path = status, host, path
+        hint = {401: "credentials/authentication rejected",
+                403: "access denied; verify product entitlement and environment",
+                404: "route unavailable on this host; verify API product/version",
+                429: "rate limit; quota is shared by app key and endpoint"}.get(status, "provider failure")
+        if status == 404 and path == DISPLAY_ACTIONS_PATH:
+            hint += "; this path is documented under Display Solution, not retail Non-Display"
+        super().__init__(f"Webull HTTP {status} {host}{path}: {hint}")
 
 
 def _encode(s: str) -> str:
@@ -95,7 +112,7 @@ class WebullData:
     """Read-only Webull market data. Build it with from_env()."""
 
     def __init__(self, app_key: str, app_secret: str, access_token: str | None = None, *,
-                 host: str = HOST, timeout: float = 10.0, min_interval: float = 1.05,
+                 host: str = HOST, timeout: float = 10.0, min_interval: float | None = None,
                  transport: Transport = _urlopen,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                  bar_profile: Callable[[str, str], BarProvenance | None] | None = None,
@@ -103,6 +120,12 @@ class WebullData:
                  bar_timestamp_unit: str | None = None):
         if not app_key or not app_secret:
             raise WebullError("Webull app key and secret are not set")
+        if host not in (HOST, SANDBOX_HOST):
+            raise WebullError("Unsupported Webull retail host; a different API product needs its own connection")
+        if min_interval is None:
+            min_interval = 2.1 if host == SANDBOX_HOST else 1.05
+        if isinstance(min_interval, bool) or not isinstance(min_interval, (int, float)) or not math.isfinite(min_interval) or min_interval < 0:
+            raise WebullError("min_interval must be finite and nonnegative")
         self._key, self._secret, self._token = app_key, app_secret, access_token or None
         self._host, self._timeout, self._min_interval = host, timeout, min_interval
         self._transport, self._clock = transport, clock
@@ -138,8 +161,9 @@ class WebullData:
         return headers
 
     def _call(self, method: str, path: str, query: Mapping[str, str] | None = None, payload=None):
-        # Stay under 60 calls a minute per endpoint (Webull blocks IPs that keep hitting the limit).
-        wait = self._last_call.get(path, 0.0) + self._min_interval - time.monotonic()
+        # Sourced: sandbox 30/60s; production 60/60s per app key and endpoint.
+        # Other processes sharing this key still consume the same provider quota.
+        wait = self._last_call[path] + self._min_interval - time.monotonic() if path in self._last_call else 0
         if wait > 0:
             time.sleep(wait)
         query = {k: str(v) for k, v in (query or {}).items()}
@@ -152,9 +176,7 @@ class WebullData:
         except error.HTTPError as e:
             # HTTPError owns a response body too; translating it must close that body.
             with e:
-                hint = {401: "keys rejected", 403: "no OpenAPI market-data subscription",
-                        429: "rate limit"}.get(e.code, "")
-                raise WebullError(f"Webull HTTP {e.code} {hint}".strip()) from e
+                raise WebullHTTPError(e.code, self._host, path) from e
         except (error.URLError, TimeoutError, OSError) as e:
             raise WebullError(f"Webull unreachable: {e}") from e
         finally:
@@ -295,6 +317,24 @@ class WebullData:
         reply = self._call("GET", EARNINGS_PATH, {"symbol": symbol, "category": "US_STOCK"})
         if not isinstance(reply, list):
             raise WebullError("unexpected earnings reply")
+        return reply
+
+    def dividend_calendar(self, symbol: str) -> list[dict]:
+        """Recent stock dividends only; NOT complete action or split coverage."""
+        return self._partial_action_rows(DIVIDENDS_PATH, symbol, "US_STOCK")
+
+    def fund_splits(self, symbol: str) -> list[dict]:
+        """Fund-only partial evidence; never use this endpoint to attest stock splits."""
+        # The official Fundamentals.get_fund_splits uses US_STOCK for US funds.
+        # Its category vocabulary is not inferred from the bars endpoint.
+        return self._partial_action_rows(FUND_SPLITS_PATH, symbol, "US_STOCK")
+
+    def _partial_action_rows(self, path: str, symbol: str, category: str) -> list[dict]:
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise WebullError("A nonempty symbol is required")
+        reply = self._call("GET", path, {"symbol": symbol, "category": category})
+        if not isinstance(reply, list) or not all(isinstance(row, dict) for row in reply):
+            raise WebullError("Unexpected partial corporate-action reply")
         return reply
 
     def _ranking(self, path: str, query: Mapping[str, str]) -> list[dict]:

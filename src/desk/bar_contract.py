@@ -129,6 +129,9 @@ def developing_daily_from_m15(daily: pd.DataFrame, m15: pd.DataFrame, now: datet
     out.attrs = {**history.attrs, "developing_as_of": stamp.isoformat(),
                  "constituents_through": (intraday.index[-1] + pd.Timedelta(minutes=15)).isoformat(),
                  "developing_components": {"open": "first completed RTH M15 open; not provider daily open",
+                                           "high": "maximum completed RTH M15 high; not provider daily high",
+                                           "low": "minimum completed RTH M15 low; not verified equivalent to provider daily low",
+                                           "close": "last completed RTH M15 close; not the finalized daily close",
                                            "volume": "sum of completed RTH M15 volumes; not provider daily volume",
                                            "volume_basis": intraday.attrs.get("volume_basis")}}
     # History and the new row are on the revalidated current action basis. Preserve

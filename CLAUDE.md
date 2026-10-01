@@ -20,6 +20,10 @@ coverage and isolates unknown volume definitions. Read its checkpoint and
 `docs/DATA_BASIS_ACCEPTANCE.md` before provider work. No live profile is enabled;
 real action-source, daily-volume and RTH-timing acceptance remain open. Step 07 is
 paused until Taz's six Step 06 verification items are resolved.
+Follow-up D repairs sandbox pacing and HTTP route diagnostics and adds a partial-
+evidence probe plus reviewed action-term revisions. Read checkpoint 06d before
+provider checks. Keep EP's native daily baseline after the research review; no
+real profile or corporate-action source adapter is enabled by these repairs.
 
 Read the six rules before doing anything. They come from Trading Desk Blueprint v2.4
 (29 Sep 2026), amended by Taz's later decisions in the repair plan:

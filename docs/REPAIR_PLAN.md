@@ -16,6 +16,15 @@ tests on Python 3.12 and 3.14; Taz also reported 391 passed on the iMac on
 remain open; [DATA_BASIS_ACCEPTANCE.md](DATA_BASIS_ACCEPTANCE.md) contains the
 evidence request. Step 07 remains paused.
 
+[06d-provider-repair.md](checkpoints/06d-provider-repair.md) records sandbox pacing,
+product-aware HTTP diagnostics, a read-only retail route probe, reviewed action-term
+revision generation and corrected composed-bar provenance. Strict suites pass
+426 tests on both local Python 3.12 and 3.14. Taz requested a research-based EP
+volume decision: retain native daily volume and the existing 50-day/0.5 rule;
+do not substitute an RTH-only baseline merely to reconcile totals. Corporate-action
+source access/identity mapping, real volume definitions and the separate regular-
+session timing report remain open. These local repairs do not close Step 06.
+
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through
 watch -> analyze -> plan -> approve -> manage -> journal. Each row is a stopping point.
