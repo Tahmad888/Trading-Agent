@@ -1,0 +1,137 @@
+{
+  "source_report": "webull-data-verification-2026-10-01-addendum-2.md",
+  "source_sha256": "1469724f915bf4052502ce912b2456e373f05457a30ed3bfceb2d518f5b45bf9",
+  "audited_commit": "45c45cbdb34b8a2c78cf47976ba942a1e1baf456",
+  "route": "User-supplied Claude report: Webull sandbox signed bars endpoint and connector",
+  "observed_at": "2026-10-01T04:29:02.325Z",
+  "note": "Historical supplied evidence for offline tests; not a real-time feed or verified corporate-action profile.",
+  "symbol": "SPY",
+  "rows": [
+    {
+      "time": "2025-07-03T13:30:00.000+0000",
+      "open": "622.47",
+      "close": "623.46",
+      "high": "623.63",
+      "low": "622.465",
+      "volume": "4764312",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T13:45:00.000+0000",
+      "open": "623.47",
+      "close": "624.07",
+      "high": "624.54",
+      "low": "623.47",
+      "volume": "3811999",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T14:00:00.000+0000",
+      "open": "624.06",
+      "close": "624.77",
+      "high": "624.97",
+      "low": "624.04",
+      "volume": "3233442",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T14:15:00.000+0000",
+      "open": "624.775",
+      "close": "624.9786",
+      "high": "625.11",
+      "low": "624.55",
+      "volume": "2660682",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T14:30:00.000+0000",
+      "open": "625.0",
+      "close": "625.38",
+      "high": "625.45",
+      "low": "624.79",
+      "volume": "2217500",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T14:45:00.000+0000",
+      "open": "625.381",
+      "close": "625.305",
+      "high": "625.47",
+      "low": "625.18",
+      "volume": "1494390",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T15:00:00.000+0000",
+      "open": "625.31",
+      "close": "625.74",
+      "high": "625.785",
+      "low": "625.26",
+      "volume": "1729250",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T15:15:00.000+0000",
+      "open": "625.74",
+      "close": "625.415",
+      "high": "625.745",
+      "low": "625.18",
+      "volume": "3637876",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T15:30:00.000+0000",
+      "open": "625.42",
+      "close": "626.04",
+      "high": "626.05",
+      "low": "625.37",
+      "volume": "2634416",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T15:45:00.000+0000",
+      "open": "626.05",
+      "close": "625.9",
+      "high": "626.08",
+      "low": "625.74",
+      "volume": "2019975",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T16:00:00.000+0000",
+      "open": "625.902",
+      "close": "625.89",
+      "high": "626.05",
+      "low": "625.84",
+      "volume": "2023584",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T16:15:00.000+0000",
+      "open": "625.88",
+      "close": "625.735",
+      "high": "625.885",
+      "low": "625.5501",
+      "volume": "2353950",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T16:30:00.000+0000",
+      "open": "625.73",
+      "close": "626.09",
+      "high": "626.28",
+      "low": "625.6299",
+      "volume": "3942917",
+      "trading_session": "RTH"
+    },
+    {
+      "time": "2025-07-03T16:45:00.000+0000",
+      "open": "626.1",
+      "close": "625.34",
+      "high": "626.11",
+      "low": "624.87",
+      "volume": "6928816",
+      "trading_session": "RTH"
+    }
+  ]
+}

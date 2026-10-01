@@ -1,6 +1,6 @@
 # Step 06 follow-up A — Python 3.14 resource cleanup
 
-Status: cleanup fix verified locally; iMac re-run pending. Base: `7c11d54`.
+Status: cleanup fix verified locally and on the iMac. Base: `7c11d54`.
 Function: watch / operational verification. Implementer: Codex; self-review.
 
 ## Impact record before implementation
@@ -62,5 +62,6 @@ explicit instruction to finish Step 06 verification first.
 - Existing Python 3.12 full `pytest -q -W error`: **328 passed in 1.64s**.
 - Python 3.14 dependency check passed; `git diff --check` passed. No warnings filters
   relaxed. No live Webull requests, credentials, orders or scheduled runner involved.
-- Ready for the authorized repair-branch push, then the user's Intel iMac re-run.
-  This commit is an installation acceptance fix, not completion of live Webull checks.
+- Pushed as `45c45cb`; Taz confirmed **328 passed in 3.93s** on the Intel iMac's
+  Python 3.14.7. This is an installation acceptance fix, not completion of live
+  Webull checks. Subsequent evidence is tracked in `06b-sessions-and-history.md`.

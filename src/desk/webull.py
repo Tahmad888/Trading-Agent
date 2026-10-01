@@ -40,7 +40,7 @@ from desk.bars import BarDataError, bars_from_webull
 from desk.bar_contract import BarProvenance
 
 HOST = "api.webull.com"
-SANDBOX_HOST = "api.sandbox.webull.com"   # Checked 29 Sep 2026: paper-trade keys work here, with delay_minutes 0
+SANDBOX_HOST = "api.sandbox.webull.com"   # Sandbox delay_minutes=0 is NOT proof of real-time data.
 BARS_PATH = "/market-data/stocks/bars/list"
 SNAPSHOT_PATH = "/market-data/stocks/snapshots/list"
 EARNINGS_PATH = "/market-data/fundamentals/earnings-calendars/list"
@@ -52,6 +52,8 @@ GAINER_PERIODS = frozenset({"PRE_MARKET", "AFTER_MARKET", "MIN_3", "MIN_5", "DAY
 ACTIVE_KINDS = frozenset({"VOLUME", "RELATIVE_VOLUME_10D", "TURNOVER", "TURNOVER_RATE", "AMPLITUDE"})
 MAX_SYMBOLS_PER_BARS_CALL = 20
 TIMESPANS = frozenset({"M1", "M5", "M15", "M30", "M60", "M120", "M240", "D", "W", "M", "Y"})
+MINUTE_TIMESPANS = frozenset({"M1", "M5", "M15", "M30", "M60", "M120", "M240"})
+TRADING_SESSIONS = frozenset({"PRE", "RTH", "ATH", "OVN"})
 
 
 class WebullError(BarDataError):
@@ -160,20 +162,54 @@ class WebullData:
             raise WebullError("Webull reply is not JSON") from e
 
     def bars(self, symbols: Sequence[str], *, category: str, timespan: str, count: int = 1000,
-             sessions: str | None = None, max_delay_minutes: int = 0) -> dict[str, pd.DataFrame]:
+             sessions: str | None = None, max_delay_minutes: int = 0,
+             start_time: int | None = None, end_time: int | None = None,
+             real_time_required: bool = True) -> dict[str, pd.DataFrame]:
         """Bars for up to 20 symbols, oldest first.
 
         A symbol missing from the reply, or data delayed more than
         max_delay_minutes (Webull's delay_minutes field), is an error.
+        That field alone does not establish freshness. Minute bars default to RTH;
+        explicit extended sessions are for diagnostics, without a decision profile.
+        Optional bounds are inclusive UTC epoch milliseconds applied to bar labels,
+        not a guarantee of complete coverage or completed bars. The real-time flag
+        controls the request, not entitlement or independent completion checks.
         """
         if not 1 <= len(symbols) <= MAX_SYMBOLS_PER_BARS_CALL:
             raise WebullError(f"1 to {MAX_SYMBOLS_PER_BARS_CALL} symbols per call")
         if timespan not in TIMESPANS or category not in ("US_STOCK", "US_ETF"):
             raise WebullError("bad timespan or category")
+        if type(real_time_required) is not bool:
+            raise WebullError("real_time_required must be a boolean")
+        minute_bars = timespan in MINUTE_TIMESPANS
+        if sessions is None and minute_bars:
+            sessions = "RTH"
+        selected = None
+        if sessions is not None:
+            if not isinstance(sessions, str):
+                raise WebullError("bad trading sessions")
+            selected = sessions.split(",")
+            if not selected or len(set(selected)) != len(selected) or not set(selected) <= TRADING_SESSIONS:
+                raise WebullError("bad trading sessions")
+        bounds = {}
+        for name, value in (("start_time", start_time), ("end_time", end_time)):
+            if value is not None:
+                if type(value) is not int or value < 0:
+                    raise WebullError(f"{name} must be non-negative integer epoch milliseconds")
+                try:
+                    bounds[name] = pd.to_datetime(value, unit="ms", utc=True)
+                except (ValueError, OverflowError) as exc:
+                    raise WebullError(f"{name} outside supported timestamp range") from exc
+        if start_time is not None and end_time is not None and start_time > end_time:
+            raise WebullError("start_time must not follow end_time")
         payload = {"symbols": list(symbols), "category": category, "timespan": timespan,
-                   "count": count, "real_time_required": True}
-        if sessions:
+                   "count": count, "real_time_required": real_time_required}
+        if selected is not None:
             payload["trading_sessions"] = sessions
+        if start_time is not None:
+            payload["start_time"] = start_time
+        if end_time is not None:
+            payload["end_time"] = end_time
         reply = self._call("POST", BARS_PATH, payload=payload)
         # Checked 29 Sep 2026: the reply is {"result": [{"symbol", "result": [bars], "delay_minutes"}]}.
         if isinstance(reply, Mapping):
@@ -198,8 +234,25 @@ class WebullData:
                 symbol = item["symbol"]
                 if symbol in out:
                     raise WebullError("duplicate symbol in bars reply")
-                df = bars_from_webull(item.get("result") or [], timestamp_unit=self._bar_timestamp_unit)
+                rows = item.get("result") or []
+                if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+                    raise WebullError("unexpected bar rows")
+                if minute_bars and any(not isinstance(row.get("trading_session"), str) or
+                                       row["trading_session"] not in selected for row in rows):
+                    raise WebullError("missing or unexpected intraday trading_session")
+                df = bars_from_webull(rows, timestamp_unit=self._bar_timestamp_unit)
+                if "start_time" in bounds:
+                    df = df[df.index >= bounds["start_time"]].copy()
+                if "end_time" in bounds:
+                    df = df[df.index <= bounds["end_time"]].copy()
+                if df.empty:
+                    raise WebullError(f"no bars for {symbol} in requested window")
+                df.attrs["webull_request"] = dict(payload)
+                if minute_bars:
+                    df.attrs["provider_sessions"] = sorted({row["trading_session"] for row in rows})
                 profile = self._bar_profile(symbol, timespan) if self._bar_profile else None
+                if minute_bars and selected != ["RTH"]:
+                    profile = None  # extended-session diagnostics cannot claim a regular-only profile
                 # Unknown provider semantics remain readable, but cannot produce a signal.
                 df.attrs["bar_provenance"] = (profile.model_copy(update={"delay_minutes": delay}).model_dump()
                     if profile else {"source": "Webull OpenAPI", "timeframe": timespan, "delay_minutes": delay,
