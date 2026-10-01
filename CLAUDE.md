@@ -24,6 +24,10 @@ Follow-up D repairs sandbox pacing and HTTP route diagnostics and adds a partial
 evidence probe plus reviewed action-term revisions. Read checkpoint 06d before
 provider checks. Keep EP's native daily baseline after the research review; no
 real profile or corporate-action source adapter is enabled by these repairs.
+Follow-up E adds `desk.alphavantage_check` and the optional read-only observation
+client. It stops on errors/rate limits and never publishes PriceBasis coverage.
+Read checkpoint 06e before direct checks; no raw errors/URLs or credentials in
+reports, no repeated calls after a limit, and no assumption about quota reset.
 
 Read the six rules before doing anything. They come from Trading Desk Blueprint v2.4
 (29 Sep 2026), amended by Taz's later decisions in the repair plan:

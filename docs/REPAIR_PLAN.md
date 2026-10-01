@@ -25,6 +25,13 @@ do not substitute an RTH-only baseline merely to reconcile totals. Corporate-act
 source access/identity mapping, real volume definitions and the separate regular-
 session timing report remain open. These local repairs do not close Step 06.
 
+[06e-alphavantage-client.md](checkpoints/06e-alphavantage-client.md) adds a bounded
+read-only Alpha Vantage client and direct check command with safe HTTP-200 error
+handling and stop-on-limit behavior. Strict local suites pass 465 tests on Python
+3.12 and 3.14. The reported REST rate limit does not prove usable source access.
+Successful authenticated data, real security mapping/coverage and reconciliation
+remain open. Claude cloud can run the direct check without waiting for the iMac.
+
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through
 watch -> analyze -> plan -> approve -> manage -> journal. Each row is a stopping point.
