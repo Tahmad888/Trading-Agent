@@ -1,7 +1,8 @@
 # Step 09 source follow-up — Webull observation and issuer fallback
 
-Status: implementation and local acceptance verified; iMac fallback reproduction
-pending. Base 935a90d; upstream matched before follow-up. Taz supplied the iMac sandbox probe at
+Status: Step 09 closed for normalized gates and the reviewed-input adapter; local
+and reported iMac acceptance verified. Base 935a90d; implementation 08377a4.
+Upstream matched before follow-up. Taz supplied the iMac sandbox probe at
 2026-10-01T18:53:05.061867Z. Calendar returned FY2027 Q1/Q2 actual-labelled values;
 five-quarter income request returned []. OBSERVATIONS_ONLY, not qualification.
 This does not establish why income data is empty or prove a paid/live key fixes it.
@@ -65,11 +66,27 @@ Plan B: unsupported/unknown facts remain pending; don't retry an empty route bli
   Python 3.14.6. Focused earnings suites: 67 passed in 0.36s.
 - `git diff --check`: passed. Codex self-review, no independent reviewer.
 
-## Remaining and stopping point
+## iMac confirmation and closure — 2026-10-01
 
-Have the iMac reproduce the documented offline check and strict suite. No market
-open or further Webull/Alpha Vantage requests are needed for that check. Step 09
-remains open until that scoped confirmation; do not begin Step 10 in this turn.
+Taz reported **688 passed in 8.88s**, followed by the documented offline replay:
+
+- mode historical replay; evaluated_at 2026-10-01T19:00:20Z; provider_requests 0.
+- NVDA ID 913257561; status EVALUATED; cup component QUALIFIED.
+- EP PENDING_EVIDENCE with reason no supported catalyst published by trigger for
+  this entry session; next earnings UNKNOWN for both components.
+- EPS and sales ratios match the local values above. Evidence fingerprint matches:
+  `2a51c16aaa95f49dfa58e4f37ccb6279d517c3042e7f932d7d3436a929fa4524`.
+
+This is user-reported iMac evidence, not another authenticated provider fetch or
+current trade eligibility. The replay timestamp is its evaluation time, not a
+claimed wall-clock execution time. The output did not repeat the commit or Python
+version; those were not independently reverified on the iMac in this confirmation.
+
+The scoped Step 09 acceptance is complete. This closure changes documentation only
+from 08377a4; diff checks are sufficient, with no runtime changes or redundant test
+rerun. Stop here; Step 10 (core breakout/EP repairs) has not started.
+
+## Remaining operational limitations
 
 Webull income emptiness is unresolved. The fallback establishes one reviewed
 quarter pair, not provider completeness, a current catalyst, a next earnings date,

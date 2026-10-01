@@ -1,6 +1,7 @@
 # Step 09 — Earnings and catalyst evidence
 
-Status: initial gate/adapter implementation verified. Source follow-up is recorded
+Status: closed for normalized gates and the reviewed-input adapter after the iMac
+confirmation recorded in checkpoint 09a. Source follow-up is recorded
 in [09a-provider-fallback.md](09a-provider-fallback.md): iMac calendar observations,
 empty income response and a bounded issuer fallback, with 688 strict tests passing.
 The historical pending items below describe this initial checkpoint.

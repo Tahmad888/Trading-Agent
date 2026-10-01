@@ -73,4 +73,6 @@ python -m desk.earnings_check \
 Omitting `--at` evaluates at the current time and rejects an expired review.
 Explicit `--at` is labelled historical replay; it does not reactivate old evidence
 for current scanner decisions. Local reproduction is recorded in checkpoint 09a;
-the corresponding iMac run has not yet been reported.
+Taz subsequently reported the same iMac replay result and evidence fingerprint,
+plus 688 tests passed in 8.88s. See checkpoint 09a for the scoped closure. This
+confirmation made zero provider requests and does not extend the review validity.

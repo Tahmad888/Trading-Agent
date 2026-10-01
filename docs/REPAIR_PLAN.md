@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–08 complete. Step 06 includes scoped NVDA/SPY sandbox integration and iMac verification. Step 08 and its symbol repair have 621 passing strict tests on both local Python versions. NVDA/SPY/BRK.B metadata and D/M15 identity checks passed on the iMac sandbox connection at 18:33:18Z on 2026-10-01 (checkpoint 08a). Step 09 is in progress: normalized gates and reviewed-input integration implemented, 688 strict tests pass on both versions. The iMac earnings probe returned calendar actuals but empty income data; a bounded NVDA issuer fallback passes locally, with iMac reproduction pending (checkpoint 09a). Automatic market-wide earnings coverage remains unverified. Earlier checkpoint paragraphs retain their historical status.
+Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–09 complete for their documented scope. Step 06 includes scoped NVDA/SPY sandbox integration and iMac verification. Step 08 and its symbol repair have 621 passing strict tests on both local Python versions. NVDA/SPY/BRK.B metadata and D/M15 identity checks passed on the iMac sandbox connection at 18:33:18Z on 2026-10-01 (checkpoint 08a). Step 09 is closed for normalized gates and reviewed-input integration; 688 strict tests pass on both versions. The iMac earnings probe returned calendar actuals but empty income data; the bounded NVDA issuer fallback also passed on the iMac, with 688 tests in 8.88s and matching replay evidence (checkpoint 09a). Automatic market-wide earnings coverage remains unverified. Earlier checkpoint paragraphs retain their historical status.
 
 Installation follow-up: [06a-resource-cleanup.md](checkpoints/06a-resource-cleanup.md)
 records the Python 3.14 iMac test failure, its verified cleanup fix, and the six
@@ -111,7 +111,7 @@ workflow. No agent has been dispatched by creating this plan.
 | [x] | 06 | Market-data timing, provenance and trading calendar | Codex / Claude | Timeframe-aware freshness/completion, session and corporate-action handling tested; live-only uncertainties explicitly separated. |
 | [x] | 07 | Persistent signal lifecycle | Codex / Claude | Unique events survive scans/restarts; stale or expired approval eligibility cannot persist; long/short rules and re-entry policy explicit. |
 | [x] | 08 | Discovery and watchlist coverage | Codex / self-review | Leaders, movers, bearish candidates, ETFs and user additions reach appropriate setup checks; options do not gate stock discovery. |
-| [ ] | 09 | Earnings growth and catalyst evidence | Claude / Codex | Reported results separated from upcoming earnings; point-in-time growth/catalyst gates and unknown-data behavior tested. |
+| [x] | 09 | Earnings growth and catalyst evidence | Codex / self-review | Reported results separated from upcoming earnings; point-in-time growth/catalyst gates and unknown-data behavior tested. |
 | [ ] | 10 | Qullamaggie breakout and EP fidelity | Claude / Codex | Structural stops, completed entry ranges, growth/volume/chase gates and positive/negative chart examples agree with approved cards. |
 | [ ] | 11 | Instrument selection and executable exits | Codex / Claude | Shares/options compared on fresh executable inputs; whole-contract exits explicit; no automatic substitution of a full first-target exit. |
 | [ ] | 12 | Analyst and evidence-grounded plan drafts | Claude / Codex | Structured facts in; rationale, countercase, grade and draft plan out; invalid output and timeouts handled without fabricated values. |
@@ -256,11 +256,13 @@ metadata, empty healthy result and failed preparation have distinct observable o
 
 ### 09 — Earnings and catalyst evidence (watch, analyze)
 
-In progress. See `checkpoints/09-earnings.md`, `checkpoints/09a-provider-fallback.md`
+Closed for the normalized gates and reviewed-input adapter. See
+`checkpoints/09-earnings.md`, `checkpoints/09a-provider-fallback.md`
 and `EARNINGS_EVIDENCE.md`. Gate implementation passes 688 strict tests on both
 Python versions. iMac calendar observations match the bounded NVDA issuer review;
-income data was empty. Offline issuer-file acceptance passes locally, with iMac
-reproduction pending. No automatic market-wide earnings feed is claimed.
+income data was empty. Offline issuer-file acceptance passes locally and on the
+iMac; Taz reported 688 tests in 8.88s and a matching historical replay fingerprint.
+No automatic market-wide earnings feed is claimed. Step 10 has not started.
 
 Depends on 06, 08. Targets: `webull.py`/provider adapter, setup context, scanner and
 growth tests. Separate upcoming report dates from actual reported quarterly results.
