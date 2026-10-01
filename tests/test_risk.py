@@ -70,23 +70,26 @@ def test_negative_margin_excess_rejected(proposal, account):
     assert "margin_excess_positive" in failed(evaluate(proposal, deficit, now=NOW))
 
 
-def test_daily_loss_limit_halts(proposal, account):
+def test_daily_loss_is_a_warning(proposal, account):
     down = replace(account, pnl_today=-200)
-    assert "daily_loss_limit" in failed(evaluate(proposal, down, now=NOW))
+    d = evaluate(proposal, down, now=NOW)
+    assert d.approved and "daily_loss" in {w.code for w in d.warnings}
 
 
-def test_weekly_loss_limit_halts(proposal, account):
+def test_weekly_loss_is_a_warning(proposal, account):
     down = replace(account, pnl_this_week=-400)
-    assert "weekly_loss_limit" in failed(evaluate(proposal, down, now=NOW))
+    d = evaluate(proposal, down, now=NOW)
+    assert d.approved and "weekly_loss" in {w.code for w in d.warnings}
 
 
 def test_manual_halt_respected(proposal, account):
     assert "not_halted" in failed(evaluate(proposal, replace(account, halted=True), now=NOW))
 
 
-def test_kill_switch_on_drawdown(proposal, account):
+def test_drawdown_is_a_warning(proposal, account):
     dd = replace(account, equity=9_000, equity_high_water_mark=10_000)
-    assert "kill_switch_drawdown" in failed(evaluate(proposal, dd, now=NOW))
+    d = evaluate(proposal, dd, now=NOW)
+    assert d.approved and "account_drawdown" in {w.code for w in d.warnings}
 
 
 def test_already_moved_rejected(proposal, account):

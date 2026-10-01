@@ -11,23 +11,26 @@ The layer can only shrink or reject a proposal. It never grows a size.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timedelta, timezone
 from fractions import Fraction
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
 from desk.contracts import (DEBIT_STRUCTURES, LEG_SHAPES, OPTION_STRUCTURES, RiskDecision,
-                            RuleCheck, TradeProposal)
+                            RiskWarning, RuleCheck, TradeProposal)
 from desk.instruments import ContractBook, InstrumentError, loss_measures, money
+from desk.risk_context import AccountEvidence, Exposure, MarketContext, SetupRegistry, default_registry
+from desk.playbook.cards import CARDS
+from desk.playbook.filters import MarketSize
 
 EXCHANGE_TZ = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
 class RiskLimits:
-    daily_loss_usd: float = 200.0            # halts new entries until manual reset [Assumption]
+    daily_loss_usd: float = 200.0            # warning threshold, user-overridable policy
     weekly_loss_usd: float = 400.0           # [Assumption]
     kill_switch_drawdown_pct: float = 0.10   # from equity high-water mark
     max_option_spread_pct_mid: float = 0.10
@@ -37,6 +40,7 @@ class RiskLimits:
     max_account_state_age: timedelta = timedelta(seconds=30)
     max_quote_age: timedelta = timedelta(seconds=60)
     max_contract_metadata_age: timedelta = timedelta(hours=24)  # engineering assumption
+    max_market_context_age: timedelta = timedelta(seconds=60)  # recompute from valid source bars
 
 
 @dataclass(frozen=True)
@@ -50,7 +54,13 @@ class AccountState:
     margin_excess: float
     pnl_today: float
     pnl_this_week: float
-    halted: bool = False                     # set by loss limits; only Taz resets it
+    account_id: str
+    source: str
+    pnl_day: date
+    pnl_week_start: date
+    pnl_basis: str
+    exposures: tuple[Exposure, ...]          # explicit empty tuple only after reconciliation
+    halted: bool = False                     # explicit manual stop, never automatic loss halt
 
 
 def _size(proposal: TradeProposal) -> tuple[list[int], Fraction]:
@@ -74,6 +84,8 @@ def evaluate(
     live: bool = True,
     *,
     contract_book: ContractBook | None = None,
+    registry: SetupRegistry | None = None,
+    market: MarketContext | None = None,
 ) -> RiskDecision:
     """Local eligibility only, not order authorization or verified broker margin.
 
@@ -83,6 +95,7 @@ def evaluate(
     now = now or datetime.now(timezone.utc)
     checks: list[RuleCheck] = []
     diagnostics: list[str] = []
+    warnings: list[RiskWarning] = []
 
     def check(rule: str, passed: bool, value: float, limit: float) -> None:
         checks.append(RuleCheck(rule=rule, passed=passed, value=value, limit=limit))
@@ -98,23 +111,61 @@ def evaluate(
             buying_power_snapshot=account.buying_power, margin_excess_snapshot=account.margin_excess,
         )
 
+    try:
+        account = AccountEvidence.model_validate(asdict(account))
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("Risk clock must be timezone aware")
+    except (ValidationError, ValueError) as exc:
+        return RiskDecision(proposal_id=proposal.proposal_id, approved=False, final_qty_multiplier=0,
+                            final_leg_quantities=[0] * len(proposal.legs),
+                            checks=[RuleCheck(rule="account_state_valid", passed=False, value=0, limit=1)],
+                            diagnostics=[str(exc)], buying_power_snapshot=0, margin_excess_snapshot=0)
     age = (now - account.as_of).total_seconds()
     check("account_state_fresh", 0 <= age <= limits.max_account_state_age.total_seconds(),
           age, limits.max_account_state_age.total_seconds())
     check("not_halted", not account.halted, float(account.halted), 0.0)
-    if live:
-        check("tier_allows_live", proposal.tier >= 1, proposal.tier, 1)
+    today = now.astimezone(EXCHANGE_TZ).date()
+    periods_ok = account.pnl_day == today and account.pnl_week_start == today - timedelta(days=today.weekday())
+    check("account_periods_current", periods_ok, float(periods_ok), 1)
+    try:
+        registry = default_registry() if registry is None else SetupRegistry.model_validate(registry.model_dump(warnings=False))
+        entry = next((e for e in registry.entries if e.setup_id == proposal.setup_id), None)
+        known = entry is not None and proposal.setup_id in CARDS
+        check("setup_known", known, float(known), 1)
+        current = known and proposal.setup_version == entry.version == CARDS[proposal.setup_id].fingerprint()
+        check("setup_version_current", current, float(current), 1)
+        if live:
+            allowed = known and entry.live_enabled and proposal.tier == 1
+            check("tier_allows_live", allowed, float(allowed), 1)
+    except ValidationError:
+        check("setup_registry_valid", False, 0, 1)
+    try:
+        if market is None:
+            raise ValueError("Market context is required")
+        market = MarketContext.model_validate(market.model_dump(warnings=False))
+        market_age = (now - market.as_of).total_seconds()
+        check("market_context_fresh", 0 <= market_age <= limits.max_market_context_age.total_seconds(),
+              market_age, limits.max_market_context_age.total_seconds())
+    except (ValidationError, ValueError) as exc:
+        market = None
+        check("market_context_valid", False, 0, 1)
+        diagnostics.append(str(exc))
 
     equity = account.equity
     drawdown = 1 - equity / account.equity_high_water_mark if account.equity_high_water_mark > 0 else 1.0
     drawdown = round(drawdown, 9)  # avoid float noise at the exact limit
-    check("kill_switch_drawdown", drawdown < limits.kill_switch_drawdown_pct,
-          drawdown, limits.kill_switch_drawdown_pct)
+    if drawdown >= limits.kill_switch_drawdown_pct:
+        warnings.append(RiskWarning(code="account_drawdown", message="Account drawdown is at or above your warning threshold.",
+                                    value=drawdown, threshold=limits.kill_switch_drawdown_pct))
 
     day_loss = max(0.0, -account.pnl_today)
-    check("daily_loss_limit", day_loss < limits.daily_loss_usd, day_loss, limits.daily_loss_usd)
+    if day_loss >= limits.daily_loss_usd:
+        warnings.append(RiskWarning(code="daily_loss", message="Today's net account loss is at or above your warning threshold.",
+                                    value=day_loss, threshold=limits.daily_loss_usd))
     week_loss = max(0.0, -account.pnl_this_week)
-    check("weekly_loss_limit", week_loss < limits.weekly_loss_usd, week_loss, limits.weekly_loss_usd)
+    if week_loss >= limits.weekly_loss_usd:
+        warnings.append(RiskWarning(code="weekly_loss", message="This week's net account loss is at or above your warning threshold.",
+                                    value=week_loss, threshold=limits.weekly_loss_usd))
 
     # A fresh quote doesn't prove the stock trades: a halted stock can show
     # fresh quotes before it reopens. Unknown status fails closed.
@@ -180,6 +231,11 @@ def evaluate(
         check("instrument_valid", False, 0, 1)
         diagnostics.append(str(exc))
 
+    if market is not None and market.regime is MarketSize.HALF:
+        warnings.append(RiskWarning(code="mixed_market", message=market.reason + "; your budget is unchanged.", value=1, threshold=0))
+    if market is not None and market.regime is MarketSize.NO_NEW_LONGS and measures and measures.direction != "short":
+        warnings.append(RiskWarning(code="bearish_market", message=market.reason + "; review this long or neutral exposure.", value=1, threshold=0))
+
     # A conservative local funding estimate is distinct from a broker requirement.
     # Step 15 must obtain/revalidate actual account/strategy eligibility and margin.
     maximum = Fraction(measures.maximum_loss) * fraction if measures else None
@@ -206,7 +262,13 @@ def evaluate(
         loss_basis=measures.basis if measures else None,
         contract_metadata_source=contract_book.source if measures and is_option else None,
         contract_metadata_as_of=contract_book.as_of if measures and is_option else None,
+        market_context_source=market.source if market else None,
+        market_context_as_of=market.as_of if market else None,
+        market_regime=market.regime.value if market else None,
         diagnostics=diagnostics,
+        warnings=warnings,
+        warning_acknowledgement_required=bool(warnings),
+        exposure_summary=[e.model_dump(mode="json") for e in account.exposures],
         buying_power_snapshot=account.buying_power,
         margin_excess_snapshot=account.margin_excess,
     )

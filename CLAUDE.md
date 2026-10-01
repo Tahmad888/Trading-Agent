@@ -8,7 +8,9 @@ Taz chooses each trade's dollar risk budget, with no hard $100 ceiling or automa
 grade-dollar assignments. Step 02 implements that risk policy; Step 03 removes the
 11:00 ET EP condition and permits either completed opening range throughout day one. Step 04 verifies option identity and computes strategy loss,
 including calendars and iron condors. HALF must be advisory without automatically
-changing the selected budget; broader account/market blocking policy is pending.
+changing the selected budget. Step 05 makes account-loss/drawdown and bearish-market
+conditions user-overridable warnings, persists account/exposure/manual-stop state,
+and checks a trusted setup registry. No user approval UI/order adapter exists yet.
 The tracker records actual completion, not just approved intent.
 
 Read the six rules before doing anything. They come from Trading Desk Blueprint v2.4
@@ -44,7 +46,7 @@ https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg
 ## Layout
 
 - `src/desk/contracts.py`: typed hand-offs (trade proposal, legs, risk decision, approval record).
-- `src/desk/risk.py`: the risk engine, with limits from blueprint section 10: user-selected dollar risk per ticket, including estimated costs, with no grade-dollar mapping or hard $100 ceiling, dollar loss limits, quote-age and trading-status checks. No caps on trade or position counts.
+- `src/desk/risk.py`: the risk engine, with limits from blueprint section 10: user-selected dollar risk per ticket, including estimated costs, with no grade-dollar mapping or hard $100 ceiling, user-overridable dollar-loss warnings, manual stops, quote-age and trading-status checks. No caps on trade or position counts.
 - `src/desk/bars.py`: parses and checks price bars; bad, short or stale bars raise `BarDataError` (no trade).
 - `src/desk/indicators.py`: the feature pack on TA-Lib 0.8.1, matched to TradingView; `tests/tv_reference.py` holds the Pine formulas it's tested against.
 - `src/desk/screen_check.py`: prints a ticker's latest daily values to compare with Taz's screen.

@@ -125,6 +125,13 @@ def test_connors_rsi2_both_ways_on_index_etfs_only():
     assert long_.trigger - long_.stop == pytest.approx(2.5 * atr10, abs=0.02)
 
 
+def test_ep_and_rsi_longs_reach_review_in_bearish_markets():
+    market = MarketSize.NO_NEW_LONGS
+    assert run("5_qullamaggie_episodic_pivot", features(EP, spread=0.02),
+               ctx(market=market, template=None, today_open=57.5, early_volume=1.5e6)) is not None
+    assert run("10_connors_rsi2", features(RSI2_DIP), ctx("SPY", market=market, template=None)) is not None
+
+
 @pytest.mark.parametrize("setup_id,cl,kw", [
     ("1_qullamaggie_breakout", QULL, {"spread": 0.02}),
     ("2_minervini_vcp", VCP, {"volume": dry(VCP)}),
@@ -132,9 +139,9 @@ def test_connors_rsi2_both_ways_on_index_etfs_only():
     ("7_luk_pullback_reclaim", LUK, {}),
     ("8_raschke_holy_grail", GRAIL_UP, {}),
 ])
-def test_longs_blocked_by_the_filters(setup_id, cl, kw):
+def test_bearish_market_does_not_suppress_longs_but_setup_filters_remain(setup_id, cl, kw):
     f = features(cl, **kw)
-    assert run(setup_id, f, ctx(market=MarketSize.NO_NEW_LONGS)) is None
+    assert run(setup_id, f, ctx(market=MarketSize.NO_NEW_LONGS)) is not None
     if CARDS[setup_id].trend_template:
         assert run(setup_id, f, ctx(template=FAIL)) is None
 

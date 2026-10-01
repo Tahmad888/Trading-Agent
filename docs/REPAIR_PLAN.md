@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30. Status: Steps 01–04 complete locally; Step 05 awaiting the account/market-policy decision.
+Prepared 2026-09-30. Status: Steps 01–05 complete locally; Step 06 next.
 
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through
@@ -19,12 +19,12 @@ step tracker says when each repair actually lands.
 | D02 | Taz chooses a dollar risk budget for each trade. Remove the hard $100 per-trade ceiling and automatic A/B/C dollar assignments. Grade describes quality, not an automatic budget. | User instruction and budget-selection reply, 2026-09-30 | 02, 13 |
 | D03 | Remove the 11:00 ET EP condition, including a time-based opening-range switch. Later opportunities are evaluated on valid data and the setup rules, not rejected solely for being after 11:00. | User instruction, 2026-09-30 | 03, 10 |
 | D04 | User approves every entry; changing executable terms invalidates the previous approval. | Existing blueprint requirement, retained in selected repair plan | 13, 15 |
-| D05 | Keep the previously selected $200 daily loss, $400 weekly loss and 10% drawdown entry halts. These are account rules, not a guaranteed maximum realized loss or a new cap on each proposed trade. | Existing user policy carried in PR #1; threshold choices are policy assumptions, not proven optima | 02, 05 |
+| D05 | The $200 daily loss, $400 weekly loss and 10% drawdown conditions are warnings the user may override at approval; no automatic account halt. An explicit manual stop remains separate. | Latest explicit user answer supersedes PR #1 automatic halts; thresholds remain policy assumptions | 02, 05 |
 | D06 | No trade-count, position-count or sector-count caps; display exposure. Stock eligibility is separate from option suitability, preserving shares as an alternative. | Selected repair plan / existing user policy | 02, 05, 08, 11 |
 | D07 | Retain the 30% Trend Template rule and 25% EP growth threshold; 50%+ is a comparison tag. | Existing user decisions / current cards | 08, 09, 10 |
 | D08 | No multi-year backtesting requirement or invented statistical gate. Use focused point-in-time examples, live-data checks and forward records. | User instruction / CLAUDE.md | All |
 | D10 | Include long debit calendars and credit iron condors in the initial supported structures; management and broker verification still required. | Explicit user reply | 04, 11, 16 |
-| D11 | HALF is advisory: show the concern and sizing alternatives; leave the user-entered dollar budget unchanged. Broader account/market blocking policy awaits clarification. | Latest user preference, interpreted explicitly in conversation | 05, 13 |
+| D11 | HALF is advisory: show the concern and sizing alternatives; leave the user-entered dollar budget unchanged. Daily/weekly loss, drawdown and bearish-market conditions are warnings with explicit per-review acknowledgement. | Latest user preference, interpreted explicitly in conversation | 05, 13 |
 | D09 | Number the work; verify and checkpoint each step before advancing. Taz's latest instruction authorizes proceeding sequentially after verification. Pause on an unresolved trading-policy choice or failed acceptance check. | Latest user instruction, 2026-09-30 | All |
 
 Research labels remain **Sourced**, **Checked**, and **Assumption**. A user-selected
@@ -58,7 +58,7 @@ workflow. No agent has been dispatched by creating this plan.
 | [x] | 02 | User-selected dollar risk; reconcile PR #1 | Codex / Claude | One coherent risk policy; no $100 ceiling or grade-dollar assignment; explicit finite positive budget; combined tests pass. |
 | [x] | 03 | Remove the 11:00 EP condition | Codex / Claude | Runtime, cards, descriptions and tests agree; no 11:00 cutoff/switch; no use of an unfinished opening range. |
 | [x] | 04 | Shared contracts, option identity and loss calculations | Codex / Claude | Verified contract metadata, allowed structures, independently computed loss measures and integer quantities; malformed proposals fail closed. |
-| [ ] | 05 | Market/account gates and persistent risk state | Codex / Claude | Trusted setup eligibility and regime applied consistently; account halts/exposure recover after restart; no count caps. |
+| [x] | 05 | Market/account gates and persistent risk state | Codex / Claude | Trusted setup eligibility; user-overridable account/market warnings; manual stop and exposure recover after restart; no count caps. |
 | [ ] | 06 | Market-data timing, provenance and trading calendar | Codex / Claude | Timeframe-aware freshness/completion, session and corporate-action handling tested; live-only uncertainties explicitly separated. |
 | [ ] | 07 | Persistent signal lifecycle | Codex / Claude | Unique events survive scans/restarts; stale or expired approval eligibility cannot persist; long/short rules and re-entry policy explicit. |
 | [ ] | 08 | Discovery and watchlist coverage | Claude / Codex | Leaders, movers, bearish candidates, ETFs and user additions reach appropriate setup checks; options do not gate stock discovery. |
@@ -150,10 +150,11 @@ Contractual option maxima must not be misrepresented as guaranteed managed-trade
 Depends on 04. Targets: `risk.py`, `contracts.py`, `playbook/filters.py`, and new
 durable account-state storage. Restore open/pending positions for exposure displays;
 no count caps. Use a trusted setup registry rather than proposal-supplied live tier.
-Define P&L accounting, time boundaries, high-water mark, halt persistence and manual reset.
+P&L includes realized/unrealized changes and fees, excludes external cash flows, and uses explicit ET day/Monday week baselines. Persist high-water mark, manual stop and exposure; no silent P&L reset.
 HALF is advisory under D11: display the market concern without changing the selected
-budget. Resolve the broader treatment of NO_NEW_LONGS and account loss halts before
-changing their current behavior; user discretion must not become a hidden multiplier.
+budget. Daily/weekly/drawdown and bearish-market conditions are warnings under the
+latest user answer. Bind acknowledgements to the exact review and account revision;
+manual stops and technical data/broker requirements remain separate.
 
 Acceptance: regime/grade combinations, halt boundary/restart, rejected orders, open
 and pending exposure and authorized reset. Plan B: block new entries on uncertain
@@ -369,8 +370,8 @@ Plan B: return to paper and reconcile any existing positions.
 | EP opening-range alternatives (resolved) | Taz selected either completed 15-minute or 60-minute opening-range breakout throughout day one, subject to other checks. | 03 |
 | Supported option structures (resolved) | Include calendars and iron condors initially; assignment/expiry handling before executable support. | 04, 11, 16 |
 | HALF regime (resolved) | Advisory; user-selected budget is unchanged. | 05, 13 |
-| Other account/market blocks | Whether existing daily/weekly/drawdown halts and NO_NEW_LONGS remain blocks or become approval-time warnings. Question pending. | 05 |
-| Account loss accounting | Realized/unrealized inclusion, fee treatment, day/week boundaries and manual halt reset. | 05 |
+| Other account/market conditions (resolved) | Daily/weekly/drawdown and bearish-market conditions become warnings the user can override at approval. | 05 |
+| Account loss accounting (defined) | Net liquidation including realized/unrealized/fees, excluding external flows; explicit ET date and Monday week. Adapter must supply reconciled baselines. Manual stop/reset is separately audited. | 05, 15–16 |
 | Relative volume/chase details | Same-time baseline, session handling, lookback and per-card thresholds; distinguish user policy from assumptions. | 10, 17 |
 | Single-contract exits | Approved exit variant or shares alternative; never increase size merely to enable fractions. | 11 |
 | Source-dependent setup changes | Cup variants, Darvas floor, Kell filter/timeframe and Luk stop anchor. | 17–19 |

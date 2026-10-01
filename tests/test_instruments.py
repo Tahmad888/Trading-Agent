@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from desk.contracts import Leg, TradeProposal
 from desk.instruments import ContractBook, InstrumentError, loss_measures
-from desk.risk import evaluate
+from tests.risk_support import evaluate
 from tests.conftest import NOW
 from tests.risk_support import BOOK, contract
 
@@ -101,7 +101,7 @@ def test_caller_loss_cannot_override_computed_loss(proposal, account, claim):
 
 
 def test_option_metadata_cannot_come_from_proposal(proposal, account):
-    assert not evaluate(proposal, account, now=NOW).approved
+    assert not evaluate(proposal, account, contract_book=None, now=NOW).approved
     with pytest.raises(ValidationError):
         TradeProposal.model_validate({**proposal.model_dump(), "contract_book": BOOK.model_dump()})
 

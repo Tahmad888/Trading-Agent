@@ -6,15 +6,15 @@ The original implementation follows Trading Desk Blueprint v2.3, with v2.4 risk 
 in PR #1. Current repair work follows [the numbered repair plan](docs/REPAIR_PLAN.md)
 and [Step 01's verified baseline](docs/checkpoints/01-baseline.md). `CLAUDE.md` holds
 the six rules and standing constraints; `AGENTS.md` defines the checkpoint workflow.
-Steps 01–04 are complete locally. PR #1 is integrated with user-selected dollar
+Steps 01–05 are complete locally. PR #1 is integrated with user-selected dollar
 risk, cost-inclusive sizing and no fixed $100 ceiling or grade-dollar assignment.
 See [Step 02 evidence](docs/checkpoints/02-user-risk.md). The 11:00 EP rule is removed;
 either completed opening range can qualify during day one, with no unfinished-bar
-look-ahead. See [Step 03 evidence](docs/checkpoints/03-ep-timing.md). See [Step 04 evidence](docs/checkpoints/04-instrument-contracts.md) for contract identity and independent loss calculations. Step 05 awaits the account/market-policy decision.
+look-ahead. See [Step 03 evidence](docs/checkpoints/03-ep-timing.md). See [Step 04 evidence](docs/checkpoints/04-instrument-contracts.md) for contract identity and independent loss calculations. See [Step 05 evidence](docs/checkpoints/05-risk-warnings.md) for user-overridable warnings and durable account state. Step 06 is next.
 
 ## Status
 
-Risk engine: Taz supplies each trade’s dollar budget. Code sizes whole units within that budget, including a full estimated cost reserve, and retains account loss halts, liquidity and buying-power checks. No count caps or grade-based sizing. Option identity and loss calculations now require separate contract metadata and reject contradictory structures, including calendars and iron condors. Broker/account reconciliation and execution remain later repair steps; passing unit tests does not make this live-ready.
+Risk engine: Taz supplies each trade’s dollar budget. Code sizes whole units within that budget, including a full estimated cost reserve, and shows account-loss and market warnings for user review while retaining manual stops, liquidity and funding checks. HALF does not alter the chosen budget. No count caps or grade-based sizing. Option identity and loss calculations now require separate contract metadata and reject contradictory structures, including calendars and iron condors. Broker/account reconciliation and execution remain later repair steps; passing unit tests does not make this live-ready.
 
 Phase 0, step 3 (in progress): bars and indicators. `desk.bars` parses and checks Webull bars and fails closed on bad or missing data; `desk.indicators` computes the feature pack with TA-Lib 0.8.1 on TradingView's default settings, tested against TradingView's published formulas. `python -m desk.screen_check bars.json` prints a ticker's latest daily values to compare with a TradingView screen. `desk.webull` is the desk's own read-only Webull market-data connection (signed HTTPS, keys from environment variables, fail closed).
 

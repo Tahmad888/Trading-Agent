@@ -88,8 +88,6 @@ def swings(s: pd.Series, n: int, kind: str) -> list[int]:
 
 def _long_ok(card: Card, ctx: Context) -> str | None:
     """Why a long can't be taken, or None."""
-    if ctx.market is MarketSize.NO_NEW_LONGS:
-        return "market filter: no new longs"
     if card.trend_template and not (ctx.template and ctx.template.passed):
         return "fails the Trend Template"
     return None
@@ -229,7 +227,7 @@ def darvas_box(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
 
 # 5. Qullamaggie episodic pivot (the gap day itself)
 def episodic_pivot(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
-    if ctx.today_open is None or ctx.market is MarketSize.NO_NEW_LONGS:
+    if ctx.today_open is None:
         return None
     last = f.iloc[-1]                                     # the day before the gap
     _need(last, "adr_pct_20")
@@ -374,8 +372,6 @@ def connors_rsi2(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     _need(last, "sma_200", "rsi_2", "atr_10")
     stop_dist = card.p("stop_atr") * last["atr_10"]
     if last["close"] > last["sma_200"] and last["rsi_2"] < card.p("rsi_low"):
-        if ctx.market is MarketSize.NO_NEW_LONGS:
-            return None
         d, stop = "long", last["close"] - stop_dist
     elif last["close"] < last["sma_200"] and last["rsi_2"] > card.p("rsi_high"):
         d, stop = "short", last["close"] + stop_dist

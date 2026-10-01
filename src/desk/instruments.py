@@ -58,6 +58,7 @@ class LossMeasures:
     net_premium: Decimal
     funding_estimate: Decimal
     basis: str
+    direction: Literal["long", "short", "neutral"]
 
 
 def money(value: float) -> Decimal:
@@ -109,7 +110,7 @@ def loss_measures(proposal: TradeProposal, book: ContractBook | None, now: datet
         _require(len(legs) == 1 and legs[0].side == "buy" and legs[0].quantity_unit == "share" and legs[0].expiry is None and
                  legs[0].symbol == proposal.instrument, "Expected one matching long-share leg")
         debit = money(legs[0].limit_price) * legs[0].qty
-        return LossMeasures(debit, debit, debit, "long_shares_to_zero")
+        return LossMeasures(debit, debit, debit, "long_shares_to_zero", "long")
     _require(proposal.structure in LEG_SHAPES, "Unsupported structure")
     _require(all(leg.quantity_unit == "contract" for leg in legs), "Option quantities must be whole contracts")
     _require(book is not None, "Broker contract metadata is required separately from the proposal")
@@ -146,7 +147,7 @@ def loss_measures(proposal: TradeProposal, book: ContractBook | None, now: datet
         _require(bought.right == sold.right and bought.strike == sold.strike and
                  bought.expiry > sold.expiry and premium > 0,
                  "Calendar must buy the later expiry and sell the earlier, same strike/right, for a debit")
-        return LossMeasures(premium, premium, premium, "covered_calendar_debit_before_costs")
+        return LossMeasures(premium, premium, premium, "covered_calendar_debit_before_costs", "neutral")
     elif structure in {"debit_vertical", "credit_vertical"}:
         bought, sold = buys[0], sells[0]
         _require(bought.right == sold.right and bought.expiry == sold.expiry and bought.strike != sold.strike,
@@ -178,4 +179,10 @@ def loss_measures(proposal: TradeProposal, book: ContractBook | None, now: datet
 
     maximum = -min(pnl(spot) for spot in {Decimal(0), *(c.strike for c in contracts)})
     _require(maximum > 0, "Nonpositive maximum loss: inconsistent strategy prices")
-    return LossMeasures(maximum, premium, max(maximum, premium), "intact_same_expiry_payoff_before_costs")
+    if structure == "iron_condor":
+        direction = "neutral"
+    elif structure in {"long_call", "long_put"}:
+        direction = "long" if contracts[0].right == "call" else "short"
+    else:
+        direction = "long" if ((buys[0].right == "call") == (structure == "debit_vertical")) else "short"
+    return LossMeasures(maximum, premium, max(maximum, premium), "intact_same_expiry_payoff_before_costs", direction)

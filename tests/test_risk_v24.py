@@ -86,9 +86,8 @@ def test_no_position_count_or_sector_rules(proposal, account):
 
 def test_loss_limits_in_dollars(proposal, account):
     assert evaluate(proposal, replace(account, pnl_today=-199), now=NOW).approved
-    assert "daily_loss_limit" in failed(evaluate(proposal, replace(account, pnl_today=-200), now=NOW))
-    assert "weekly_loss_limit" in failed(
-        evaluate(proposal, replace(account, pnl_this_week=-400), now=NOW))
+    assert "daily_loss" in {w.code for w in evaluate(proposal, replace(account, pnl_today=-200), now=NOW).warnings}
+    assert "weekly_loss" in {w.code for w in evaluate(proposal, replace(account, pnl_this_week=-400), now=NOW).warnings}
 
 
 # Quote time and trading status.

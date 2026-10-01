@@ -104,6 +104,13 @@ class RuleCheck(BaseModel):
     limit: float
 
 
+class RiskWarning(BaseModel):
+    code: str
+    message: str
+    value: float
+    threshold: float
+
+
 class RiskDecision(BaseModel):
     proposal_id: str
     approved: bool
@@ -122,7 +129,13 @@ class RiskDecision(BaseModel):
     loss_basis: str | None = None
     contract_metadata_source: str | None = None
     contract_metadata_as_of: AwareDatetime | None = None
+    market_context_source: str | None = None
+    market_context_as_of: AwareDatetime | None = None
+    market_regime: str | None = None
     diagnostics: list[str] = Field(default_factory=list)
+    warnings: list[RiskWarning] = Field(default_factory=list)
+    warning_acknowledgement_required: bool = False
+    exposure_summary: list[dict] = Field(default_factory=list)
     buying_power_snapshot: float
     margin_excess_snapshot: float
 

@@ -4,6 +4,7 @@ import pytest
 
 from desk.contracts import Leg, TradeProposal
 from desk.risk import AccountState
+from desk.playbook.cards import CARDS
 
 NOW = datetime(2026, 9, 24, 14, 0, tzinfo=timezone.utc)
 TODAY = NOW.date()
@@ -12,6 +13,8 @@ TODAY = NOW.date()
 @pytest.fixture
 def account() -> AccountState:
     return AccountState(
+        account_id="fixture-account", source="synthetic broker", pnl_day=TODAY, exposures=(),
+        pnl_week_start=TODAY - timedelta(days=TODAY.weekday()), pnl_basis="net_liquidation_ex_cashflows",
         as_of=NOW - timedelta(seconds=5),
         equity=10_000,
         equity_high_water_mark=10_000,
@@ -26,10 +29,10 @@ def account() -> AccountState:
 def proposal() -> TradeProposal:
     # A 1-lot put credit spread risking $20 at the stop plus $2 reserved costs; Taz selects $22.
     return TradeProposal(
-        setup_version="fixture-v1", quote_source="fixture", stop_estimate_source="fixture stop model",
+        setup_version=CARDS["1_qullamaggie_breakout"].fingerprint(), quote_source="fixture", stop_estimate_source="fixture stop model",
         proposal_id="p1",
         plan_id="plan1",
-        setup_id="5_oversold_bounce",
+        setup_id="1_qullamaggie_breakout",
         tier=1,
         grade="C",
         risk_usd=22,
@@ -55,9 +58,9 @@ def proposal() -> TradeProposal:
 def long_call() -> TradeProposal:
     # 3 calls at $1.50: $450 of premium at risk in the worst case, $60 at the stop.
     return TradeProposal(
-        setup_version="fixture-v1", quote_source="fixture", stop_estimate_source="fixture stop model",
+        setup_version=CARDS["1_qullamaggie_breakout"].fingerprint(), quote_source="fixture", stop_estimate_source="fixture stop model",
         proposal_id="c1",
-        setup_id="1_trend_pullback",
+        setup_id="1_qullamaggie_breakout",
         tier=1,
         grade="A",
         risk_usd=100,
@@ -80,9 +83,9 @@ def long_call() -> TradeProposal:
 def shares() -> TradeProposal:
     # 20 shares at $250 with a $1.25 stop: $25 at the stop, $5,000 of cost.
     return TradeProposal(
-        setup_version="fixture-v1", quote_source="fixture", stop_estimate_source="fixture stop model",
+        setup_version=CARDS["1_qullamaggie_breakout"].fingerprint(), quote_source="fixture", stop_estimate_source="fixture stop model",
         proposal_id="s1",
-        setup_id="3_relative_strength_leaders",
+        setup_id="1_qullamaggie_breakout",
         tier=1,
         grade="B",
         risk_usd=50,

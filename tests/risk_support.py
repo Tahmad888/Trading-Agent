@@ -9,6 +9,8 @@ from datetime import date
 from desk.instruments import ContractBook, OptionContract
 from desk.risk import evaluate as evaluate_risk
 from tests.conftest import NOW
+from desk.risk_context import MarketContext, default_registry
+from desk.playbook.filters import MarketSize
 
 
 def contract(underlying, expiry, right, strike):
@@ -35,5 +37,13 @@ BOOK = ContractBook(source="synthetic acceptance fixture; not broker verified", 
 ))
 
 
+MARKET = MarketContext(regime=MarketSize.FULL, source="synthetic regime", as_of=NOW, reason="fixture uptrend")
+REGISTRY = default_registry().model_copy(update={"entries": tuple(
+    e.model_copy(update={"live_enabled": True}) for e in default_registry().entries)})
+
+
 def evaluate(*args, **kwargs):
-    return evaluate_risk(*args, contract_book=BOOK, **kwargs)
+    kwargs.setdefault("contract_book", BOOK)
+    kwargs.setdefault("registry", REGISTRY)
+    kwargs.setdefault("market", MARKET)
+    return evaluate_risk(*args, **kwargs)

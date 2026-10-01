@@ -90,6 +90,7 @@ def trend_template(features: pd.DataFrame, benchmark_close: pd.Series) -> GateRe
 
 
 class MarketSize(str, Enum):
+    # Legacy names retained for scanner history; advisory descriptions, not sizing.
     FULL = "full"
     HALF = "half"
     NO_NEW_LONGS = "no new longs"
@@ -115,12 +116,13 @@ def index_trend(symbol: str, features: pd.DataFrame) -> IndexTrend:
 
 
 def market_filter(spy: pd.DataFrame, qqq: pd.DataFrame) -> tuple[MarketSize, str]:
-    """Full, half or no new longs, from SPY's and QQQ's daily features, with the reason.
+    """Favorable/mixed/bearish market, with legacy serialized labels and a reason.
 
     Blueprint: full when both are above a rising 50-day, half when only one is,
     no new longs when both are below their 50-day and the 50-day is below the
     200-day. Any other mix (both below a 50-day that is still above the 200-day,
-    say) is half size [Assumption].
+    say) is mixed [Assumption]. Latest user policy makes these conditions advisory;
+    they must not halve the budget or suppress general long setups.
     """
     if spy.index[-1] != qqq.index[-1]:
         raise BarDataError("SPY and QQQ bars end on different days")
