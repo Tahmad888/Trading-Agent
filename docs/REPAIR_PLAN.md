@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30. Status: Steps 01–05 complete locally; Step 06 next.
+Prepared 2026-09-30. Status: Steps 01–06 complete and verified; Step 07 next, with re-entry policy awaiting the user answer.
 
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through
@@ -25,6 +25,7 @@ step tracker says when each repair actually lands.
 | D08 | No multi-year backtesting requirement or invented statistical gate. Use focused point-in-time examples, live-data checks and forward records. | User instruction / CLAUDE.md | All |
 | D10 | Include long debit calendars and credit iron condors in the initial supported structures; management and broker verification still required. | Explicit user reply | 04, 11, 16 |
 | D11 | HALF is advisory: show the concern and sizing alternatives; leave the user-entered dollar budget unchanged. Daily/weekly loss, drawdown and bearish-market conditions are warnings with explicit per-review acknowledgement. | Latest user preference, interpreted explicitly in conversation | 05, 13 |
+| D12 | Push Steps 01–06 to the dedicated repair branch once 06 is verified; then push each later step after its checks pass. Do not merge implicitly. | Explicit user authorization | 06 onward |
 | D09 | Number the work; verify and checkpoint each step before advancing. Taz's latest instruction authorizes proceeding sequentially after verification. Pause on an unresolved trading-policy choice or failed acceptance check. | Latest user instruction, 2026-09-30 | All |
 
 Research labels remain **Sourced**, **Checked**, and **Assumption**. A user-selected
@@ -59,7 +60,7 @@ workflow. No agent has been dispatched by creating this plan.
 | [x] | 03 | Remove the 11:00 EP condition | Codex / Claude | Runtime, cards, descriptions and tests agree; no 11:00 cutoff/switch; no use of an unfinished opening range. |
 | [x] | 04 | Shared contracts, option identity and loss calculations | Codex / Claude | Verified contract metadata, allowed structures, independently computed loss measures and integer quantities; malformed proposals fail closed. |
 | [x] | 05 | Market/account gates and persistent risk state | Codex / Claude | Trusted setup eligibility; user-overridable account/market warnings; manual stop and exposure recover after restart; no count caps. |
-| [ ] | 06 | Market-data timing, provenance and trading calendar | Codex / Claude | Timeframe-aware freshness/completion, session and corporate-action handling tested; live-only uncertainties explicitly separated. |
+| [x] | 06 | Market-data timing, provenance and trading calendar | Codex / Claude | Timeframe-aware freshness/completion, session and corporate-action handling tested; live-only uncertainties explicitly separated. |
 | [ ] | 07 | Persistent signal lifecycle | Codex / Claude | Unique events survive scans/restarts; stale or expired approval eligibility cannot persist; long/short rules and re-entry policy explicit. |
 | [ ] | 08 | Discovery and watchlist coverage | Claude / Codex | Leaders, movers, bearish candidates, ETFs and user additions reach appropriate setup checks; options do not gate stock discovery. |
 | [ ] | 09 | Earnings growth and catalyst evidence | Claude / Codex | Reported results separated from upcoming earnings; point-in-time growth/catalyst gates and unknown-data behavior tested. |
@@ -372,6 +373,7 @@ Plan B: return to paper and reconcile any existing positions.
 | HALF regime (resolved) | Advisory; user-selected budget is unchanged. | 05, 13 |
 | Other account/market conditions (resolved) | Daily/weekly/drawdown and bearish-market conditions become warnings the user can override at approval. | 05 |
 | Account loss accounting (defined) | Net liquidation including realized/unrealized/fees, excluding external flows; explicit ET date and Monday week. Adapter must supply reconciled baselines. Manual stop/reset is separately audited. | 05, 15–16 |
+| Signal re-entry | After failure/closure, allow a newly qualified setup with fresh approval, or require manual re-enabling? User question pending. | 07 |
 | Relative volume/chase details | Same-time baseline, session handling, lookback and per-card thresholds; distinguish user policy from assumptions. | 10, 17 |
 | Single-contract exits | Approved exit variant or shares alternative; never increase size merely to enable fractions. | 11 |
 | Source-dependent setup changes | Cup variants, Darvas floor, Kell filter/timeframe and Luk stop anchor. | 17–19 |

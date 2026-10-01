@@ -40,3 +40,11 @@ movers are checked for an episodic pivot on top of the list.
 
 If the iMac misses scans, the free Microsoft VM runs the same command from cron
 (`*/5 * * * 1-5 ~/Trading-Agent/ops/imac/run-scan.sh`), and the missed slots show in the Friday funnel.
+
+
+Step 06 scheduling uses the XNYS session close. On a 13:00 ET close, the last
+intraday/near-close scan is 12:45, close preparation is 13:10, and a Friday leader
+scan is 13:40. The original times above describe a regular 16:00 close. Calendar
+coverage is bounded through the last supported 2028 session; later dates fail closed.
+A checked Webull bar-semantics/adjustment profile is required before signal eligibility.
+Do not activate a runner merely because offline tests pass; live acceptance is Step 20.

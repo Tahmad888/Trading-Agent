@@ -3,15 +3,15 @@
 Blueprint v2.4 sections 3 and 5, build step 4; serves the watch step. Runs on
 the iMac (Taz, 29 Sep 2026). The scans:
 
-- After the close (16:10 ET): daily bars for every watchlist name, the market
+- Ten minutes after the session close (normally 16:10 ET): daily bars for every watchlist name, the market
   filter from SPY and QQQ, the Trend Template, and the 10 daily checks. The
   setups armed for the next session are saved.
-- In session, every 15 minutes from 09:45 to 15:45 ET: 15-minute bars for the
-  armed names, to see whether each entry rule fired. At 15:45 the RSI(2) check
+- In session, every 15 minutes from 09:45 until 15 minutes before the close: 15-minute bars for the
+  armed names, to see whether each entry rule fired. At the last intraday slot the RSI(2) check
   also runs on the day's bars so far, as an estimate of the close.
 - At 10:00, this morning's movers (Webull's top gainers and unusual volume)
   are checked for an episodic pivot, which is then watched like the rest.
-- Fridays at 16:40 ET, the leader scan ranks Webull's top-200 lists (1 week to
+- Fridays 40 minutes after the session close (normally 16:40 ET), the leader scan ranks Webull's top-200 lists (1 week to
   52-week gainers, most traded) on our own bars and writes next week's
   watchlist, with Taz's adds and removals from data/taz-picks.json.
 
@@ -31,8 +31,8 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
@@ -41,6 +41,9 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from desk.bars import BarDataError, require, validate
+from desk.calendar import trading_day, next_trading_day, session, clock
+from desk.bar_contract import (completed_daily, completed_intraday, provenance,
+                               check_price_scale, developing_daily_from_m15)
 from desk.indicators import daily_features
 from desk.playbook.cards import CARDS, INDEX_ETFS
 from desk.playbook.filters import MarketSize, market_filter, trend_template
@@ -54,34 +57,23 @@ LEADER_SCAN = time(16, 40)        # Fridays: the weekly leader scan builds next 
 EP_SCAN = time(10, 0)             # the first 30 minutes are in: check this morning's movers
 FIRST_INTRADAY, LAST_INTRADAY = time(9, 45), time(15, 45)
 
-# [Assumption] NYSE full-day holidays as published on nyse.com for 2026-2027,
-# copied by hand; the snapshot's trading status is the live check.
-HOLIDAYS = {date(2026, d[0], d[1]) for d in [(1, 1), (1, 19), (2, 16), (4, 3), (5, 25), (6, 19), (7, 3),
-                                              (9, 7), (11, 26), (12, 25)]} | \
-           {date(2027, d[0], d[1]) for d in [(1, 1), (1, 18), (2, 15), (3, 26), (5, 31), (6, 18), (7, 5),
-                                              (9, 6), (11, 25), (12, 24)]}
-
-
 class BarSource(Protocol):
     def bars(self, symbols: Sequence[str], *, category: str, timespan: str, count: int = 1000,
              **kw) -> dict[str, pd.DataFrame]: ...
-
-
-def trading_day(d: date) -> bool:
-    return d.weekday() < 5 and d not in HOLIDAYS
 
 
 def scheduled_slots(d: date) -> list[datetime]:
     """Every scan due on a trading day, in Eastern time."""
     if not trading_day(d):
         return []
-    slots, t = [], datetime.combine(d, FIRST_INTRADAY, ET)
-    while t.time() <= LAST_INTRADAY:
+    opened, closed = session(d)
+    slots, t = [], opened.to_pydatetime() + timedelta(minutes=15)
+    while t < closed:
         slots.append(t)
         t += timedelta(minutes=15)
-    slots.append(datetime.combine(d, CLOSE_SCAN, ET))
+    slots.append((closed + timedelta(minutes=10)).to_pydatetime())
     if d.weekday() == 4:
-        slots.append(datetime.combine(d, LEADER_SCAN, ET))
+        slots.append((closed + timedelta(minutes=40)).to_pydatetime())
     return slots
 
 
@@ -109,6 +101,9 @@ def fetch(source: BarSource, symbols: Sequence[str], timespan: str, count: int,
                         out.update(source.bars([s], category=cat, timespan=timespan, count=count))
                     except BarDataError as e1:
                         skipped[s] = str(e1)
+    for symbol in symbols:
+        if symbol not in out:
+            skipped.setdefault(symbol, "no bars returned")
     return out
 
 
@@ -133,19 +128,23 @@ def _sig(s: Signal, **extra) -> dict:
     return {**d, **extra}
 
 
-def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime) -> tuple[ScanRecord, list[Signal]]:
+def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> tuple[ScanRecord, list[Signal]]:
     rec = ScanRecord("close", now.astimezone(ET).isoformat(), None)
     symbols = sorted(set(watchlist) | {"SPY", "QQQ"})
     bars = fetch(source, symbols, "D", DAILY_BARS, rec.skipped)
+    now = decision_clock() if decision_clock else now
+    rec.at = clock(now).isoformat()
     for sym in symbols:
         if sym not in bars:
             rec.skipped.setdefault(sym, "no bars returned")
     feats: dict[str, pd.DataFrame] = {}
     for sym, df in bars.items():
         try:
+            if clock(now) < session(clock(now).date())[1]:
+                raise BarDataError("close scan requires a completed session")
+            df = completed_daily(df, now)
             require(df, min_bars=MIN_DAILY_BARS)
-            if df.index[-1].tz_convert(ET).date() != now.astimezone(ET).date():
-                raise BarDataError(f"last daily bar is {df.index[-1].date()}, not today's")
+            bars[sym] = df
             feats[sym] = daily_features(df)
         except BarDataError as e:
             rec.skipped[sym] = str(e)
@@ -166,7 +165,8 @@ def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime) -> tu
             continue
         try:
             gate = None if sym in INDEX_ETFS else trend_template(feats[sym], spy)
-            armed += scan(feats[sym], Context(sym, size, gate, spy))
+            armed += [replace(sig, price_scale_id=provenance(bars[sym], "D").price_scale_id)
+                      for sig in scan(feats[sym], Context(sym, size, gate, spy))]
         except BarDataError as e:
             rec.skipped[sym] = str(e)
     rec.armed = [_sig(s) for s in armed]
@@ -188,7 +188,7 @@ def _ep_entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, 
         raise BarDataError("EP reference bar needs a timezone")
     if next_trading_day(reference.tz_convert(ET).date()) != clock.date():
         return False, sig.trigger, "EP entry is only valid on its gap day"
-    if not trading_day(clock.date()) or not time(9, 30) <= clock.time() < time(16):
+    if not trading_day(clock.date()) or not session(clock.date())[0] <= clock < session(clock.date())[1]:
         return False, sig.trigger, "outside regular-session entry hours"
 
     opened = clock.normalize() + pd.Timedelta(hours=9, minutes=30)
@@ -221,9 +221,13 @@ def _ep_entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, 
 
 def entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, float, str]:
     """Did today's 15-minute bars fire this signal's entry rule? Returns (hit, level, why)."""
+    stamp = clock(now)
+    if not trading_day(stamp.date()) or not session(stamp.date())[0] <= stamp < session(stamp.date())[1]:
+        return False, sig.trigger, "outside regular session"
+    check_price_scale(sig.price_scale_id, m15)
+    today = completed_intraday(m15, now)
     if sig.setup_id == "5_qullamaggie_episodic_pivot":
-        return _ep_entry_hit(sig, m15, now)
-    today = m15[m15.index.tz_convert(ET).date == now.astimezone(ET).date()]
+        return _ep_entry_hit(sig, today if not today.empty else m15, now)
     if today.empty:
         return False, sig.trigger, "no bars today yet"
     first, later = today.iloc[0], today.iloc[1:]
@@ -244,10 +248,12 @@ def entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, floa
     return bool((later["low"] < level).any()), level, "broke the first 15-minute low and the trigger"
 
 
-def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime) -> ScanRecord:
+def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> ScanRecord:
     rec = ScanRecord("intraday", now.astimezone(ET).isoformat(), None)
     symbols = sorted({s.symbol for s in armed})
     bars = fetch(source, symbols, "M15", 40, rec.skipped) if symbols else {}
+    now = decision_clock() if decision_clock else now
+    rec.at = clock(now).isoformat()
     rec.scanned = len(bars)
     for sig in armed:
         # RSI(2) enters near the close on the day it sets up (the 15:45 ticket), never the next morning.
@@ -263,7 +269,7 @@ def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime) -> 
     return rec
 
 
-def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skipped: dict[str, str]) -> list[Signal]:
+def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skipped: dict[str, str], *, decision_clock: Callable[[], datetime] | None = None) -> list[Signal]:
     """At 10:00: this morning's movers checked for an episodic pivot, from the gap and the first 30 minutes."""
     from desk.watchlist import movers
 
@@ -271,17 +277,18 @@ def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skippe
     names = movers(source, skipped)
     daily = fetch(source, names, "D", DAILY_BARS, skipped)
     intraday = fetch(source, names, "M15", 40, skipped)
+    now = decision_clock() if decision_clock else now
     out = []
     for sym in names:
         if sym not in daily or sym not in intraday:
             continue
         d, m = daily[sym], intraday[sym]
-        d = d[d.index.tz_convert(ET).date < today]            # yesterday's close is the gap's base
-        m = m[m.index.tz_convert(ET).date == today]
-        if len(m) < 2 or len(d) < MIN_DAILY_BARS:
-            skipped.setdefault(sym, "not enough bars for the episodic pivot")
-            continue
         try:
+            d = completed_daily(d, now)
+            m = completed_intraday(m, now)
+            check_price_scale(provenance(d, "D").price_scale_id, m)
+            if len(m) < 2 or len(d) < MIN_DAILY_BARS:
+                raise BarDataError("not enough bars for the episodic pivot")
             ctx = Context(sym, market, None, today_open=float(m["open"].iloc[0]),
                           early_volume=float(m["volume"].iloc[:2].sum()))
             sig = episodic_pivot(daily_features(d), CARDS["5_qullamaggie_episodic_pivot"], ctx)
@@ -289,21 +296,32 @@ def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skippe
             skipped[sym] = str(e)
             continue
         if sig:
-            out.append(sig)
+            out.append(replace(sig, price_scale_id=provenance(d, "D").price_scale_id))
     return out
 
 
-def leader_scan_job(source: BarSource, log: "ScanLog", now: datetime) -> ScanRecord:
+def leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> ScanRecord:
     """Fridays after the close: rank the universe and write next week's watchlist with Taz's picks."""
     from desk.watchlist import build_watchlist, leader_scan, universe
 
     rec = ScanRecord("leader", now.astimezone(ET).isoformat(), None)
     names = universe(source, rec.skipped)
     bars = fetch(source, sorted(set(names) | {"SPY"}), "D", DAILY_BARS, rec.skipped)
+    now = decision_clock() if decision_clock else now
+    rec.at = clock(now).isoformat()
     if "SPY" not in bars or bars["SPY"].index[-1].tz_convert(ET).date() != now.astimezone(ET).date():
         rec.error = "no SPY bars for today: last week's watchlist stays"
         return rec
-    scan_ = leader_scan({s: b for s, b in bars.items() if s != "SPY"}, bars["SPY"]["close"])
+    clean = {}
+    for symbol, frame in bars.items():
+        try:
+            clean[symbol] = completed_daily(frame, now)
+        except BarDataError as exc:
+            rec.skipped[symbol] = str(exc)
+    if "SPY" not in clean:
+        rec.error = "no valid completed SPY bars"
+        return rec
+    scan_ = leader_scan({s: b for s, b in clean.items() if s != "SPY"}, clean["SPY"]["close"])
     rec.skipped.update(scan_.skipped)
     rec.scanned = scan_.ranked
     if not scan_.leaders:
@@ -317,18 +335,28 @@ def leader_scan_job(source: BarSource, log: "ScanLog", now: datetime) -> ScanRec
     return rec
 
 
-def rsi2_estimate(source: BarSource, watchlist: Sequence[str], market: MarketSize, now: datetime) -> list[Signal]:
-    """At 15:45: RSI(2) on daily bars with today's bar so far standing in for the close [Assumption]."""
+def rsi2_estimate(source: BarSource, watchlist: Sequence[str], market: MarketSize, now: datetime,
+                  skipped: dict[str, str] | None = None, *, decision_clock: Callable[[], datetime] | None = None) -> list[Signal]:
+    """15 minutes before close: explicitly developing daily bar from closed M15s."""
     etfs = [s for s in watchlist if s in INDEX_ETFS]
-    skipped: dict[str, str] = {}
+    skipped = skipped if skipped is not None else {}
     bars = fetch(source, etfs, "D", DAILY_BARS, skipped)
+    intraday = fetch(source, etfs, "M15", 40, skipped)
+    now = decision_clock() if decision_clock else now
     out = []
     for sym, df in bars.items():
         try:
-            out += [s for s in [connors_rsi2(daily_features(df), CARDS["10_connors_rsi2"],
-                                             Context(sym, market))] if s]
-        except BarDataError:
-            continue
+            if sym not in intraday:
+                raise BarDataError("No intraday constituents for near-close snapshot")
+            snapshot = developing_daily_from_m15(df, intraday[sym], now)
+            sig = connors_rsi2(daily_features(snapshot), CARDS["10_connors_rsi2"], Context(sym, market))
+            if sig:
+                evidence = {**sig.saw, "snapshot_as_of": snapshot.attrs["developing_as_of"],
+                            "developing_daily_ohlcv": json.dumps(snapshot.iloc[-1].to_dict(), sort_keys=True),
+                            "constituents_through": snapshot.attrs["constituents_through"]}
+                out.append(replace(sig, saw=evidence, price_scale_id=provenance(df, "D").price_scale_id))
+        except BarDataError as exc:
+            skipped[sym] = str(exc)
     return out
 
 
@@ -379,13 +407,6 @@ class ScanLog:
         return (MarketSize(data["market"]) if data["market"] else None), sigs
 
 
-def next_trading_day(d: date) -> date:
-    d += timedelta(days=1)
-    while not trading_day(d):
-        d += timedelta(days=1)
-    return d
-
-
 def funnel(records: Sequence[Mapping], start: date, end: date) -> dict:
     """The Friday note's funnel for [start, end]: scans run out of scheduled, armed, triggered, skips."""
     scheduled = sum(len(scheduled_slots(start + timedelta(days=i))) for i in range((end - start).days + 1))
@@ -403,39 +424,41 @@ def funnel(records: Sequence[Mapping], start: date, end: date) -> dict:
 
 def due_slot(now: datetime) -> datetime | None:
     """The latest slot at or before now, within 15 minutes; None outside the schedule."""
-    now = now.astimezone(ET)
+    now = clock(now)
     past = [s for s in scheduled_slots(now.date()) if s <= now < s + timedelta(minutes=15)]
     return past[-1] if past else None
 
 
-def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime) -> ScanRecord | None:
+def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> ScanRecord | None:
     slot = due_slot(now)
     if slot is None:
         return None
     if any(r.get("slot") == slot.isoformat() and not r.get("error") for r in log.records()):
         return None                                   # this slot already ran
+    closed = session(slot.date())[1]
+    close_slot, leader_slot = closed + timedelta(minutes=10), closed + timedelta(minutes=40)
     try:
-        if slot.time() == LEADER_SCAN:
-            rec = leader_scan_job(source, log, now)
-        elif slot.time() == CLOSE_SCAN:
-            rec, _ = close_scan(source, watchlist, now)
+        if slot == leader_slot:
+            rec = leader_scan_job(source, log, now, decision_clock=decision_clock)
+        elif slot == close_slot:
+            rec, _ = close_scan(source, watchlist, now, decision_clock=decision_clock)
             log.save_armed(next_trading_day(slot.date()), rec)
         else:
             market, armed = log.load_armed(slot.date())
             new: list[Signal] = []
             if slot.time() == EP_SCAN and market is not None:
                 skipped: dict[str, str] = {}
-                new = episodic_pivots(source, market, now, skipped)
+                new = episodic_pivots(source, market, now, skipped, decision_clock=decision_clock)
                 log.add_armed(slot.date(), market, new)
                 armed = [*armed, *new]
-            rec = intraday_scan(source, armed, now)
+            rec = intraday_scan(source, armed, now, decision_clock=decision_clock)
             if slot.time() == EP_SCAN and market is not None:
                 rec.skipped.update(skipped)
-            if slot.time() == LAST_INTRADAY and market is not None:
-                new = rsi2_estimate(source, watchlist, market, now)
+            if slot == closed - timedelta(minutes=15) and market is not None:
+                new = rsi2_estimate(source, watchlist, market, now, rec.skipped, decision_clock=decision_clock)
             rec.armed = [_sig(s) for s in new]
     except Exception as e:                            # any failure is logged as a failed scan, never silent
-        kind = {LEADER_SCAN: "leader", CLOSE_SCAN: "close"}.get(slot.time(), "intraday")
+        kind = "leader" if slot == leader_slot else "close" if slot == close_slot else "intraday"
         rec = ScanRecord(kind, now.isoformat(), None, error=f"{type(e).__name__}: {e}")
     rec.slot = slot.isoformat()
     log.write(rec)
@@ -460,7 +483,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         source = NoKeys()
     wl_path = Path(args.watchlist)
     watchlist = list(json.loads(wl_path.read_text())) if wl_path.exists() else ["SPY", "QQQ", "IWM"]
-    rec = run(source, watchlist, ScanLog(Path(args.data_dir)), datetime.now(timezone.utc))
+    rec = run(source, watchlist, ScanLog(Path(args.data_dir)), datetime.now(timezone.utc),
+              decision_clock=lambda: datetime.now(timezone.utc))
     if rec is None:
         print("no scan due")
         return 0

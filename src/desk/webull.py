@@ -37,6 +37,7 @@ from urllib import error, parse, request
 import pandas as pd
 
 from desk.bars import BarDataError, bars_from_webull
+from desk.bar_contract import BarProvenance
 
 HOST = "api.webull.com"
 SANDBOX_HOST = "api.sandbox.webull.com"   # Checked 29 Sep 2026: paper-trade keys work here, with delay_minutes 0
@@ -93,12 +94,15 @@ class WebullData:
     def __init__(self, app_key: str, app_secret: str, access_token: str | None = None, *,
                  host: str = HOST, timeout: float = 10.0, min_interval: float = 1.05,
                  transport: Transport = _urlopen,
-                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
+                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                 bar_profile: Callable[[str, str], BarProvenance | None] | None = None,
+                 bar_timestamp_unit: str | None = None):
         if not app_key or not app_secret:
             raise WebullError("Webull app key and secret are not set")
         self._key, self._secret, self._token = app_key, app_secret, access_token or None
         self._host, self._timeout, self._min_interval = host, timeout, min_interval
         self._transport, self._clock = transport, clock
+        self._bar_profile, self._bar_timestamp_unit = bar_profile, bar_timestamp_unit
         self._last_call: dict[str, float] = {}
 
     @classmethod
@@ -165,7 +169,7 @@ class WebullData:
         if timespan not in TIMESPANS or category not in ("US_STOCK", "US_ETF"):
             raise WebullError("bad timespan or category")
         payload = {"symbols": list(symbols), "category": category, "timespan": timespan,
-                   "count": count, "real_time_required": False}
+                   "count": count, "real_time_required": True}
         if sessions:
             payload["trading_sessions"] = sessions
         reply = self._call("POST", BARS_PATH, payload=payload)
@@ -178,12 +182,28 @@ class WebullData:
         for item in reply:
             if isinstance(item, Mapping) and item.get("symbol") in symbols:
                 try:
-                    delay = int(item.get("delay_minutes", 0) or 0)
-                except (TypeError, ValueError) as e:
+                    raw_delay = item["delay_minutes"]
+                    if isinstance(raw_delay, bool) or not (type(raw_delay) is int or
+                            isinstance(raw_delay, str) and raw_delay.isdigit()):
+                        raise ValueError("missing/non-integer delay")
+                    delay = int(raw_delay)
+                    if delay < 0:
+                        raise ValueError("negative delay")
+                except (KeyError, TypeError, ValueError) as e:
                     raise WebullError("bad delay_minutes") from e
                 if delay > max_delay_minutes:
                     raise WebullError(f"{item['symbol']} data is {delay} minutes delayed")
-                out[item["symbol"]] = bars_from_webull(item.get("result") or [])
+                symbol = item["symbol"]
+                if symbol in out:
+                    raise WebullError("duplicate symbol in bars reply")
+                df = bars_from_webull(item.get("result") or [], timestamp_unit=self._bar_timestamp_unit)
+                profile = self._bar_profile(symbol, timespan) if self._bar_profile else None
+                # Unknown provider semantics remain readable, but cannot produce a signal.
+                df.attrs["bar_provenance"] = (profile.model_copy(update={"delay_minutes": delay}).model_dump()
+                    if profile else {"source": "Webull OpenAPI", "timeframe": timespan, "delay_minutes": delay,
+                                     "timestamp_semantics": "unknown"})
+                df.attrs["received_at"] = self._clock().isoformat()
+                out[symbol] = df
         missing = [s for s in symbols if s not in out]
         if missing:
             raise WebullError(f"no bars for {missing}")

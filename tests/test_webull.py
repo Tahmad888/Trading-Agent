@@ -65,7 +65,7 @@ def test_bars_request_is_signed_and_parsed():
 
 
 def test_missing_symbol_in_reply_fails_closed():
-    t = FakeTransport([{"symbol": "SPY", "result": [bar("2026-09-28T04:00:00.000+0000", 765.6)]}])
+    t = FakeTransport([{"symbol": "SPY", "delay_minutes": 0, "result": [bar("2026-09-28T04:00:00.000+0000", 765.6)]}])
     with pytest.raises(WebullError, match="QQQ"):
         client(t).bars(["SPY", "QQQ"], category="US_ETF", timespan="D")
 

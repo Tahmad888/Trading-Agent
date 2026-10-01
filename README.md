@@ -6,11 +6,11 @@ The original implementation follows Trading Desk Blueprint v2.3, with v2.4 risk 
 in PR #1. Current repair work follows [the numbered repair plan](docs/REPAIR_PLAN.md)
 and [Step 01's verified baseline](docs/checkpoints/01-baseline.md). `CLAUDE.md` holds
 the six rules and standing constraints; `AGENTS.md` defines the checkpoint workflow.
-Steps 01–05 are complete locally. PR #1 is integrated with user-selected dollar
+Steps 01–06 are complete and verified. PR #1 is integrated with user-selected dollar
 risk, cost-inclusive sizing and no fixed $100 ceiling or grade-dollar assignment.
 See [Step 02 evidence](docs/checkpoints/02-user-risk.md). The 11:00 EP rule is removed;
 either completed opening range can qualify during day one, with no unfinished-bar
-look-ahead. See [Step 03 evidence](docs/checkpoints/03-ep-timing.md). See [Step 04 evidence](docs/checkpoints/04-instrument-contracts.md) for contract identity and independent loss calculations. See [Step 05 evidence](docs/checkpoints/05-risk-warnings.md) for user-overridable warnings and durable account state. Step 06 is next.
+look-ahead. See [Step 03 evidence](docs/checkpoints/03-ep-timing.md). See [Step 04 evidence](docs/checkpoints/04-instrument-contracts.md) for contract identity and independent loss calculations. See [Step 05 evidence](docs/checkpoints/05-risk-warnings.md) for user-overridable warnings and durable account state. See [Step 06 evidence](docs/checkpoints/06-data-contracts.md) for calendar, completed bars and data provenance. Step 07 is next.
 
 ## Status
 
@@ -27,3 +27,12 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 pytest
 ```
+
+## Data eligibility after Step 06
+
+The scanner now uses a pinned XNYS session calendar, including early closes and DST.
+It requires explicit bar timestamp/session/adjustment/price-scale evidence. Parsing
+Webull rows alone does not supply that evidence: until the adapter is given a checked
+per-symbol/timeframe profile, raw data remains readable but cannot arm/trigger signals.
+Live semantic verification is tracked in Step 20. Existing armed files without price
+scale metadata require rebuilding from verified bars; the code does not assume a scale.

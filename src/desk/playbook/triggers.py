@@ -50,6 +50,7 @@ class Signal:
     stop: float
     target: float | None = None
     saw: dict[str, str] = field(default_factory=dict)   # what each check saw, in plain words
+    price_scale_id: str | None = None  # attached by the validated data producer
 
     def __post_init__(self):
         for name in ("trigger", "stop", "target"):

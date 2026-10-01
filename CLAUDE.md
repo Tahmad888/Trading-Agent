@@ -11,6 +11,9 @@ including calendars and iron condors. HALF must be advisory without automaticall
 changing the selected budget. Step 05 makes account-loss/drawdown and bearish-market
 conditions user-overridable warnings, persists account/exposure/manual-stop state,
 and checks a trusted setup registry. No user approval UI/order adapter exists yet.
+Step 06 adds bounded exchange-calendar timing, completed-bar checks and explicit
+provenance; live Webull semantic acceptance remains Step 20. Taz authorized pushing
+verified checkpoints to the dedicated repair branch, without an implicit merge.
 The tracker records actual completion, not just approved intent.
 
 Read the six rules before doing anything. They come from Trading Desk Blueprint v2.4

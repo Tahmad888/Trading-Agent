@@ -6,6 +6,8 @@ import pandas as pd
 import pytest
 
 from desk.bars import BarDataError
+from desk.calendar import exchange
+from desk.bar_contract import BarProvenance
 from desk import scanner as sc
 from desk.playbook.triggers import Signal
 from tests.charts import chart, line
@@ -17,7 +19,15 @@ DAY = date(2026, 9, 29)                                  # a Tuesday
 
 def daily(cl, spread=0.005, end=DAY):
     df = chart(cl, spread=spread)
-    df.index = pd.date_range(end=pd.Timestamp(end, tz="America/New_York"), periods=len(df), freq="B").tz_convert("UTC")
+    dates = exchange().sessions[exchange().sessions <= pd.Timestamp(end)][-len(df):]
+    df.index = dates.tz_localize("America/New_York").tz_convert("UTC")
+    return stamp(df, "D")
+
+
+def stamp(df, timeframe):
+    df.attrs["bar_provenance"] = BarProvenance(source="synthetic fixture", evidence_ref="test generator",
+        timeframe=timeframe, timestamp_semantics="session_label" if timeframe == "D" else "start",
+        session="regular", delay_minutes=0, adjustment="split_adjusted", price_scale_id="fixture-scale").model_dump()
     return df
 
 
@@ -68,7 +78,7 @@ def test_close_scan_refuses_yesterdays_bars():
     f = frames()
     f[("LEAD", "D")] = daily(QULL, spread=0.02, end=date(2026, 9, 28))
     rec, armed = sc.close_scan(Fake(f), ["LEAD"], datetime(2026, 9, 29, 16, 10, tzinfo=ET))
-    assert "not today's" in rec.skipped["LEAD"] and not armed
+    assert "Stale daily data" in rec.skipped["LEAD"] and not armed
 
 
 def test_close_scan_without_spy_arms_nothing():
@@ -80,22 +90,22 @@ def test_close_scan_without_spy_arms_nothing():
 
 def m15(rows, day=DAY):
     idx = pd.date_range(pd.Timestamp(f"{day} 09:30", tz="America/New_York"), periods=len(rows), freq="15min")
-    return pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx.tz_convert("UTC")).assign(volume=1e5)
+    return stamp(pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx.tz_convert("UTC")).assign(volume=1e5), "M15")
 
 
 def sig(setup="1_qullamaggie_breakout", d="long", trigger=100.0, stop=95.0):
-    return Signal(setup, "LEAD", d, pd.Timestamp("2026-09-28", tz=ET), trigger, stop)
+    return Signal(setup, "LEAD", d, pd.Timestamp("2026-09-28", tz=ET), trigger, stop, price_scale_id="fixture-scale")
 
 
 def test_entry_rules():
-    now = datetime(2026, 9, 29, 11, 0, tzinfo=ET)
+    now = datetime(2026, 9, 29, 10, 0, tzinfo=ET)
     bars = m15([(99, 101, 98.5, 100.5), (100.5, 102, 100, 101.8)])
     hit, level, _ = sc.entry_hit(sig(), bars, now)
     assert hit and level == 101                            # first 15-minute high was above the trigger
     assert not sc.entry_hit(sig(), m15([(99, 101, 98.5, 100.5), (100.5, 100.9, 100, 100.2)]), now)[0]
     luk = sig("7_luk_pullback_reclaim")
     assert sc.entry_hit(luk, m15([(100.5, 101, 99, 99.5), (99.5, 100.6, 99.4, 100.4)]), now)[0]
-    assert not sc.entry_hit(luk, m15([(100.5, 101, 100.1, 100.6)]), now)[0]
+    assert not sc.entry_hit(luk, m15([(100.5, 101, 100.1, 100.6)]), now.replace(hour=9, minute=45))[0]
     short = sig("8_raschke_holy_grail", "short", 100, 104)
     assert sc.entry_hit(short, m15([(101, 101.5, 99.5, 100), (100, 100.2, 99, 99.2)]), now)[0]
 
