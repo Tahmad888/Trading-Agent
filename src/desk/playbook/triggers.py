@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+import math
 
 import numpy as np
 import pandas as pd
@@ -54,13 +55,21 @@ class Signal:
     saw: dict[str, str] = field(default_factory=dict)   # what each check saw, in plain words
     price_scale_id: str | None = None  # attached by the validated data producer
     price_basis: dict | None = None  # persisted structured evidence; legacy signals rebuild
+    setup_version: str = ""  # frozen card fingerprint at evaluation, never refreshed on load
 
     def __post_init__(self):
+        if not self.setup_version and self.setup_id in CARDS:
+            object.__setattr__(self, "setup_version", CARDS[self.setup_id].fingerprint())
         for name in ("trigger", "stop", "target"):
             v = getattr(self, name)
             if v is not None:
                 object.__setattr__(self, name, round(float(v), 2))
-        if (self.direction == "long") != (self.stop < self.trigger):
+        if self.direction not in {"long", "short"} or any(
+            v is not None and (not math.isfinite(v) or v <= 0)
+            for v in (self.trigger, self.stop, self.target)
+        ):
+            raise ValueError("Signal requires a valid direction and finite positive prices")
+        if self.stop == self.trigger or (self.direction == "long") != (self.stop < self.trigger):
             raise ValueError(f"{self.setup_id} {self.symbol}: stop {self.stop} is on the wrong side of {self.trigger}")
 
     @property

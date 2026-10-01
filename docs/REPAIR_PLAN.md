@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–06 complete, including scoped NVDA/SPY sandbox integration and iMac verification. Step 07 is next and has not started; re-entry policy is resolved. Earlier checkpoint paragraphs below retain their historical status; the closure result supersedes their pending items.
+Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–07 complete. Step 06 includes scoped NVDA/SPY sandbox integration and iMac verification; Step 07 has 564 passing strict tests on both local Python versions. Step 08 is next and has not started. Earlier checkpoint paragraphs below retain their historical status; the closure result supersedes their pending items.
 
 Installation follow-up: [06a-resource-cleanup.md](checkpoints/06a-resource-cleanup.md)
 records the Python 3.14 iMac test failure, its verified cleanup fix, and the six
@@ -109,7 +109,7 @@ workflow. No agent has been dispatched by creating this plan.
 | [x] | 04 | Shared contracts, option identity and loss calculations | Codex / Claude | Verified contract metadata, allowed structures, independently computed loss measures and integer quantities; malformed proposals fail closed. |
 | [x] | 05 | Market/account gates and persistent risk state | Codex / Claude | Trusted setup eligibility; user-overridable account/market warnings; manual stop and exposure recover after restart; no count caps. |
 | [x] | 06 | Market-data timing, provenance and trading calendar | Codex / Claude | Timeframe-aware freshness/completion, session and corporate-action handling tested; live-only uncertainties explicitly separated. |
-| [ ] | 07 | Persistent signal lifecycle | Codex / Claude | Unique events survive scans/restarts; stale or expired approval eligibility cannot persist; long/short rules and re-entry policy explicit. |
+| [x] | 07 | Persistent signal lifecycle | Codex / Claude | Unique events survive scans/restarts; stale or expired approval eligibility cannot persist; long/short rules and re-entry policy explicit. |
 | [ ] | 08 | Discovery and watchlist coverage | Claude / Codex | Leaders, movers, bearish candidates, ETFs and user additions reach appropriate setup checks; options do not gate stock discovery. |
 | [ ] | 09 | Earnings growth and catalyst evidence | Claude / Codex | Reported results separated from upcoming earnings; point-in-time growth/catalyst gates and unknown-data behavior tested. |
 | [ ] | 10 | Qullamaggie breakout and EP fidelity | Claude / Codex | Structural stops, completed entry ranges, growth/volume/chase gates and positive/negative chart examples agree with approved cards. |
@@ -223,6 +223,10 @@ provider-specific semantics that require actual read-only Webull evidence for St
 simulated tests cannot certify those semantics. Plan B: no eligible signal on unknown data.
 
 ### 07 — Signal lifecycle (watch, approve, journal)
+
+Complete: [checkpoint 07](checkpoints/07-signal-lifecycle.md); durable event history,
+fresh-data revalidation and 564 passing tests on Python 3.12/3.14. Runtime approval
+and execution adapters remain their later numbered steps.
 
 Depends on 06. Targets: `scanner.py`, signal contracts and durable state.
 Separate armed/triggered/invalidated signal history from approval/order state. Use

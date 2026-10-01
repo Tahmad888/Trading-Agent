@@ -46,6 +46,7 @@ from desk.bar_contract import (completed_daily, completed_intraday, provenance,
                                check_price_scale, developing_daily_from_m15)
 from desk.indicators import daily_features
 from desk.data_basis import price_basis, volume_basis
+from desk.signal_state import SignalStore, SignalStateError, restore_signal
 from desk.playbook.cards import CARDS, INDEX_ETFS
 from desk.playbook.filters import MarketSize, market_filter, trend_template
 from desk.playbook.triggers import Context, Signal, connors_rsi2, episodic_pivot, scan
@@ -127,6 +128,12 @@ def _sig(s: Signal, **extra) -> dict:
     d = asdict(s)
     d["as_of"] = s.as_of.isoformat()
     return {**d, **extra}
+
+
+def _event_signal(sig: Signal, event: dict) -> dict:
+    return _sig(sig, event_id=event["id"], trigger_at=event["trigger_at"],
+                observed_at=event["observed_at"], expires_at=event["expires_at"],
+                valid_until=event["valid_until"], entry_level=event["entry_level"], why=event["reason"])
 
 
 def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> tuple[ScanRecord, list[Signal]]:
@@ -251,7 +258,68 @@ def entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, floa
     return bool((later["low"] < level).any()), level, "broke the first 15-minute low and the trigger"
 
 
-def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> ScanRecord:
+def entry_observations(sig: Signal, bars: pd.DataFrame) -> list[dict]:
+    """Per-completed-bar crossings for durable replay; never a whole-day .any().
+
+    Step 06 validation precedes this function. EP alternatives share one candidate;
+    the first crossing wins. OHLC cannot establish tick order or executable fills.
+    """
+    observations = []
+    long = sig.direction == "long"
+    first = bars.iloc[0]
+    for i, (start, row) in enumerate(bars.iterrows()):
+        entries = []
+        previous = bars.iloc[i - 1] if i else None
+        if sig.setup_id == "5_qullamaggie_episodic_pivot":
+            for count in (1, 4):
+                if i >= count:
+                    level = float(bars.high.iloc[:count].max())
+                    if previous.close <= level and row.high > level:
+                        entries.append((level, f"fresh break of completed {count * 15}-minute range"))
+        elif sig.setup_id == "7_luk_pullback_reclaim":
+            if (bars.low.iloc[:i + 1] < sig.trigger).any() and row.close > sig.trigger:
+                if previous is None or previous.close <= sig.trigger:
+                    entries.append((sig.trigger, "fresh close reclaiming the level"))
+        elif sig.setup_id == "9_weinstein_stage4_breakdown":
+            if i == 0 and row.close < sig.trigger:
+                entries.append((float(row.close), "first 15 minutes under support"))
+            elif i and previous.close >= sig.trigger and row.low < sig.trigger:
+                entries.append((sig.trigger, "fresh support breakdown after reset"))
+        elif sig.setup_id == "10_connors_rsi2":
+            # The near-close producer supplies only the completed observation
+            # corresponding to its developing-daily estimate.
+            if i == len(bars) - 1:
+                entries.append((sig.trigger, "near-close RSI(2) estimate"))
+        elif i:
+            level = max(sig.trigger, float(first.high)) if long else min(sig.trigger, float(first.low))
+            crossed = (previous.close <= level and row.high > level) if long else (previous.close >= level and row.low < level)
+            if crossed:
+                entries.append((level, "fresh crossing of trigger and opening range"))
+        observations.append({"bar_end": (start + pd.Timedelta(minutes=15)).isoformat(),
+                             "open": float(row.open), "high": float(row.high),
+                             "low": float(row.low), "close": float(row.close), "entries": entries})
+    return observations
+
+
+def observe_signal(store: SignalStore, sig: Signal, frame: pd.DataFrame, now: datetime) -> list[dict]:
+    day = clock(now).date()
+    reference = clock(sig.as_of).date()
+    expected = reference if sig.setup_id == "10_connors_rsi2" else next_trading_day(reference)
+    if day != expected:
+        store.suspend(sig, day, "signal belongs to a different entry session")
+        return []
+    bars = completed_intraday(frame, now)
+    check_price_scale(sig.price_basis, bars, now, symbol=sig.symbol)
+    if bars.empty:
+        return []
+    observations = entry_observations(sig, bars)
+    if sig.setup_id == "10_connors_rsi2":
+        observations = observations[-1:]
+    return store.observe(sig, day, observations, now)
+
+
+def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime, *, decision_clock: Callable[[], datetime] | None = None,
+                  store: SignalStore | None = None) -> ScanRecord:
     rec = ScanRecord("intraday", now.astimezone(ET).isoformat(), None)
     symbols = sorted({s.symbol for s in armed})
     bars = fetch(source, symbols, "M15", 40, rec.skipped) if symbols else {}
@@ -260,12 +328,23 @@ def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime, *, 
     rec.scanned = len(bars)
     for sig in armed:
         # RSI(2) enters near the close on the day it sets up (the 15:45 ticket), never the next morning.
-        if sig.symbol not in bars or sig.setup_id == "10_connors_rsi2":
+        if sig.symbol not in bars:
+            if store:
+                store.suspend(sig, clock(now).date(), rec.skipped.get(sig.symbol, "missing bars"))
+            continue
+        if sig.setup_id == "10_connors_rsi2":
             continue
         try:
+            if store:
+                events = observe_signal(store, sig, bars[sig.symbol], now)
+                rec.triggered.extend(_event_signal(sig, e) for e in events)
+                continue
+            # Stateless diagnostic only; run() always supplies the durable store.
             hit, level, why = entry_hit(sig, bars[sig.symbol], now)
-        except (BarDataError, KeyError) as e:
+        except (BarDataError, KeyError, SignalStateError) as e:
             rec.skipped[sig.symbol] = str(e)
+            if store:
+                store.suspend(sig, clock(now).date(), str(e))
             continue
         if hit:
             rec.triggered.append(_sig(sig, entry_level=round(level, 2), why=why))
@@ -344,7 +423,8 @@ def leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *, decisio
 
 
 def rsi2_estimate(source: BarSource, watchlist: Sequence[str], market: MarketSize, now: datetime,
-                  skipped: dict[str, str] | None = None, *, decision_clock: Callable[[], datetime] | None = None) -> list[Signal]:
+                  skipped: dict[str, str] | None = None, *, decision_clock: Callable[[], datetime] | None = None,
+                  store: SignalStore | None = None, triggered: list[dict] | None = None) -> list[Signal]:
     """15 minutes before close: explicitly developing daily bar from closed M15s."""
     etfs = [s for s in watchlist if s in INDEX_ETFS]
     skipped = skipped if skipped is not None else {}
@@ -364,8 +444,12 @@ def rsi2_estimate(source: BarSource, watchlist: Sequence[str], market: MarketSiz
                             "developing_daily_ohlcv": json.dumps(snapshot.iloc[-1].to_dict(), sort_keys=True),
                             "constituents_through": snapshot.attrs["constituents_through"],
                             "developing_components": json.dumps(snapshot.attrs["developing_components"], sort_keys=True)}
-                out.append(replace(sig, saw=evidence, price_scale_id=provenance(df, "D").price_scale_id,
-                                   price_basis=basis.model_dump(mode="json")))
+                sig = replace(sig, saw=evidence, price_scale_id=provenance(df, "D").price_scale_id,
+                              price_basis=basis.model_dump(mode="json"))
+                out.append(sig)
+                if store is not None and triggered is not None:
+                    for e in observe_signal(store, sig, intraday[sym], now):
+                        triggered.append(_event_signal(sig, e))
         except BarDataError as exc:
             skipped[sym] = str(exc)
     return out
@@ -377,6 +461,7 @@ class ScanLog:
     def __init__(self, root: Path):
         self.root = root
         root.mkdir(parents=True, exist_ok=True)
+        self.signals = SignalStore(root / "signals.sqlite")
 
     @property
     def path(self) -> Path:
@@ -400,22 +485,23 @@ class ScanLog:
         (self.root / "watchlist.json").write_text(json.dumps(wl, indent=1))
 
     def add_armed(self, day: date, market: MarketSize, sigs: Sequence[Signal]) -> None:
-        old_market, old = self.load_armed(day)
-        rec = ScanRecord("intraday", "", None, market=(old_market or market).value,
-                         armed=[_sig(s) for s in [*old, *sigs]])
-        self.save_armed(day, rec)
+        self.load_armed(day)  # import a legacy candidate list once, if present
+        self.signals.save_armed(day, market.value, [_sig(s) for s in sigs], append=True)
 
     def save_armed(self, for_day: date, rec: ScanRecord) -> None:
-        (self.root / f"armed-{for_day.isoformat()}.json").write_text(
-            json.dumps({"market": rec.market, "signals": rec.armed}, indent=1))
+        self.signals.save_armed(for_day, rec.market, rec.armed, observed_at=rec.at or None)
 
     def load_armed(self, day: date) -> tuple[MarketSize | None, list[Signal]]:
-        p = self.root / f"armed-{day.isoformat()}.json"
-        if not p.exists():
-            return None, []
-        data = json.loads(p.read_text())
-        sigs = [Signal(**{**s, "as_of": pd.Timestamp(s["as_of"])}) for s in data["signals"]]
-        return (MarketSize(data["market"]) if data["market"] else None), sigs
+        data = self.signals.load_armed(day)
+        if data is None:
+            p = self.root / f"armed-{day.isoformat()}.json"
+            if not p.exists():
+                return None, []
+            legacy = json.loads(p.read_text())
+            self.signals.save_armed(day, legacy["market"], legacy["signals"])
+            data = self.signals.load_armed(day)
+        market, payload = data
+        return (MarketSize(market) if market else None), [restore_signal(s) for s in payload]
 
 
 def funnel(records: Sequence[Mapping], start: date, end: date) -> dict:
@@ -428,7 +514,8 @@ def funnel(records: Sequence[Mapping], start: date, end: date) -> dict:
         "scans_run": len(done),
         "scans_failed": sorted({r["slot"] for r in ran if r.get("error")} - done),
         "setups_armed": sum(len(r.get("armed", [])) for r in ran),
-        "entries_triggered": sum(len(r.get("triggered", [])) for r in ran),
+        "entries_triggered": len({t["event_id"] for r in ran for t in r.get("triggered", []) if t.get("event_id")})
+            + sum(1 for r in ran for t in r.get("triggered", []) if not t.get("event_id")),
         "names_skipped": sorted({s for r in ran for s in r.get("skipped", {})}),
     }
 
@@ -441,6 +528,7 @@ def due_slot(now: datetime) -> datetime | None:
 
 
 def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> ScanRecord | None:
+    log.signals.expire(now)  # also runs outside scan slots and when no bars arrive
     slot = due_slot(now)
     if slot is None:
         return None
@@ -462,18 +550,79 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
                 new = episodic_pivots(source, market, now, skipped, decision_clock=decision_clock)
                 log.add_armed(slot.date(), market, new)
                 armed = [*armed, *new]
-            rec = intraday_scan(source, armed, now, decision_clock=decision_clock)
+            rec = intraday_scan(source, armed, now, decision_clock=decision_clock, store=log.signals)
             if slot.time() == EP_SCAN and market is not None:
                 rec.skipped.update(skipped)
             if slot == closed - timedelta(minutes=15) and market is not None:
-                new = rsi2_estimate(source, watchlist, market, now, rec.skipped, decision_clock=decision_clock)
+                new = rsi2_estimate(source, watchlist, market, now, rec.skipped,
+                                    decision_clock=decision_clock, store=log.signals, triggered=rec.triggered)
             rec.armed = [_sig(s) for s in new]
     except Exception as e:                            # any failure is logged as a failed scan, never silent
+        log.signals.suspend_all("scan failed; fresh validation required")
         kind = "leader" if slot == leader_slot else "close" if slot == close_slot else "intraday"
         rec = ScanRecord(kind, now.isoformat(), None, error=f"{type(e).__name__}: {e}")
     rec.slot = slot.isoformat()
     log.write(rec)
     return rec
+
+
+def revalidate_signal(source: BarSource, log: ScanLog, event_id: str, now: datetime, *,
+                      symbol: str, price: float, quote_at: datetime,
+                      decision_clock: Callable[[], datetime] | None = None) -> dict:
+    """Fresh signal prerequisite for later approval/execution; never an approval.
+
+    The future broker/review adapter supplies a trusted current underlying quote.
+    Price, stop and chase checks are symmetric. This does not replace risk sizing,
+    earnings/catalyst gates, quote identity validation by the broker, or approval.
+    """
+    import math
+    from desk.risk import RiskLimits
+
+    event = log.signals.get(event_id, now)
+    sig = restore_signal(event["signal"])
+    card = CARDS.get(sig.setup_id)
+    if event["state"] != "triggered" or event["blocked"] or not card or card.fingerprint() != sig.setup_version:
+        return {"event_id": event_id, "eligible": False,
+                "reasons": ["event is terminal or its setup version changed"],
+                "checked_at": clock(now).isoformat(), "card_version": event["card_version"],
+                "expires_at": event["expires_at"], "purpose": "signal prerequisite only; not approval or order"}
+    skipped = {}
+    bars = fetch(source, [sig.symbol], "M15", 40, skipped)
+    checked = decision_clock() if decision_clock else now
+    reasons = []
+    if sig.symbol not in bars:
+        log.signals.suspend(sig, clock(checked).date(), "fresh bars unavailable")
+        reasons.append("fresh bars unavailable")
+    else:
+        try:
+            observe_signal(log.signals, sig, bars[sig.symbol], checked)
+        except (BarDataError, KeyError, SignalStateError) as exc:
+            log.signals.suspend(sig, clock(checked).date(), str(exc))
+            reasons.append("fresh bar/action validation failed")
+    event = log.signals.get(event_id, checked)
+    if not event["eligible"]:
+        reasons.append("event is failed, closed, expired, suspended or not current")
+    limits = RiskLimits()
+    if symbol != sig.symbol or not math.isfinite(price) or price <= 0:
+        reasons.append("invalid underlying quote")
+    age = clock(checked) - clock(quote_at)
+    if not pd.Timedelta(0) <= age <= limits.max_quote_age:
+        reasons.append("quote is stale or from the future")
+    long = sig.direction == "long"
+    if (price <= sig.stop if long else price >= sig.stop):
+        reasons.append("price breached the stop")
+        if symbol == sig.symbol and math.isfinite(price) and price > 0 and pd.Timedelta(0) <= age <= limits.max_quote_age:
+            log.signals.invalidate(event_id, checked, "fresh underlying quote breached the stop")
+    if (price < event["entry_level"] if long else price > event["entry_level"]):
+        reasons.append("price is on the wrong side of entry")
+    moved = (price / sig.trigger - 1) * (1 if long else -1)
+    chase = min(limits.max_already_moved_pct,
+                CARDS[sig.setup_id].p("max_chase") if "max_chase" in CARDS[sig.setup_id].params else float("inf"))
+    if moved > chase + 1e-12:
+        reasons.append("price exceeds the existing chase limit")
+    return {"event_id": event_id, "eligible": not reasons, "reasons": reasons,
+            "checked_at": clock(checked).isoformat(), "card_version": event["card_version"],
+            "expires_at": event["expires_at"], "purpose": "signal prerequisite only; not approval or order"}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
