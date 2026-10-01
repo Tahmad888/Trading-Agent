@@ -29,6 +29,13 @@ client. It stops on errors/rate limits and never publishes PriceBasis coverage.
 Read checkpoint 06e before direct checks; no raw errors/URLs or credentials in
 reports, no repeated calls after a limit, and no assumption about quota reset.
 
+Follow-up F adds `desk.action_import`, a persistent reviewed action ledger and an
+opt-in scanner source (`DESK_ACTION_LEDGER`, `DESK_ACTION_CHANNELS`). Read checkpoint
+06f. The reported four action-source checks and RTH timing sample pass. Zero-dollar
+dividends are logged but ignored economically under Taz's explicit instruction.
+Real mapping/channel configuration and price/volume acceptance remain open; do not
+promote fictional test reviews or activate the runner.
+
 Read the six rules before doing anything. They come from Trading Desk Blueprint v2.4
 (29 Sep 2026), amended by Taz's later decisions in the repair plan:
 https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg

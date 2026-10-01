@@ -1,7 +1,7 @@
 """Read-only split/dividend observations; no coverage or price profile is published.
 
 Request: https://www.alphavantage.co/documentation/#dividends (also #splits).
-Success schema is provisional until verified with the user's direct REST access.
+Success schema checked against user-supplied direct REST observations, 2026-10-01.
 Plan B: safe errors, no retries, no stale or incomplete evidence promotion.
 """
 from dataclasses import dataclass
@@ -112,7 +112,7 @@ def _observations(function, rows):
                                         ("declaration_date", "record_date", "payment_date"))
             issues = []
             if value == 0:
-                issues.append("ZERO_AMOUNT_REQUIRES_REVIEW")
+                issues.append("ZERO_AMOUNT_IGNORED")
             if any(day is None for day in (declared, recorded, paid)):
                 issues.append("MISSING_AUXILIARY_DATE")
             # Dates can legitimately precede/follow ex-date in unusual actions.

@@ -144,7 +144,7 @@ def test_reported_dividend_quirks_preserved_as_unverified_observations():
     result = client(Transport(response(rows))).fetch("NVDA", "DIVIDENDS").report(include_records=True)
     assert result["row_count"] == 3 and result["coverage"] == "UNKNOWN"
     assert result["records"][0]["value"] == "0.04"  # no silent split or double price adjustment
-    assert "ZERO_AMOUNT_REQUIRES_REVIEW" in result["records"][1]["issues"]
+    assert "ZERO_AMOUNT_IGNORED" in result["records"][1]["issues"]
     assert result["records"][1]["declaration_date"] is None
 
 

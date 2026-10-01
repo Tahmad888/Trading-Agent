@@ -1,0 +1,108 @@
+{
+  "provenance": {
+    "description": "Two unmodified calls extracted from the user-supplied 24-call RTH observation log; Claude cloud, dc2ae04.",
+    "attachment_sha256": "bc66eb4e7da642e568a96cb0ceabdefa2cb56614b965d02e31841bae57b792d1"
+  },
+  "calls": [
+    {
+      "round": 1,
+      "body": "{\"symbols\":[\"AAPL\"],\"category\":\"US_STOCK\",\"timespan\":\"M15\",\"count\":3,\"real_time_required\":false,\"trading_sessions\":\"RTH\"}",
+      "sent": "2026-10-01T14:29:37.573612+00:00",
+      "received": "2026-10-01T14:29:37.723183+00:00",
+      "reply": {
+        "result": [
+          {
+            "symbol": "AAPL",
+            "result": [
+              {
+                "time": "2026-10-01T14:00:00.000+0000",
+                "open": "330.39",
+                "close": "329.93",
+                "high": "330.555",
+                "low": "328.63",
+                "volume": "1494010",
+                "trading_session": "RTH"
+              },
+              {
+                "time": "2026-10-01T13:45:00.000+0000",
+                "open": "331.89",
+                "close": "330.44",
+                "high": "332.3195",
+                "low": "330.03",
+                "volume": "1260454",
+                "trading_session": "RTH"
+              },
+              {
+                "time": "2026-10-01T13:30:00.000+0000",
+                "open": "329.6",
+                "close": "331.915",
+                "high": "332.4816",
+                "low": "328.37",
+                "volume": "3074232",
+                "trading_session": "RTH"
+              }
+            ],
+            "instrument_id": "913256135",
+            "delay_minutes": 0
+          }
+        ]
+      },
+      "adapter_frame_labels": [
+        "2026-10-01T13:30:00+00:00",
+        "2026-10-01T13:45:00+00:00",
+        "2026-10-01T14:00:00+00:00"
+      ],
+      "adapter_received_at": "2026-10-01T14:29:37.729127+00:00"
+    },
+    {
+      "round": 1,
+      "body": "{\"symbols\":[\"SPY\"],\"category\":\"US_ETF\",\"timespan\":\"M15\",\"count\":3,\"real_time_required\":false,\"trading_sessions\":\"RTH\"}",
+      "sent": "2026-10-01T14:29:46.694991+00:00",
+      "received": "2026-10-01T14:29:46.837528+00:00",
+      "reply": {
+        "result": [
+          {
+            "symbol": "SPY",
+            "result": [
+              {
+                "time": "2026-10-01T14:00:00.000+0000",
+                "open": "762.5601",
+                "close": "760.895",
+                "high": "762.69",
+                "low": "759.721",
+                "volume": "2719907",
+                "trading_session": "RTH"
+              },
+              {
+                "time": "2026-10-01T13:45:00.000+0000",
+                "open": "763.42",
+                "close": "762.58",
+                "high": "764.03",
+                "low": "762.45",
+                "volume": "1739516",
+                "trading_session": "RTH"
+              },
+              {
+                "time": "2026-10-01T13:30:00.000+0000",
+                "open": "764.32",
+                "close": "763.4094",
+                "high": "765.33",
+                "low": "763.21",
+                "volume": "2815347",
+                "trading_session": "RTH"
+              }
+            ],
+            "instrument_id": "913243251",
+            "delay_minutes": 0
+          }
+        ]
+      },
+      "adapter_frame_labels": [
+        "2026-10-01T13:30:00+00:00",
+        "2026-10-01T13:45:00+00:00",
+        "2026-10-01T14:00:00+00:00"
+      ],
+      "adapter_received_at": "2026-10-01T14:29:46.842353+00:00"
+    }
+  ]
+}

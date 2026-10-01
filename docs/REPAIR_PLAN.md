@@ -32,6 +32,15 @@ handling and stop-on-limit behavior. Strict local suites pass 465 tests on Pytho
 Successful authenticated data, real security mapping/coverage and reconciliation
 remain open. Claude cloud can run the direct check without waiting for the iMac.
 
+[06f-action-ledger.md](checkpoints/06f-action-ledger.md) integrates paired Alpha
+Vantage observations with a persistent reviewed action ledger and opt-in scanner
+bar source (492 strict tests pass on both Python 3.12 and 3.14). Zero-dollar dividends are retained and ignored economically under
+Taz's decision. New/corrected/removed events invalidate prior signal evidence.
+The supplied four source checks and AAPL/SPY RTH timing observations are accepted.
+Live mapping/channel configuration and Webull price/volume acceptance remain open;
+no real decision profile or scheduled runner is activated. Earlier status notes
+above record the state at their respective checkpoints, not the current result.
+
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through
 watch -> analyze -> plan -> approve -> manage -> journal. Each row is a stopping point.

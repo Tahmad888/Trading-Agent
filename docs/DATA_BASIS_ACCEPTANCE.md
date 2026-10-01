@@ -28,8 +28,8 @@ The wider lifecycle/approval implementation remains Step 07 and later.
 
 The trusted producer must refresh/reconcile evidence before publishing a profile.
 The contract validates its attestation; it cannot discover an action absent from
-every supplied source. No real action producer or normalization calculator is
-connected yet. Do not set `coverage_complete=True` merely to pass validation.
+every supplied source. Follow-up F adds a reviewed ledger and opt-in bar source; real channel
+configuration and a normalization calculator are not enabled yet. Do not set `coverage_complete=True` merely to pass validation.
 
 `VolumeBasis` separately identifies source channel, evidence, trade-inclusion
 definition, share units and share-adjustment basis. Price adjustment is not proof
@@ -153,9 +153,12 @@ warranty of universal completeness. To publish it, the producer must:
    preceding one. Rebuild affected prices/features/signals on economic changes,
    cancellations or new events. Record mismatches instead of auto-adjusting twice.
 
-The helper implements normalization/revision detection only. There is still no
-real source adapter, identity-map producer or automatic rebuild worker connected.
-Its tests use synthetic records. A connector-only source is insufficient for an
+The original helper implements action-term normalization/revision detection.
+Follow-up F now adds dated Alpha Vantage imports, reviewed identity/coverage,
+persistent reconciliation and an opt-in scanner source. Existing entry checks
+reject old evidence, and fresh scans recalculate from newly fetched bars. No
+automatic intraday rearming or raw-price normalization worker is introduced.
+Replays use actual supplied payloads with explicitly fictional review profiles. A connector-only source is insufficient for an
 unattended desk without a usable local access route. No paid source is installed.
 
 ## Provider route repair and focused check
@@ -188,3 +191,14 @@ that daily volume must equal summed minute volume. No support message was sent.
 
 Offline tests may use clearly fictional profiles. Unknown real data stays
 ineligible. Step 07 remains paused under Taz's instruction.
+
+## Current update — follow-up F
+
+Taz accepted zero-dollar dividends as logged, nonblocking observations, with no
+economic adjustment. Do not request another provider check for NVDA's zero row.
+The NVDA/SPY split/dividend source-access checks have succeeded. The supplied
+2026-10-01 RTH AAPL/SPY timing report and its 24-call log satisfy the focused
+regular-session observation requirement; they do not establish every session
+or subsecond candle delivery. The separate iMac operational check remains later.
+See checkpoint 06f for the implemented ledger/import/scanner bridge. Remaining
+work is reviewed real mapping/channel configuration plus price/volume acceptance.

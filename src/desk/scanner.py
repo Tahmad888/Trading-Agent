@@ -483,8 +483,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     from desk.webull import WebullData, WebullError
 
     try:
-        source: BarSource = WebullData.from_env()
-    except WebullError as e:
+        from desk.action_source import configured_source
+        source: BarSource = configured_source(WebullData.from_env(), os.environ)
+    except BarDataError as e:
         why = str(e)
 
         class NoKeys:                                 # the due scan is still logged, as failed
