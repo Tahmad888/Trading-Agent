@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 Unit = Annotated[float, Field(ge=0, le=1)]
 
@@ -33,6 +33,7 @@ Grade = Literal["A", "B", "C"]
 class Leg(BaseModel):
     symbol: str
     side: Literal["buy", "sell"]
+    quantity_unit: Literal["share", "contract"]
     qty: Annotated[int, Field(gt=0, strict=True)]
     limit_price: Annotated[float, Field(gt=0, allow_inf_nan=False)]   # limit orders only, ever
     expiry: date | None = None                   # options only; None for shares and spot
@@ -61,9 +62,14 @@ LEG_SHAPES: dict[str, tuple[int, int]] = {
 
 
 class TradeProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal[2] = 2
     proposal_id: str
     plan_id: str | None = None      # the journal plan this came from
     setup_id: str                   # playbook setup, e.g. "1_trend_pullback", "2_breakout"
+    setup_version: Annotated[str, Field(min_length=1)]
+    quote_source: Annotated[str, Field(min_length=1)]
+    stop_estimate_source: Annotated[str, Field(min_length=1)]
     tier: Tier                      # the setup's current tier: 0 paper, 1 live allowed
     grade: Grade | None = None      # descriptive only; never determines risk_usd
     risk_usd: Annotated[float, Field(gt=0, allow_inf_nan=False, strict=True)]  # Taz's budget, including costs
@@ -71,17 +77,17 @@ class TradeProposal(BaseModel):
     structure: Structure
     legs: list[Leg] = Field(min_length=1)
     max_loss_usd: Annotated[float, Field(gt=0, allow_inf_nan=False)]  # gross stop price loss, before costs
-    # Structure's max loss: a bought option's whole premium, a spread's width
-    # less credit, and for shares or spot the full position cost.
+    # Caller assertion only: instruments.py independently verifies this amount.
+    # Gross intact-strategy loss excludes costs and assignment/exit mishandling.
     worst_case_loss_usd: Annotated[float, Field(gt=0, allow_inf_nan=False)]
-    max_gain_usd: float | None = None
+    max_gain_usd: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
     est_costs_usd: Annotated[float, Field(ge=0, allow_inf_nan=False)]  # full round-trip cost reserve
     sector: str                     # sector bucket, for concentration limits
-    option_spread_pct_mid: float | None = None   # widest leg bid-ask as % of mid
-    already_moved_pct: float = 0.0
+    option_spread_pct_mid: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    already_moved_pct: Annotated[float, Field(allow_inf_nan=False)] = 0.0
     quote_as_of: AwareDatetime      # when the quote this plan is priced on was taken; naive times are refused
     security_tradable: bool | None = None   # trading status from the quote source; None = unknown
-    time_stop: datetime
+    time_stop: AwareDatetime
     exit_rules: list[str] = []
 
     @model_validator(mode="after")
@@ -108,6 +114,15 @@ class RiskDecision(BaseModel):
     estimated_stop_loss_usd: float = 0.0  # gross price loss for approved quantity
     cost_reserve_usd: float = 0.0
     estimated_total_risk_usd: float = 0.0  # gross stop loss + reserved costs
+    computed_max_loss_usd: float | None = None  # gross; excludes fees/assignment mishandling
+    net_premium_usd: float | None = None  # positive = debit, negative = credit
+    estimated_funding_usd: float | None = None  # conservative local estimate, NOT broker margin
+    broker_buying_power_required_usd: float | None = None
+    broker_requirement_verified: bool = False
+    loss_basis: str | None = None
+    contract_metadata_source: str | None = None
+    contract_metadata_as_of: AwareDatetime | None = None
+    diagnostics: list[str] = Field(default_factory=list)
     buying_power_snapshot: float
     margin_excess_snapshot: float
 

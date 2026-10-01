@@ -1,6 +1,6 @@
 # Trading desk repair plan and step tracker
 
-Prepared 2026-09-30. Status: Steps 01–03 complete locally; Step 04 next.
+Prepared 2026-09-30. Status: Steps 01–04 complete locally; Step 05 awaiting the account/market-policy decision.
 
 This is the implementation sequence for the repair plan selected by Taz, incorporating
 the strongest parts of Opus's plan. The purpose is retail AI assistance through
@@ -23,6 +23,8 @@ step tracker says when each repair actually lands.
 | D06 | No trade-count, position-count or sector-count caps; display exposure. Stock eligibility is separate from option suitability, preserving shares as an alternative. | Selected repair plan / existing user policy | 02, 05, 08, 11 |
 | D07 | Retain the 30% Trend Template rule and 25% EP growth threshold; 50%+ is a comparison tag. | Existing user decisions / current cards | 08, 09, 10 |
 | D08 | No multi-year backtesting requirement or invented statistical gate. Use focused point-in-time examples, live-data checks and forward records. | User instruction / CLAUDE.md | All |
+| D10 | Include long debit calendars and credit iron condors in the initial supported structures; management and broker verification still required. | Explicit user reply | 04, 11, 16 |
+| D11 | HALF is advisory: show the concern and sizing alternatives; leave the user-entered dollar budget unchanged. Broader account/market blocking policy awaits clarification. | Latest user preference, interpreted explicitly in conversation | 05, 13 |
 | D09 | Number the work; verify and checkpoint each step before advancing. Taz's latest instruction authorizes proceeding sequentially after verification. Pause on an unresolved trading-policy choice or failed acceptance check. | Latest user instruction, 2026-09-30 | All |
 
 Research labels remain **Sourced**, **Checked**, and **Assumption**. A user-selected
@@ -55,7 +57,7 @@ workflow. No agent has been dispatched by creating this plan.
 | [x] | 01 | Baseline, branch reconciliation and repair instructions | Codex | Both branches and a temporary combination tested; integration decision and full tracker recorded; preview reverted; checkpoint saved. |
 | [x] | 02 | User-selected dollar risk; reconcile PR #1 | Codex / Claude | One coherent risk policy; no $100 ceiling or grade-dollar assignment; explicit finite positive budget; combined tests pass. |
 | [x] | 03 | Remove the 11:00 EP condition | Codex / Claude | Runtime, cards, descriptions and tests agree; no 11:00 cutoff/switch; no use of an unfinished opening range. |
-| [ ] | 04 | Shared contracts, option identity and loss calculations | Codex / Claude | Verified contract metadata, allowed structures, independently computed loss measures and integer quantities; malformed proposals fail closed. |
+| [x] | 04 | Shared contracts, option identity and loss calculations | Codex / Claude | Verified contract metadata, allowed structures, independently computed loss measures and integer quantities; malformed proposals fail closed. |
 | [ ] | 05 | Market/account gates and persistent risk state | Codex / Claude | Trusted setup eligibility and regime applied consistently; account halts/exposure recover after restart; no count caps. |
 | [ ] | 06 | Market-data timing, provenance and trading calendar | Codex / Claude | Timeframe-aware freshness/completion, session and corporate-action handling tested; live-only uncertainties explicitly separated. |
 | [ ] | 07 | Persistent signal lifecycle | Codex / Claude | Unique events survive scans/restarts; stale or expired approval eligibility cannot persist; long/short rules and re-entry policy explicit. |
@@ -149,9 +151,9 @@ Depends on 04. Targets: `risk.py`, `contracts.py`, `playbook/filters.py`, and ne
 durable account-state storage. Restore open/pending positions for exposure displays;
 no count caps. Use a trusted setup registry rather than proposal-supplied live tier.
 Define P&L accounting, time boundaries, high-water mark, halt persistence and manual reset.
-Resolve HALF behavior relative to Taz's entered budget explicitly: show original and
-effective budgets and never apply an undisclosed or duplicate multiplier. NO_NEW_LONGS
-blocks appropriate long exposure without accidentally treating bearish signals as longs.
+HALF is advisory under D11: display the market concern without changing the selected
+budget. Resolve the broader treatment of NO_NEW_LONGS and account loss halts before
+changing their current behavior; user discretion must not become a hidden multiplier.
 
 Acceptance: regime/grade combinations, halt boundary/restart, rejected orders, open
 and pending exposure and authorized reset. Plan B: block new entries on uncertain
@@ -233,8 +235,8 @@ unless separately changed. Reverify provider quote/Greek timing before using the
 Acceptance: no suitable option still permits an eligible shares proposal; illiquid or
 stale options fail; quantities and exits work in whole units. A one-contract partial
 exit requires an approved alternative, not an automatic full first-target sale or larger
-position. Calendar/condor inclusion remains an explicit decision; unsupported structures
-cannot receive executable tickets. Plan B: eligible shares or no executable candidate.
+position. Calendars and iron condors are included by D10; broker and assignment/expiry
+management acceptance remains required before executable tickets. Plan B: eligible shares or no executable candidate.
 
 ### 12 — Analyst (analyze, plan)
 
@@ -365,8 +367,9 @@ Plan B: return to paper and reconcile any existing positions.
 | Topic | Required resolution | Step |
 | --- | --- | --- |
 | EP opening-range alternatives (resolved) | Taz selected either completed 15-minute or 60-minute opening-range breakout throughout day one, subject to other checks. | 03 |
-| Supported option structures | Whether calendars/condors are needed initially; assignment/expiry handling before executable support. | 04, 11, 16 |
-| HALF regime | Whether budget entry is before or after the regime reduction; display both values and apply once. | 05, 13 |
+| Supported option structures (resolved) | Include calendars and iron condors initially; assignment/expiry handling before executable support. | 04, 11, 16 |
+| HALF regime (resolved) | Advisory; user-selected budget is unchanged. | 05, 13 |
+| Other account/market blocks | Whether existing daily/weekly/drawdown halts and NO_NEW_LONGS remain blocks or become approval-time warnings. Question pending. | 05 |
 | Account loss accounting | Realized/unrealized inclusion, fee treatment, day/week boundaries and manual halt reset. | 05 |
 | Relative volume/chase details | Same-time baseline, session handling, lookback and per-card thresholds; distinguish user policy from assumptions. | 10, 17 |
 | Single-contract exits | Approved exit variant or shares alternative; never increase size merely to enable fractions. | 11 |
@@ -386,7 +389,7 @@ Create `docs/checkpoints/NN-short-name.md` for each step:
 5. Decisions resolved; unresolved requirements that block this step.
 6. Actual changes and commands/results; distinguish local, live-data and operational evidence.
 7. Remaining limitations, fallback and rollback (include state/data compatibility).
-8. Completion checklist and next step. Stop here; no automatic advancement.
+8. Completion checklist and next step. Continue only under the current sequential authorization; pause for unresolved policy or failed acceptance.
 
 ## Primary references and planning inputs
 

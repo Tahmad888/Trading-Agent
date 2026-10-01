@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from desk.contracts import Leg, TradeProposal
-from desk.risk import evaluate
+from tests.risk_support import evaluate
 from tests.conftest import NOW, TODAY
 from tests.test_risk import failed
 
@@ -43,7 +43,15 @@ def test_share_cost_counts_against_buying_power(shares, account):
 # (4) Open interest, the 14-day rule and leg expiries.
 
 def _with_legs(p, **update):
-    return p.model_copy(update={"legs": [leg.model_copy(update=update) for leg in p.legs]})
+    legs = []
+    for leg in p.legs:
+        changes = dict(update)
+        if update.get("expiry") is not None and leg.expiry is not None:
+            # A different expiry is a different broker contract, not a metadata edit.
+            symbol = leg.symbol.replace(" ", "")
+            changes["symbol"] = symbol[:-15] + update["expiry"].strftime("%y%m%d") + symbol[-9:]
+        legs.append(leg.model_copy(update=changes))
+    return p.model_copy(update={"legs": legs})
 
 
 def test_low_open_interest_rejected(proposal, account):
@@ -66,15 +74,15 @@ def test_no_opening_buys_under_14_days(long_call, account):
 
 
 def test_calendar_checks_its_bought_back_month(proposal, account):
-    front = Leg(symbol="SPY 261002C00500000", side="sell", qty=1, limit_price=2.00,
+    front = Leg(quantity_unit="contract", symbol="SPY 261002C00500000", side="sell", qty=1, limit_price=2.00,
                 expiry=TODAY + timedelta(days=8), open_interest=3_000)
-    back = Leg(symbol="SPY 261016C00500000", side="buy", qty=1, limit_price=3.00,
+    back = Leg(quantity_unit="contract", symbol="SPY 261016C00500000", side="buy", qty=1, limit_price=3.00,
                expiry=TODAY + timedelta(days=22), open_interest=3_000)
-    cal = proposal.model_copy(update={"structure": "calendar", "legs": [front, back]})
+    cal = proposal.model_copy(update={"structure": "calendar", "legs": [front, back], "worst_case_loss_usd": 100})
     assert evaluate(cal, account, now=NOW).approved
     short_back = cal.model_copy(update={"legs": [front, back.model_copy(
-        update={"expiry": TODAY + timedelta(days=12)})]})
-    assert "days_to_expiry_for_buys" in failed(evaluate(short_back, account, now=NOW))
+        update={"expiry": TODAY + timedelta(days=12), "symbol": "SPY261006C00500000"})]})
+    assert failed(evaluate(short_back, account, now=NOW)) == {"days_to_expiry_for_buys"}
 
 
 def test_credit_spread_wing_is_exempt_from_14_day_rule(proposal, account):
@@ -101,7 +109,7 @@ def test_proposal_requires_setup_and_tier(proposal):
 
 
 def test_single_long_put_allowed(long_call, account):
-    put = long_call.model_copy(update={"structure": "long_put", "tier": 1})
+    put = long_call.model_copy(update={"structure": "long_put", "tier": 1, "legs": [long_call.legs[0].model_copy(update={"symbol": "AAPL261120P00230000"})]})
     d = evaluate(put, account, now=NOW)
     assert d.approved, failed(d)
 

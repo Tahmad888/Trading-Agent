@@ -6,7 +6,7 @@ spread > 10%. (The missing-token case belongs to the execution adapter.)"""
 from dataclasses import replace
 from datetime import timedelta
 
-from desk.risk import evaluate
+from tests.risk_support import evaluate
 from tests.conftest import NOW
 
 

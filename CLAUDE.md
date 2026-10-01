@@ -6,7 +6,10 @@ Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify 
 checkpoint each numbered step before advancing under Taz's current authorization.
 Taz chooses each trade's dollar risk budget, with no hard $100 ceiling or automatic
 grade-dollar assignments. Step 02 implements that risk policy; Step 03 removes the
-11:00 ET EP condition and permits either completed opening range throughout day one. The tracker records actual completion, not just approved intent.
+11:00 ET EP condition and permits either completed opening range throughout day one. Step 04 verifies option identity and computes strategy loss,
+including calendars and iron condors. HALF must be advisory without automatically
+changing the selected budget; broader account/market blocking policy is pending.
+The tracker records actual completion, not just approved intent.
 
 Read the six rules before doing anything. They come from Trading Desk Blueprint v2.4
 (29 Sep 2026), amended by Taz's later decisions in the repair plan:

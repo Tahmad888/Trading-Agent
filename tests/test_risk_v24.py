@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from desk.contracts import TradeProposal
-from desk.risk import evaluate
+from tests.risk_support import evaluate
 from tests.conftest import NOW
 from tests.test_risk import failed
 
@@ -51,7 +51,10 @@ def test_small_account_spread_now_fits(proposal, account):
     # (stop at 2x credit = $30, max $70) was rejected at 0.25%. At $50 it fits.
     five_k = replace(account, equity=5_000, equity_high_water_mark=5_000,
                      buying_power=5_000, margin_excess=5_000)
-    spread = _lots(proposal, 1, 30, 70).model_copy(update={"risk_usd": 50})
+    spread = _lots(proposal, 1, 30, 70).model_copy(update={
+        "risk_usd": 50,
+        "legs": [proposal.legs[0], proposal.legs[1].model_copy(update={"limit_price": 0.90})],
+    })
     d = evaluate(spread, five_k, now=NOW)
     assert d.approved, failed(d)
 

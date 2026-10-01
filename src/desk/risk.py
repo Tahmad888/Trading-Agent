@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from desk.contracts import (DEBIT_STRUCTURES, LEG_SHAPES, OPTION_STRUCTURES, RiskDecision,
                             RuleCheck, TradeProposal)
+from desk.instruments import ContractBook, InstrumentError, loss_measures, money
 
 EXCHANGE_TZ = ZoneInfo("America/New_York")
 
@@ -35,6 +36,7 @@ class RiskLimits:
     max_already_moved_pct: float = 0.03      # fast move belongs to faster players
     max_account_state_age: timedelta = timedelta(seconds=30)
     max_quote_age: timedelta = timedelta(seconds=60)
+    max_contract_metadata_age: timedelta = timedelta(hours=24)  # engineering assumption
 
 
 @dataclass(frozen=True)
@@ -70,10 +72,17 @@ def evaluate(
     limits: RiskLimits = RiskLimits(),
     now: datetime | None = None,
     live: bool = True,
+    *,
+    contract_book: ContractBook | None = None,
 ) -> RiskDecision:
-    """Check a proposal against every limit. ``live=False`` sizes a paper trade."""
+    """Local eligibility only, not order authorization or verified broker margin.
+
+    ``contract_book`` is supplied independently by the data/broker adapter.
+    ``live=False`` sizes a paper trade using the same arithmetic.
+    """
     now = now or datetime.now(timezone.utc)
     checks: list[RuleCheck] = []
+    diagnostics: list[str] = []
 
     def check(rule: str, passed: bool, value: float, limit: float) -> None:
         checks.append(RuleCheck(rule=rule, passed=passed, value=value, limit=limit))
@@ -156,9 +165,27 @@ def evaluate(
     check("risk_per_trade_sizable", fraction > 0 and total_risk <= Fraction(str(proposal.risk_usd)),
           float(total_risk), proposal.risk_usd)
 
-    # Temporary legacy collateral estimate; broker buying-power verification is
-    # separated from contractual worst-case loss in Step 04.
-    required = float(Fraction(str(proposal.worst_case_loss_usd)) * fraction + costs)
+    measures = None
+    try:
+        measures = loss_measures(proposal, contract_book, now, limits.max_contract_metadata_age)
+        check("instrument_valid", True, 1, 1)
+        # Legacy field is an assertion only. Even overstatement can hide a stale
+        # quantity/price and must be repaired, not silently carried into a ticket.
+        loss_matches = money(proposal.worst_case_loss_usd) == measures.maximum_loss
+        check("declared_max_loss_matches", loss_matches,
+              proposal.worst_case_loss_usd, float(measures.maximum_loss))
+        check("stop_within_strategy_loss", money(proposal.max_loss_usd) <= measures.maximum_loss,
+              proposal.max_loss_usd, float(measures.maximum_loss))
+    except (InstrumentError, ValidationError) as exc:
+        check("instrument_valid", False, 0, 1)
+        diagnostics.append(str(exc))
+
+    # A conservative local funding estimate is distinct from a broker requirement.
+    # Step 15 must obtain/revalidate actual account/strategy eligibility and margin.
+    maximum = Fraction(measures.maximum_loss) * fraction if measures else None
+    premium = Fraction(measures.net_premium) * fraction if measures else None
+    funding = Fraction(measures.funding_estimate) * fraction + costs if measures else None
+    required = float(funding) if funding is not None else 0.0
     check("buying_power", required <= account.buying_power, required, account.buying_power)
     check("margin_excess_positive", account.margin_excess > required, account.margin_excess, required)
 
@@ -173,6 +200,13 @@ def evaluate(
         estimated_stop_loss_usd=float(gross_stop) if approved else 0.0,
         cost_reserve_usd=float(costs) if approved else 0.0,
         estimated_total_risk_usd=float(total_risk) if approved else 0.0,
+        computed_max_loss_usd=float(maximum) if approved else None,
+        net_premium_usd=float(premium) if approved else None,
+        estimated_funding_usd=required if approved else None,
+        loss_basis=measures.basis if measures else None,
+        contract_metadata_source=contract_book.source if measures and is_option else None,
+        contract_metadata_as_of=contract_book.as_of if measures and is_option else None,
+        diagnostics=diagnostics,
         buying_power_snapshot=account.buying_power,
         margin_excess_snapshot=account.margin_excess,
     )

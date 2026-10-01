@@ -6,7 +6,8 @@ import pytest
 from pydantic import ValidationError
 
 from desk.contracts import TradeProposal
-from desk.risk import _size, evaluate
+from desk.risk import _size
+from tests.risk_support import evaluate
 from tests.conftest import NOW
 
 
@@ -76,7 +77,7 @@ def test_integer_ratio_sizing_never_produces_a_fractional_leg(proposal):
 def test_exact_decimal_budget_boundary(shares, account):
     trade = shares.model_copy(update={
         "legs": [shares.legs[0].model_copy(update={"qty": 3})],
-        "max_loss_usd": 0.3, "est_costs_usd": 0, "risk_usd": 0.3,
+        "worst_case_loss_usd": 750, "max_loss_usd": 0.3, "est_costs_usd": 0, "risk_usd": 0.3,
     })
     assert evaluate(trade, account, now=NOW).final_leg_quantities == [3]
     assert evaluate(trade.model_copy(update={"risk_usd": 0.29}), account, now=NOW).final_leg_quantities == [2]
@@ -91,6 +92,7 @@ def test_sizes_match_enumeration_of_affordable_whole_shares(shares, account):
                     trade = shares.model_copy(update={
                         "legs": [shares.legs[0].model_copy(update={"qty": count})],
                         "max_loss_usd": float(unit_loss * count),
+                        "worst_case_loss_usd": 250 * count,
                         "est_costs_usd": float(reserve), "risk_usd": float(budget),
                     })
                     affordable = [q for q in range(1, count + 1) if q * unit_loss + reserve <= budget]
