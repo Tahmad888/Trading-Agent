@@ -309,7 +309,9 @@ def evaluate(
     sizable = fraction > 0 and (proposal.sizing_mode == "selected_quantity" or
                                 sizing_total is not None and sizing_total <= budget)
     check("risk_per_trade_sizable", sizable, float(sizing_total) if sizing_total is not None else 0, proposal.risk_usd)
-    if measures and Fraction(measures.maximum_loss) * fraction + costs > budget:
+    # A long share position's full exposure is its position value, which always
+    # exceeds a stop budget; show it as information (position_value_usd) instead.
+    if is_option and measures and Fraction(measures.maximum_loss) * fraction + costs > budget:
         warnings.append(RiskWarning(code="exposure_above_budget", message="Full strategy exposure plus costs exceeds the entered budget; confirm the exact quantity and exposure on the ticket.",
                                     value=float(Fraction(measures.maximum_loss) * fraction + costs), threshold=proposal.risk_usd))
     if proposal.sizing_mode == "selected_quantity" and total_risk is not None and total_risk > budget:
@@ -348,9 +350,11 @@ def evaluate(
         requested_stop_loss_usd=float(requested_stop) if requested_stop is not None else None,
         resolved_stop_price=terms.stop if terms else None,
         resolved_target_price=terms.target if terms else None,
+        position_value_usd=float(money(proposal.legs[0].limit_price) * quantities[0]) if approved and not is_option else None,
         stop_loss_basis=stop_basis,
         signal_terms_valid_until=min(terms.valid_until, terms.checked_at + limits.max_quote_age,
                                      terms.quote_at + limits.max_quote_age) if terms else None,
+        signal_event_valid_until=terms.valid_until if terms else None,
         terms_sha256=hashlib.sha256(json.dumps({"proposal": proposal.model_dump(mode="json"),
             "terms": terms.model_dump(mode="json"), "quantities": quantities}, sort_keys=True).encode()).hexdigest() if approved and terms else None,
         loss_basis=measures.basis if measures else None,

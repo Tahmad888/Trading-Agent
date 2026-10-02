@@ -133,9 +133,11 @@ class RiskDecision(BaseModel):
     requested_stop_loss_usd: float | None = None
     resolved_stop_price: float | None = None
     resolved_target_price: float | None = None
+    position_value_usd: float | None = None  # shares: final quantity x entry limit; information, not a warning
     stop_loss_basis: str = "unavailable"
     signal_terms_valid_until: AwareDatetime | None = None
-    terms_sha256: str | None = None  # G4 must bind approval; this is not authorization
+    signal_event_valid_until: AwareDatetime | None = None  # the event's own validity, not receipt freshness
+    terms_sha256: str | None = None  # includes receipt times; NOT an approval binding (see desk.tickets)
     order_authorized: Literal[False] = False
     broker_buying_power_required_usd: float | None = None
     broker_requirement_verified: bool = False
@@ -154,10 +156,25 @@ class RiskDecision(BaseModel):
 
 
 class ApprovalRecord(BaseModel):
-    proposal_id: str
-    decision: Literal["approve", "reject", "reduce"]
-    decided_by: str
-    decided_at: datetime
-    order_args_sha256: str          # token bound to exact order arguments
-    token_expires_at: datetime      # e.g. 120 s, single use
-    reason: str
+    """Immutable G4 approval snapshot for one ticket version (desk.tickets).
+
+    Schema 1 (decision/order_args_sha256/token_expires_at) never had a producer and
+    is rejected: a record without the binding snapshot can never be consumed.
+    This records a human decision on local terms; it never authorizes a broker order.
+    """
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal[2]
+    approval_id: Annotated[str, Field(min_length=1)]
+    ticket_id: Annotated[str, Field(min_length=1)]
+    ticket_version: Annotated[int, Field(gt=0, strict=True)]
+    decision: Literal["approve"]
+    actor: Annotated[str, Field(min_length=1)]           # audit label; a local terminal is not authentication
+    channel: Literal["terminal", "automated_fixture"]
+    terminal_user: str | None = None
+    decided_at: AwareDatetime
+    expires_at: AwareDatetime
+    budget_confirmed_usd: Annotated[str, Field(min_length=1)]   # the separately typed amount, exact cents
+    acknowledgements: tuple[str, ...]
+    snapshot: dict                                       # the ticket version's full binding
+    snapshot_sha256: Annotated[str, Field(min_length=64, max_length=64)]
+    order_authorized: Literal[False] = False

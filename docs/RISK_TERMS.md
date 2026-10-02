@@ -80,6 +80,19 @@ Changed old observation hashes require rebuilding. Back up the database before
 an actual-host upgrade; restoring pre-G2 code also needs its pre-G2 database backup.
 
 The decision's `terms_sha256` binds proposal, resolved evidence and selected
-quantities; edits change it. It is not an approval token. Warning-review expiry
-also respects resolved evidence expiry. Real approval revocation/single-use
-consumption remains G4, alongside blueprint wording reconciliation.
+quantities; edits change it. It is not an approval token, and because it includes
+receipt times (such as `quote_as_of`) G4 does not use it as an approval binding.
+Warning-review expiry also respects resolved evidence expiry.
+
+## G4 changes (2026-10-02)
+
+- Share tickets no longer emit `exposure_above_budget`: a long share position's
+  full exposure is its position value, which always exceeds a stop budget. The
+  decision reports `position_value_usd` as information. Options keep the warning.
+  `stop_estimate_above_budget` (selected quantity over budget) is unchanged, as are
+  `maximum_loss_budget` arithmetic and the buying-power/margin checks.
+- `signal_event_valid_until` reports the event's own validity, separately from the
+  receipt-freshness bound in `signal_terms_valid_until`.
+- Exact-ticket approval, revocation, expiry and single-use consumption live in
+  `desk.tickets`; see [TICKETS.md](TICKETS.md). `RiskStateStore.review/acknowledge`
+  remain a codes-only warning-review audit and are not approval.

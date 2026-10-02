@@ -3,14 +3,17 @@
 ## Active repair work
 
 Current priority (2026-10-01): gap repairs G1–G5 in `docs/GAP_REPAIR_PLAN.md`,
-then resume unfinished Step 09. Read `docs/checkpoints/G3-vendor-basis.md`
-for the active checkpoint. G3 automatic price/history handling is implemented and
+then resume unfinished Step 09. Read `docs/checkpoints/G4-ticket-approval.md`
+for the active checkpoint (awaiting Astra's audit). G3 automatic price/history handling is implemented and
 locally verified; the read-only iMac probe in `docs/VENDOR_BASIS.md` is still pending.
 It does not establish universal action/volume coverage or activate the scanner. Later user decisions supersede maximum-loss-only
 option sizing proposals: show full exposure and supported stop-loss estimates
 separately; Taz approves exact quantity/exposure on the final ticket. Read `docs/RISK_TERMS.md`: schema 3 requires an independently resolved event and
-explicit sizing mode; G4 exact-ticket approval is still unfinished. No hardcoded
-dollar cap or silent over-budget execution. Step 09/10 and runner activation are
+explicit sizing mode. G4 (Claude implements, Astra audits, per Taz 2026-10-02)
+adds `desk.tickets`: local ticket display, exact budget re-entry, exact warning
+acknowledgement, revocation, expiry and single-use consumption with no orders. Read
+`docs/TICKETS.md` and `docs/checkpoints/G4-ticket-approval.md`; G5 waits for Astra's
+audit and Taz's go-ahead. No hardcoded dollar cap or silent over-budget execution. Step 09/10 and runner activation are
 not completed by these repairs.
 
 Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify and
@@ -104,6 +107,7 @@ https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg
    - No setup triggered on any watchlist ticker for 2 weeks in a row, which means the scanner needs checking (Assumption on the 2 weeks).
 
    A week with zero tickets because nothing triggered, or because a loss-limit halt was on, is reported, not flagged. A flag is fixed by repairing the process, never by loosening a setup's rules. Setup rules change only when Taz approves it.
+   *Superseded wording (D05, 2026-09-30; still in the external blueprint):* daily/weekly loss and drawdown limits are warnings Taz may acknowledge per ticket, not halts. Only the explicit manual stop blocks. Report a manual-stop block or a declined warning in their place.
 6. **When history is allowed.** Indicators need warm-up bars. The desk loads about 1,000 daily bars so a 200-day average and the other indicators match Taz's screen. That's a data need, not a test, and it doesn't reopen backtesting.
 
 ## Standing constraints
@@ -118,8 +122,9 @@ https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg
 
 ## Layout
 
-- `src/desk/contracts.py`: typed hand-offs (trade proposal, legs, risk decision, approval record).
-- `src/desk/risk.py`: the risk engine, with limits from blueprint section 10: user-selected dollar risk per ticket, including estimated costs, with no grade-dollar mapping or hard $100 ceiling, user-overridable dollar-loss warnings, manual stops, quote-age and trading-status checks. No caps on trade or position counts.
+- `src/desk/contracts.py`: typed hand-offs (trade proposal, legs, risk decision, schema-2 approval record).
+- `src/desk/tickets.py`: G4 local ticket preparation, display, approval, revocation, history and single-use consumption (`python -m desk.tickets`; no broker action).
+- `src/desk/risk.py`: the risk engine, with limits from blueprint section 10: user-selected dollar risk per ticket, including estimated costs, with no grade-dollar mapping or hard $100 ceiling, user-overridable dollar-loss warnings (not halts), the blocking manual stop, quote-age and trading-status checks. No caps on trade or position counts.
 - `src/desk/bars.py`: parses and checks price bars; bad, short or stale bars raise `BarDataError` (no trade).
 - `src/desk/indicators.py`: the feature pack on TA-Lib 0.8.1, matched to TradingView; `tests/tv_reference.py` holds the Pine formulas it's tested against.
 - `src/desk/screen_check.py`: prints a ticker's latest daily values to compare with Taz's screen.

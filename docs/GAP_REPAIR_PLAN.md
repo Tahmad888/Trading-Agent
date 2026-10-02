@@ -4,8 +4,13 @@
 Work one checkpoint at a time; verify and push each completed checkpoint to
 `codex/repair-step-01-baseline`. No implicit merge, live activation or orders.
 Step 09 remains incomplete. Claude and DeepSeek reviewed the plan via Taz; neither
-has reviewed the resulting implementation yet. Codex owns shared contracts and
-integration. No messages have been sent to either reviewer by this task.
+has reviewed the resulting implementation yet. No messages have been sent to either
+reviewer by this task.
+
+**Active ownership (Taz, 2026-10-02):** Claude implements; Astra (Codex) audits.
+This supersedes "Codex owns shared contracts and integration" from 2026-10-01.
+G1–G3 remain Codex-implemented as their checkpoints record; G4 onward is Claude's
+implementation pending Astra's audit. Self-review is not Astra's approval.
 
 G1 status: implemented and locally verified, **803 strict tests** on Python 3.12
 and 3.14. See `checkpoints/G1-earnings-isolation.md`. G2 is implemented and locally verified: **856 strict tests** on both Python
@@ -14,7 +19,9 @@ G3 automatic vendor price/history handling is implemented and locally verified
 (**892 strict tests on both Python versions**);
 see `checkpoints/G3-vendor-basis.md` and `VENDOR_BASIS.md`. Actual-host acceptance
 is pending; unknown volume evidence and unresolved price conflicts stay explicit.
-G4/G5 remain outstanding. G2 hashes are not G4 approval enforcement.
+G4 local ticket approval is implemented and locally verified by Claude, awaiting
+Astra's audit: see `checkpoints/G4-ticket-approval.md` and `TICKETS.md`. G5 has not
+started and waits for that audit and Taz's go-ahead. G2 hashes are not G4 approval.
 
 ## Latest user policy
 

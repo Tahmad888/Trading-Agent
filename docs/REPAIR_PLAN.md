@@ -10,7 +10,12 @@ G5 verifies integration. G1/G2 implemented: see `checkpoints/G2-stop-risk.md` an
 `RISK_TERMS.md`. G3 implementation is locally verified: see
 `checkpoints/G3-vendor-basis.md` and `VENDOR_BASIS.md`. Its read-only iMac check
 is pending; action completeness and whole-watchlist volume coverage are not claimed.
-G4/G5 remain. G2 pulls forward only the actual day-low stop repair
+G4 (local ticket preparation, exact approval, revocation and single-use
+consumption, no orders) is implemented by Claude and awaits Astra's audit: see
+`checkpoints/G4-ticket-approval.md` and `TICKETS.md`. It pulls forward the local
+approval core of Step 13; the planner, earnings line and live adapters do not move.
+G5 remains. Ownership from 2026-10-02 (Taz): Claude implements, Astra/Codex audits;
+earlier rows keep their recorded authorship. G2 pulls forward only the actual day-low stop repair
 from Step 10; the rest of Step 10 and operational runner start are not implied.
 
 Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–08 complete for their documented scope. **Step 09 is reopened and IN PROGRESS.** Closing it after the single-company reviewed-file check was premature. 688 tests and the iMac replay verified the existing gates/fallback, not automatic earnings supply. See `checkpoints/09b-automatic-sources.md` for the remaining source access, reported-results, calendar, catalyst, integration and actual-host acceptance work. Step 10 has not started. Earlier checkpoint closure statements are historical and superseded by this correction.
