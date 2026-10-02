@@ -5,6 +5,7 @@ review must establish the supplied price basis separately from action access.
 """
 from datetime import datetime, timezone
 import json
+import sqlite3
 from pathlib import Path
 from typing import Literal
 
@@ -108,6 +109,26 @@ class ActionBackedSource:
 
 def configured_source(source, env, *, clock=lambda: datetime.now(timezone.utc)):
     """Scanner opt-in; configuring an API key alone does not enable profiles."""
+    vendor_path = env.get("DESK_VENDOR_BASIS_DB")
+    if vendor_path:
+        from desk.vendor_basis import VendorBasisSource, VendorHistoryStore
+        legacy_env = {k:v for k,v in env.items() if k != "DESK_VENDOR_BASIS_DB"}
+        fallback_issue = None
+        try:
+            fallback = configured_source(source,legacy_env,clock=clock) if (
+                env.get("DESK_ACTION_CHANNELS") or env.get("DESK_ACTION_LEDGER")) else None
+        except (BarDataError,OSError,ValueError,sqlite3.Error):
+            fallback = None
+            fallback_issue = "Optional reviewed fallback configuration unavailable"
+
+        try:
+            store = VendorHistoryStore(vendor_path)
+        except sqlite3.Error:
+            raise BarDataError("Vendor history store unavailable") from None
+        wrapped = VendorBasisSource(source,store,
+            host=env.get("WEBULL_HOST") or "api.webull.com",clock_fn=clock,fallback=fallback)
+        wrapped.fallback_issue = fallback_issue
+        return wrapped
     config_path = env.get("DESK_ACTION_CHANNELS")
     ledger_path = env.get("DESK_ACTION_LEDGER")
     if not config_path and not ledger_path:

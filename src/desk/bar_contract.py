@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from desk.bars import BarDataError, COLUMNS, validate
 from desk.calendar import ET, clock, latest_closed_session, session, sessions, trading_day
-from desk.data_basis import PriceBasis, price_basis, compatible_prices
+from desk.data_basis import PriceEvidence, price_basis, compatible_prices
 
 
 class BarProvenance(BaseModel):
@@ -20,7 +20,7 @@ class BarProvenance(BaseModel):
     delay_minutes: Annotated[int, Field(ge=0, strict=True)]
     adjustment: Literal["unadjusted", "split_adjusted", "split_dividend_adjusted", "total_return"]
     price_scale_id: Annotated[str, Field(min_length=1)]  # legacy display label; no eligibility authority
-    price_basis: PriceBasis | None = None  # legacy labels remain readable, not decision evidence
+    price_basis: PriceEvidence | None = None  # legacy labels remain readable, not decision evidence
 
 
 def provenance(df: pd.DataFrame, timeframe: str) -> BarProvenance:

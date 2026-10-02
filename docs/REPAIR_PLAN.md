@@ -7,7 +7,10 @@ they are not claims that the identified operational gaps are resolved.
 G1 isolates earnings failures; G2 repairs actual stop construction and risk terms;
 G3 tests scalable vendor-basis/revision handling; G4 binds ticket confirmation;
 G5 verifies integration. G1/G2 implemented: see `checkpoints/G2-stop-risk.md` and
-`RISK_TERMS.md`. G3–G5 remain. G2 pulls forward only the actual day-low stop repair
+`RISK_TERMS.md`. G3 implementation is locally verified: see
+`checkpoints/G3-vendor-basis.md` and `VENDOR_BASIS.md`. Its read-only iMac check
+is pending; action completeness and whole-watchlist volume coverage are not claimed.
+G4/G5 remain. G2 pulls forward only the actual day-low stop repair
 from Step 10; the rest of Step 10 and operational runner start are not implied.
 
 Prepared 2026-09-30; updated 2026-10-01. Status: Steps 01–08 complete for their documented scope. **Step 09 is reopened and IN PROGRESS.** Closing it after the single-company reviewed-file check was premature. 688 tests and the iMac replay verified the existing gates/fallback, not automatic earnings supply. See `checkpoints/09b-automatic-sources.md` for the remaining source access, reported-results, calendar, catalyst, integration and actual-host acceptance work. Step 10 has not started. Earlier checkpoint closure statements are historical and superseded by this correction.

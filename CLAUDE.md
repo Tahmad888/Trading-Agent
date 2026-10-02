@@ -3,8 +3,10 @@
 ## Active repair work
 
 Current priority (2026-10-01): gap repairs G1–G5 in `docs/GAP_REPAIR_PLAN.md`,
-then resume unfinished Step 09. Read `docs/checkpoints/G2-stop-risk.md`
-for the active checkpoint. Later user decisions supersede maximum-loss-only
+then resume unfinished Step 09. Read `docs/checkpoints/G3-vendor-basis.md`
+for the active checkpoint. G3 automatic price/history handling is implemented and
+locally verified; the read-only iMac probe in `docs/VENDOR_BASIS.md` is still pending.
+It does not establish universal action/volume coverage or activate the scanner. Later user decisions supersede maximum-loss-only
 option sizing proposals: show full exposure and supported stop-loss estimates
 separately; Taz approves exact quantity/exposure on the final ticket. Read `docs/RISK_TERMS.md`: schema 3 requires an independently resolved event and
 explicit sizing mode; G4 exact-ticket approval is still unfinished. No hardcoded

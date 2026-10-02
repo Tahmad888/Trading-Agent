@@ -52,6 +52,11 @@ def candidate_id(sig, day):
     # Rationale text may change without changing executable terms.
     terms = signal_payload(sig)
     terms.pop("saw")
+    basis = terms.get("price_basis")
+    if isinstance(basis,dict) and basis.get("method") == "webull-history-v1":
+        # Re-fetching identical vendor history does not create new setup terms.
+        # The full original receipt remains in payload; history/identity stay hashed.
+        terms["price_basis"] = {k:v for k,v in basis.items() if k != "verified_at"}
     return _hash([day.isoformat(), sig.setup_version, terms])
 
 
@@ -329,6 +334,22 @@ class SignalStore:
             if event["state"] == "triggered":
                 self._transition(db, event_id, "invalidated", now, reason)
                 db.execute("UPDATE candidates SET blocked=? WHERE id=?", (reason, event["candidate_id"]))
+
+    def invalidate_candidate(self, sig, day, now, reason):
+        """An authoritative history revision retires this exact evaluated candidate."""
+        cid = candidate_id(sig,day)
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("""INSERT OR IGNORE INTO candidates
+                (id,day,symbol,setup_id,direction,payload,card_version,expires_at,last_bar)
+                VALUES (?,?,?,?,?,?,?,?,?)""", (cid,day.isoformat(),sig.symbol,sig.setup_id,sig.direction,
+                    _json(signal_payload(sig)),sig.setup_version,_time(session(day)[1]),
+                    _time(clock(now).floor("15min"))))
+            for row in db.execute("SELECT id FROM events WHERE candidate_id=?",(cid,)).fetchall():
+                self._transition(db,row["id"],"invalidated",now,reason)
+            db.execute("""UPDATE candidates SET blocked=?,
+                last_bar=MAX(COALESCE(last_bar,''),?),checked_at=? WHERE id=?""",
+                (reason,_time(clock(now).floor("15min")),_time(now),cid))
 
     def armed_history(self, day):
         with self._db() as db:

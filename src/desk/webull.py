@@ -194,7 +194,7 @@ class WebullData:
     def bars(self, symbols: Sequence[str], *, category: str, timespan: str, count: int = 1000,
              sessions: str | None = None, max_delay_minutes: int = 0,
              start_time: int | None = None, end_time: int | None = None,
-             real_time_required: bool = True) -> dict[str, pd.DataFrame]:
+             real_time_required: bool = True, _allow_partial: bool = False) -> dict[str, pd.DataFrame]:
         """Bars for up to 20 symbols, oldest first.
 
         A symbol missing from the reply, or data delayed more than
@@ -248,70 +248,98 @@ class WebullData:
         if not isinstance(reply, list):
             raise WebullError("unexpected bars reply")
         out = {}
+        bad = set()
         for item in reply:
-            if isinstance(item, Mapping) and isinstance(item.get("symbol"), str):
-                item = self._normalize_identity(item)
-            if isinstance(item, Mapping) and item.get("symbol") in symbols:
-                try:
-                    raw_delay = item["delay_minutes"]
-                    if isinstance(raw_delay, bool) or not (type(raw_delay) is int or
-                            isinstance(raw_delay, str) and raw_delay.isdigit()):
-                        raise ValueError("missing/non-integer delay")
-                    delay = int(raw_delay)
-                    if delay < 0:
-                        raise ValueError("negative delay")
-                except (KeyError, TypeError, ValueError) as e:
-                    raise WebullError("bad delay_minutes") from e
-                if delay > max_delay_minutes:
-                    raise WebullError(f"{item['symbol']} data is {delay} minutes delayed")
-                symbol = item["symbol"]
-                if symbol in out:
-                    raise WebullError("duplicate symbol in bars reply")
-                rows = item.get("result") or []
-                if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
-                    raise WebullError("unexpected bar rows")
-                if minute_bars and any(not isinstance(row.get("trading_session"), str) or
-                                       row["trading_session"] not in selected for row in rows):
-                    raise WebullError("missing or unexpected intraday trading_session")
-                df = bars_from_webull(rows, timestamp_unit=self._bar_timestamp_unit)
-                if "start_time" in bounds:
-                    df = df[df.index >= bounds["start_time"]].copy()
-                if "end_time" in bounds:
-                    df = df[df.index <= bounds["end_time"]].copy()
-                if df.empty:
-                    raise WebullError(f"no bars for {symbol} in requested window")
-                df.attrs["webull_request"] = dict(payload)
-                df.attrs["provider_identity_raw"] = {"symbol": item["provider_symbol"], "instrument_id": item.get("instrument_id")}
-                df.attrs["provider_identity"] = {"symbol": symbol, "instrument_id": item.get("instrument_id")}
-                # This identifies the native channel, not its undocumented trade
-                # inclusion or share-adjustment rules. No cross-channel equivalence.
-                df.attrs["volume_basis"] = {"source": "Webull OpenAPI",
-                    "evidence_ref": "https://developer.webull.com/apis/docs/reference/historical-bars/",
-                    "channel": "minute:" + ",".join(selected) if minute_bars else "native:" + timespan,
-                    "definition_id": None, "units": "shares", "share_basis_id": None}
-                if minute_bars:
-                    df.attrs["provider_sessions"] = sorted({row["trading_session"] for row in rows})
-                profile = self._bar_profile(symbol, timespan) if self._bar_profile else None
-                if minute_bars and selected != ["RTH"]:
-                    profile = None  # extended-session diagnostics cannot claim a regular-only profile
-                volume = self._volume_profile(symbol, timespan) if self._volume_profile else None
-                if volume and (not minute_bars or selected == ["RTH"]):
-                    df.attrs["volume_basis"] = volume.model_dump(mode="json")
-                if profile and profile.price_basis and (
-                    profile.price_basis.symbol != symbol or item.get("instrument_id") is None or
-                    profile.price_basis.security_id != str(item["instrument_id"])
-                ):
-                    raise WebullError("Price evidence does not match returned Webull instrument identity")
-                # Unknown provider semantics remain readable, but cannot produce a signal.
-                df.attrs["bar_provenance"] = (profile.model_copy(update={"delay_minutes": delay}).model_dump()
-                    if profile else {"source": "Webull OpenAPI", "timeframe": timespan, "delay_minutes": delay,
-                                     "timestamp_semantics": "unknown"})
-                df.attrs["received_at"] = self._clock().isoformat()
-                out[symbol] = df
+            candidate_symbol = None
+            try:
+                if _allow_partial:
+                    if not isinstance(item, Mapping) or not isinstance(item.get("symbol"), str):
+                        raise WebullError("Unattributable bar row")
+                    candidate_symbol = canonical_symbol(item["symbol"])
+                    if candidate_symbol not in symbols:
+                        raise WebullError("Unrequested bar identity")
+                    if candidate_symbol in bad:
+                        continue
+                if isinstance(item, Mapping) and isinstance(item.get("symbol"), str):
+                    item = self._normalize_identity(item)
+                if isinstance(item, Mapping) and item.get("symbol") in symbols:
+                    try:
+                        raw_delay = item["delay_minutes"]
+                        if isinstance(raw_delay, bool) or not (type(raw_delay) is int or
+                                isinstance(raw_delay, str) and raw_delay.isdigit()):
+                            raise ValueError("missing/non-integer delay")
+                        delay = int(raw_delay)
+                        if delay < 0:
+                            raise ValueError("negative delay")
+                    except (KeyError, TypeError, ValueError) as e:
+                        raise WebullError("bad delay_minutes") from e
+                    if delay > max_delay_minutes:
+                        raise WebullError(f"{item['symbol']} data is {delay} minutes delayed")
+                    symbol = item["symbol"]
+                    if symbol in out:
+                        raise WebullError("duplicate symbol in bars reply")
+                    rows = item.get("result") or []
+                    if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+                        raise WebullError("unexpected bar rows")
+                    if minute_bars and any(not isinstance(row.get("trading_session"), str) or
+                                           row["trading_session"] not in selected for row in rows):
+                        raise WebullError("missing or unexpected intraday trading_session")
+                    df = bars_from_webull(rows, timestamp_unit=self._bar_timestamp_unit)
+                    if "start_time" in bounds:
+                        df = df[df.index >= bounds["start_time"]].copy()
+                    if "end_time" in bounds:
+                        df = df[df.index <= bounds["end_time"]].copy()
+                    if df.empty:
+                        raise WebullError(f"no bars for {symbol} in requested window")
+                    df.attrs["webull_host"] = self._host
+                    df.attrs["webull_request"] = dict(payload)
+                    df.attrs["provider_identity_raw"] = {"symbol": item["provider_symbol"], "instrument_id": item.get("instrument_id")}
+                    df.attrs["provider_identity"] = {"symbol": symbol, "instrument_id": item.get("instrument_id")}
+                    # This identifies the native channel, not its undocumented trade
+                    # inclusion or share-adjustment rules. No cross-channel equivalence.
+                    df.attrs["volume_basis"] = {"source": "Webull OpenAPI",
+                        "evidence_ref": "https://developer.webull.com/apis/docs/reference/historical-bars/",
+                        "channel": "minute:" + ",".join(selected) if minute_bars else "native:" + timespan,
+                        "definition_id": None, "units": "shares", "share_basis_id": None}
+                    if minute_bars:
+                        df.attrs["provider_sessions"] = sorted({row["trading_session"] for row in rows})
+                    profile = self._bar_profile(symbol, timespan) if self._bar_profile else None
+                    if minute_bars and selected != ["RTH"]:
+                        profile = None  # extended-session diagnostics cannot claim a regular-only profile
+                    volume = self._volume_profile(symbol, timespan) if self._volume_profile else None
+                    if volume and (not minute_bars or selected == ["RTH"]):
+                        df.attrs["volume_basis"] = volume.model_dump(mode="json")
+                    if profile and profile.price_basis and (
+                        profile.price_basis.symbol != symbol or item.get("instrument_id") is None or
+                        profile.price_basis.security_id != str(item["instrument_id"])
+                    ):
+                        raise WebullError("Price evidence does not match returned Webull instrument identity")
+                    # Unknown provider semantics remain readable, but cannot produce a signal.
+                    df.attrs["bar_provenance"] = (profile.model_copy(update={"delay_minutes": delay}).model_dump()
+                        if profile else {"source": "Webull OpenAPI", "timeframe": timespan, "delay_minutes": delay,
+                                         "timestamp_semantics": "unknown"})
+                    df.attrs["received_at"] = self._clock().isoformat()
+                    out[symbol] = df
+            except (BarDataError, ValueError, TypeError):
+                if not _allow_partial:
+                    raise
+                if candidate_symbol not in symbols:
+                    raise WebullError("Unattributable bar identity") from None
+                bad.add(candidate_symbol)
+                out.pop(candidate_symbol, None)
         missing = [s for s in symbols if s not in out]
-        if missing:
+        if missing and not _allow_partial:
             raise WebullError(f"no bars for {missing}")
         return out
+
+    def bars_partial(self, symbols, **kwargs):
+        """One request, valid symbols only; row failures cannot poison peers.
+
+        Provider-wide errors still raise. Missing/invalid symbols are omitted;
+        the vendor-basis wrapper records those explicitly as unavailable.
+        Ordinary bars() retains its strict all-requested-symbols contract.
+        """
+        return self.bars(symbols, _allow_partial=True, **kwargs)
 
     @staticmethod
     def _normalize_identity(row):
@@ -324,7 +352,11 @@ class WebullData:
             raise WebullError("Webull alias instrument identity differs from reviewed mapping")
         return {**row, "symbol": symbol, "provider_symbol": raw_symbol}
 
-    def security_metadata(self, symbols: Sequence[str]) -> list[dict]:
+    def security_metadata_partial(self, symbols):
+        """Attributable invalid rows stay visible for per-symbol rejection."""
+        return self.security_metadata(symbols, _allow_partial=True)
+
+    def security_metadata(self, symbols: Sequence[str], *, _allow_partial=False) -> list[dict]:
         """Read-only instrument lookup; five-minute in-process cache, no option gate.
 
         Sourced: retail instrument-list docs and official SDK 3.0.2 request v3.
@@ -348,7 +380,19 @@ class WebullData:
                 rows = reply.get("data") if isinstance(reply, dict) else reply
                 if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
                     raise WebullError("unexpected instrument reference response")
-                received.extend({**self._normalize_identity(row), "observed_at": self._clock().isoformat()} for row in rows)
+                for row in rows:
+                    try:
+                        received.append({**self._normalize_identity(row), "observed_at": self._clock().isoformat()})
+                    except (BarDataError, ValueError):
+                        if not _allow_partial:
+                            raise
+                        try:
+                            affected = canonical_symbol(row.get("symbol"))
+                        except (ValueError, TypeError):
+                            raise WebullError("Unattributable metadata identity") from None
+                        if affected not in needed:
+                            raise WebullError("Unrequested metadata identity")
+                        received.append({"symbol":affected,"metadata_invalid":True})
                 cursor = reply.get("pagination_key") if isinstance(reply, dict) else None
                 if not cursor:
                     break
@@ -359,7 +403,7 @@ class WebullData:
             unambiguous = all(row.get("symbol") in needed for row in received) and len({row.get("symbol") for row in received}) == len(received)
             for name in needed if unambiguous else []:
                 matches = [row for row in received if row.get("symbol") == name]
-                if len(matches) == 1:
+                if len(matches) == 1 and not matches[0].get("metadata_invalid"):
                     self._security_cache[name] = (time.monotonic(), matches[0])
         return received + [self._security_cache[n][1] for n in names if n not in needed]
 

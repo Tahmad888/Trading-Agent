@@ -10,7 +10,11 @@ integration. No messages have been sent to either reviewer by this task.
 G1 status: implemented and locally verified, **803 strict tests** on Python 3.12
 and 3.14. See `checkpoints/G1-earnings-isolation.md`. G2 is implemented and locally verified: **856 strict tests** on both Python
 versions. Evidence is recorded in `checkpoints/G2-stop-risk.md`.
-G3–G5 remain outstanding. G2 hashes are not G4 approval enforcement.
+G3 automatic vendor price/history handling is implemented and locally verified
+(**892 strict tests on both Python versions**);
+see `checkpoints/G3-vendor-basis.md` and `VENDOR_BASIS.md`. Actual-host acceptance
+is pending; unknown volume evidence and unresolved price conflicts stay explicit.
+G4/G5 remain outstanding. G2 hashes are not G4 approval enforcement.
 
 ## Latest user policy
 

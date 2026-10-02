@@ -45,7 +45,7 @@ from desk.calendar import trading_day, next_trading_day, session, clock
 from desk.bar_contract import (completed_daily, completed_intraday, provenance,
                                check_price_scale, developing_daily_from_m15)
 from desk.indicators import daily_features
-from desk.data_basis import price_basis, volume_basis
+from desk.data_basis import price_basis, volume_basis, PriceHistoryChanged
 from desk.signal_state import SignalStore, SignalStateError, restore_signal
 from desk.security import securities
 from desk.symbols import canonical_symbol
@@ -94,6 +94,7 @@ def fetch(source: BarSource, symbols: Sequence[str], timespan: str, count: int,
             batch = names[i:i + 20]
             try:
                 out.update(source.bars(batch, category=cat, timespan=timespan, count=count))
+                skipped.update({s:r for s,r in getattr(source,"last_errors",{}).items() if s in batch})
             except BarDataError as e:
                 if len(batch) == 1:
                     skipped[batch[0]] = str(e)
@@ -339,7 +340,11 @@ def observe_signal(store: SignalStore, sig: Signal, frame: pd.DataFrame, now: da
         store.suspend(sig, day, "signal belongs to a different entry session")
         return []
     bars = completed_intraday(frame, now)
-    check_price_scale(sig.price_basis, bars, now, symbol=sig.symbol)
+    try:
+        check_price_scale(sig.price_basis, bars, now, symbol=sig.symbol)
+    except PriceHistoryChanged:
+        store.invalidate_candidate(sig,day,now,"Daily history used to arm signal revised; rebuild required")
+        raise
     if bars.empty:
         return []
     observations = entry_observations(sig, bars)
