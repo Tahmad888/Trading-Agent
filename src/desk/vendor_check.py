@@ -14,15 +14,16 @@ from desk.action_source import configured_source
 from desk.bar_contract import completed_daily, completed_intraday, check_price_scale
 from desk.bars import BarDataError
 from desk.calendar import clock, latest_closed_session, session, trading_day
-from desk.data_basis import price_basis, volume_basis
+from desk.data_basis import price_basis, volume_basis, compatible_volume
 from desk.scanner import fetch
 from desk.security import securities
 from desk.webull import WebullData
 
 
-def check(source, symbols, *, clock_fn=lambda:datetime.now(timezone.utc)):
+def check(source, symbols, *, require_volume=False, clock_fn=lambda:datetime.now(timezone.utc)):
     result = {"purpose":"vendor price/history check only; no decision/order activation", "checks":[],
-              "action_coverage":"NOT_ATTESTED", "fallback_issue":getattr(source,"fallback_issue",None)}
+              "action_coverage":"NOT_ATTESTED", "fallback_issue":getattr(source,"fallback_issue",None),
+              "auto_action_issue":getattr(source,"auto_action_issue",None), "requires_volume":require_volume}
     skipped = {}
     metadata = securities(source,symbols,skipped)
     dailies = fetch(source,symbols,"D",1000,skipped)
@@ -54,12 +55,20 @@ def check(source, symbols, *, clock_fn=lambda:datetime.now(timezone.utc)):
             try:
                 volume_basis(daily.iloc[-50:])
                 item["volume_window"] = "VERIFIED_DAILY_ONLY"
-            except BarDataError:
+                if require_volume:
+                    early = volume_basis(minutes.iloc[:2])
+                    compatible_volume(daily.iloc[-50:],early.model_dump(mode="json"))
+                    item["volume_pair"] = "PASS"
+                    item["volume_share_basis"] = early.share_basis_id
+            except BarDataError as exc:
+                if require_volume:
+                    item["volume_pair"] = "UNAVAILABLE"
+                    item["volume_reason"] = str(exc)
                 item["volume_window"] = "UNAVAILABLE_SEPARATE_EVIDENCE_REQUIRED"
         except BarDataError as exc:
             item["reason"] = str(exc)
         result["checks"].append(item)
-    result["status"] = "PASS" if result["checks"] and all(c["status"]=="PASS" for c in result["checks"]) else "INCOMPLETE"
+    result["status"] = "PASS" if result["checks"] and all(c["status"]=="PASS" and (not require_volume or c.get("volume_pair")=="PASS") for c in result["checks"]) else "INCOMPLETE"
     return result
 
 
@@ -68,11 +77,20 @@ def main(argv=None):
     parser.add_argument("--database",required=True)
     parser.add_argument("--symbols",nargs="+",required=True)
     parser.add_argument("--output")
+    parser.add_argument("--auto-actions-database")
+    parser.add_argument("--accept-native-volume-policy",action="store_true",
+                        help="For this probe only: accept the explicit native post-split window inference")
+    parser.add_argument("--require-volume",action="store_true")
     args = parser.parse_args(argv)
     try:
         env = {**os.environ,"DESK_VENDOR_BASIS_DB":args.database}
+        if args.auto_actions_database:
+            env["DESK_AUTO_ACTION_DB"] = args.auto_actions_database
+        if args.accept_native_volume_policy:
+            from desk.batch_actions import POLICY
+            env["DESK_NATIVE_VOLUME_POLICY"] = POLICY
         source = configured_source(WebullData.from_env(),env)
-        result = check(source,list(dict.fromkeys(args.symbols)))
+        result = check(source,list(dict.fromkeys(args.symbols)),require_volume=args.require_volume)
     except (BarDataError,OSError,ValueError,KeyError,sqlite3.Error):
         result = {"status":"UNAVAILABLE","reason":"CONFIGURATION_OR_PROVIDER_UNAVAILABLE"}
     text = json.dumps(result,indent=2)

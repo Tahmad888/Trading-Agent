@@ -125,9 +125,19 @@ def configured_source(source, env, *, clock=lambda: datetime.now(timezone.utc)):
             store = VendorHistoryStore(vendor_path)
         except sqlite3.Error:
             raise BarDataError("Vendor history store unavailable") from None
+        actions = None
+        action_issue = None
+        if env.get("DESK_AUTO_ACTION_DB"):
+            from desk.batch_actions import BatchActions
+            try:
+                actions = BatchActions(env["DESK_AUTO_ACTION_DB"],env.get("MASSIVE_API_KEY"),clock_fn=clock,
+                    volume_policy=env.get("DESK_NATIVE_VOLUME_POLICY") or None)
+            except (BarDataError,OSError,ValueError,sqlite3.Error):
+                action_issue = "Optional automatic action configuration unavailable"
         wrapped = VendorBasisSource(source,store,
-            host=env.get("WEBULL_HOST") or "api.webull.com",clock_fn=clock,fallback=fallback)
+            host=env.get("WEBULL_HOST") or "api.webull.com",clock_fn=clock,fallback=fallback,actions=actions)
         wrapped.fallback_issue = fallback_issue
+        wrapped.auto_action_issue = action_issue
         return wrapped
     config_path = env.get("DESK_ACTION_CHANNELS")
     ledger_path = env.get("DESK_ACTION_LEDGER")

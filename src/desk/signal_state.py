@@ -86,6 +86,11 @@ class SignalStore:
                     state TEXT NOT NULL, trigger_at TEXT NOT NULL, observed_at TEXT NOT NULL,
                     entry_level REAL NOT NULL, expires_at TEXT NOT NULL,
                     valid_until TEXT NOT NULL, reason TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS revision_rebuilds (
+                    candidate_id TEXT PRIMARY KEY, day TEXT NOT NULL,
+                    symbol TEXT NOT NULL, setup_id TEXT NOT NULL, direction TEXT NOT NULL,
+                    requested_at TEXT NOT NULL, status TEXT NOT NULL,
+                    attempted_at TEXT, reason TEXT NOT NULL, replacement_id TEXT);
                 CREATE TABLE IF NOT EXISTS transitions (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL,
                     state TEXT NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL);
@@ -335,7 +340,7 @@ class SignalStore:
                 self._transition(db, event_id, "invalidated", now, reason)
                 db.execute("UPDATE candidates SET blocked=? WHERE id=?", (reason, event["candidate_id"]))
 
-    def invalidate_candidate(self, sig, day, now, reason):
+    def invalidate_candidate(self, sig, day, now, reason, *, rebuild=False):
         """An authoritative history revision retires this exact evaluated candidate."""
         cid = candidate_id(sig,day)
         with self._db() as db:
@@ -350,6 +355,66 @@ class SignalStore:
             db.execute("""UPDATE candidates SET blocked=?,
                 last_bar=MAX(COALESCE(last_bar,''),?),checked_at=? WHERE id=?""",
                 (reason,_time(clock(now).floor("15min")),_time(now),cid))
+            if rebuild:
+                db.execute("""INSERT OR IGNORE INTO revision_rebuilds
+                    (candidate_id,day,symbol,setup_id,direction,requested_at,status,reason)
+                    VALUES (?,?,?,?,?,?,'PENDING',?)""",
+                    (cid,day.isoformat(),sig.symbol,sig.setup_id,sig.direction,_time(now),reason))
+
+    def pending_rebuilds(self, day):
+        with self._db() as db:
+            return [dict(r) for r in db.execute(
+                "SELECT * FROM revision_rebuilds WHERE day=? AND status='PENDING' ORDER BY requested_at,candidate_id",
+                (day.isoformat(),))]
+
+    def finish_rebuild(self, cid, now, status, reason, replacement=None):
+        """Replace exactly the retired candidate and queue state in one transaction."""
+        if status not in {"REBUILT", "NO_SETUP", "PENDING", "REMOVED"}:
+            raise SignalStateError("Invalid rebuild outcome")
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM revision_rebuilds WHERE candidate_id=?",(cid,)).fetchone()
+            if row is None or row["status"] != "PENDING":
+                return False
+            day = date.fromisoformat(row["day"])
+            if (clock(now).date() != day or not session(day)[0] <= clock(now) < session(day)[1]
+                    or clock(now) < clock(row["requested_at"])
+                    or row["attempted_at"] and clock(now) < clock(row["attempted_at"])):
+                raise SignalStateError("Rebuild clock outside original entry session")
+            rid = None
+            if replacement is not None:
+                if status != "REBUILT" or (replacement.symbol,replacement.setup_id,replacement.direction) != (
+                        row["symbol"],row["setup_id"],row["direction"]):
+                    raise SignalStateError("Rebuild changed ticker/setup/direction")
+                rid = candidate_id(replacement,day)
+                if rid == cid:
+                    raise SignalStateError("Rebuild cannot restore retired evidence")
+            elif status == "REBUILT":
+                raise SignalStateError("Rebuilt signal missing")
+            if status != "PENDING":
+                old = db.execute("SELECT * FROM armed WHERE day=?",(day.isoformat(),)).fetchone()
+                if old is None:
+                    raise SignalStateError("Armed list missing for rebuild")
+                original = json.loads(old["payload"])
+                if cid not in {candidate_id(restore_signal(p),day) for p in original}:
+                    db.execute("UPDATE revision_rebuilds SET status='REMOVED',attempted_at=?,reason=? WHERE candidate_id=?",
+                               (_time(now),"retired candidate already withdrawn/replaced",cid))
+                    return False
+                payload = [p for p in original if candidate_id(restore_signal(p),day) != cid]
+                if replacement is not None:
+                    payload.append(signal_payload(replacement))
+                unique = {candidate_id(restore_signal(p),day):p for p in payload}
+                encoded = _json(list(unique.values()))
+                db.execute("UPDATE armed SET payload=? WHERE day=?",(encoded,day.isoformat()))
+                db.execute("INSERT INTO armed_history(day,market,payload,observed_at) VALUES (?,?,?,?)",
+                           (day.isoformat(),old["market"],encoded,_time(now)))
+                # Detector completion, not merely the earlier failed scan, is the
+                # earliest boundary from which a new crossing may be considered.
+                db.execute("UPDATE candidates SET last_bar=MAX(COALESCE(last_bar,''),?) WHERE id=?",
+                           (_time(clock(now).floor("15min")),cid))
+            db.execute("""UPDATE revision_rebuilds SET status=?,attempted_at=?,reason=?,replacement_id=?
+                          WHERE candidate_id=?""",(status,_time(now),reason,rid,cid))
+            return True
 
     def armed_history(self, day):
         with self._db() as db:

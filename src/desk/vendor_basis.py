@@ -130,7 +130,7 @@ def _daily(frame, metadata, now, host):
     return out
 
 
-def _basis(daily, raw_anchor, metadata, host, now):
+def _basis(daily, raw_anchor, metadata, host, now, actions=None):
     received = _raw(raw_anchor, metadata, "M15", now, host)
     day = daily.index[-1].tz_convert(ET).date()
     opened, closed = session(day)
@@ -139,21 +139,31 @@ def _basis(daily, raw_anchor, metadata, host, now):
         raise BarDataError("INCOMPLETE_RAW_ANCHOR_SESSION")
     history = tuple((str(d.tz_convert(ET).date()), *(float(v) for v in row))
                     for d,row in daily[["open","high","low","close","volume"]].iterrows())
+    adjustment = None
     if abs(history[-1][4]-float(raw_anchor.close.iloc[-1])) > 0.000001:
-        raise BarDataError("DAILY_RAW_CLOSE_MISMATCH")
+        if actions is None:
+            raise BarDataError("DAILY_RAW_CLOSE_MISMATCH")
+        try:
+            adjustment = actions.anchor(metadata,day)
+        except (BarDataError,sqlite3.Error,OSError,ValueError):
+            raise BarDataError("DAILY_RAW_CLOSE_MISMATCH; ordinary action evidence unavailable") from None
+        if abs(float(adjustment.expected_close(raw_anchor.close.iloc[-1]))-history[-1][4]) > 0.000001:
+            raise BarDataError("DAILY_RAW_CLOSE_MISMATCH; action economics disagree")
     return VendorPriceBasis(source="Webull native history with raw close check", evidence_ref=REFERENCE,
         method="webull-history-v1", host=host, symbol=metadata.symbol, security_id=metadata.instrument_id,
         currency=metadata.currency, coverage_start=daily.index[0].tz_convert(ET).date(),
         basis_session=clock(now).date(), verified_at=now, normalization="split_dividend_adjusted",
         daily_history=history, anchor_session=day, daily_anchor_close=history[-1][4],
-        raw_anchor_close=float(raw_anchor.close.iloc[-1]))
+        raw_anchor_close=float(raw_anchor.close.iloc[-1]),anchor_adjustment=adjustment)
 
 
 class VendorBasisSource:
-    def __init__(self, source, store, *, host, clock_fn=lambda:datetime.now(timezone.utc), fallback=None):
+    def __init__(self, source, store, *, host, clock_fn=lambda:datetime.now(timezone.utc), fallback=None, actions=None):
         if host not in {"api.sandbox.webull.com", "api.webull.com"}:
             raise BarDataError("Unsupported vendor host")
         self.source, self.store, self.host, self._clock, self.fallback = source, store, host, clock_fn, fallback
+        self.actions = actions
+        self.last_volume_errors = {}
         self.last_errors = {}
 
     def __getattr__(self, name):
@@ -222,7 +232,7 @@ class VendorBasisSource:
                 if symbol not in anchors or symbol not in wanted:
                     raise BarDataError("MINUTE_PROVIDER_UNAVAILABLE")
                 now = self._clock()
-                basis = _basis(clean[symbol], anchors[symbol], metadata[symbol], self.host, now)
+                basis = _basis(clean[symbol], anchors[symbol], metadata[symbol], self.host, now, self.actions)
                 frame = (clean[symbol].tail(count) if timespan == "D" else wanted[symbol]).copy()
                 _raw(frame,metadata[symbol],timespan,now,self.host)
                 normalized = "split_dividend_adjusted" if timespan == "D" else "unadjusted"
@@ -235,7 +245,13 @@ class VendorBasisSource:
                 # Do not turn native volume labels into an assertion about adjusted share units.
                 frame.attrs["volume_basis"] = {"source":"Webull OpenAPI", "evidence_ref":REFERENCE,
                     "channel":"native:"+timespan,"definition_id":None,"units":"shares","share_basis_id":None}
-                if self.fallback is not None:
+                if self.actions is not None:
+                    try:
+                        frame.attrs["volume_basis"] = self.actions.volume(metadata[symbol],timespan,after=revision_at).model_dump(mode="json")
+                        self.last_volume_errors.pop(symbol,None)
+                    except (BarDataError,sqlite3.Error,OSError,ValueError) as exc:
+                        self.last_volume_errors[symbol] = str(exc) if isinstance(exc,BarDataError) else "Automatic action evidence store unavailable"
+                if self.fallback is not None and self.actions is None:
                     # Optional accepted volume evidence; it is never required for price-only setups.
                     from desk.action_source import native_volume_basis
                     try:

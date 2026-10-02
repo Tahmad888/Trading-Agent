@@ -45,7 +45,7 @@ from desk.calendar import trading_day, next_trading_day, session, clock
 from desk.bar_contract import (completed_daily, completed_intraday, provenance,
                                check_price_scale, developing_daily_from_m15)
 from desk.indicators import daily_features
-from desk.data_basis import price_basis, volume_basis, PriceHistoryChanged
+from desk.data_basis import price_basis, volume_basis, PriceHistoryChanged, DailyHistoryChanged
 from desk.signal_state import SignalStore, SignalStateError, restore_signal
 from desk.security import securities
 from desk.symbols import canonical_symbol
@@ -342,8 +342,9 @@ def observe_signal(store: SignalStore, sig: Signal, frame: pd.DataFrame, now: da
     bars = completed_intraday(frame, now)
     try:
         check_price_scale(sig.price_basis, bars, now, symbol=sig.symbol)
-    except PriceHistoryChanged:
-        store.invalidate_candidate(sig,day,now,"Daily history used to arm signal revised; rebuild required")
+    except PriceHistoryChanged as exc:
+        store.invalidate_candidate(sig,day,now,"Daily history used to arm signal revised; rebuild required",
+                                   rebuild=isinstance(exc,DailyHistoryChanged))
         raise
     if bars.empty:
         return []
@@ -679,6 +680,11 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
                 log.mark_prepared_users(slot.date(), ep_pending - set(skipped), "ep")
                 armed = [*armed, *new]
             rec = intraday_scan(source, armed, now, decision_clock=decision_clock, store=log.signals)
+            from desk.revision_rebuild import rebuild_pending
+            rebuilt = []
+            rebuilds = rebuild_pending(source,log,now,removed=removed,decision_clock=decision_clock,rebuilt=rebuilt)
+            if rebuilds:
+                rec.discovery["revision_rebuilds"] = rebuilds
             if ep_due:
                 rec.skipped.update(skipped)
                 rec.discovery["ep_candidates"] = {"symbols": candidates, "errors": skipped}
@@ -689,7 +695,7 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
             if slot == closed - timedelta(minutes=15) and market is not None:
                 new = rsi2_estimate(source, watchlist, market, now, rec.skipped,
                                     decision_clock=decision_clock, store=log.signals, triggered=rec.triggered)
-            rec.armed = [_sig(s) for s in [*user_new, *new]]
+            rec.armed = [_sig(s) for s in [*user_new, *new, *rebuilt]]
     except Exception as e:                            # any failure is logged as a failed scan, never silent
         log.signals.suspend_all("scan failed; fresh validation required")
         kind = "leader" if slot == leader_slot else "close" if slot == close_slot else "intraday"

@@ -4,6 +4,7 @@ Only trusted data producers may attest coverage/definitions. A matching user-mad
 label is not proof. Unknown data remains readable but cannot qualify a decision.
 """
 from datetime import date
+from decimal import Decimal
 import math
 from typing import Annotated, Literal
 
@@ -63,6 +64,23 @@ class PriceHistoryChanged(BarDataError):
     """The history used to arm a signal changed; a fresh detection is required."""
 
 
+class DailyHistoryChanged(PriceHistoryChanged):
+    """Validated replacement history differs from the armed daily reference."""
+
+
+class AnchorAdjustment(Evidence):
+    """Original ordinary action economics explaining only the latest raw anchor."""
+    event_id: Text
+    effective_session: date
+    verified_at: AwareDatetime
+    kind: Literal["split", "cash_dividend"]
+    value: Decimal = Field(gt=0, allow_inf_nan=False)
+
+    def expected_close(self, raw):
+        value = Decimal(str(raw))
+        return value / self.value if self.kind == "split" else value - self.value
+
+
 class VendorPriceBasis(Evidence):
     """Observed vendor consistency, explicitly NOT complete corporate-action coverage."""
     method: Literal["webull-history-v1"]
@@ -79,6 +97,7 @@ class VendorPriceBasis(Evidence):
     anchor_session: date
     daily_anchor_close: float = Field(gt=0, allow_inf_nan=False)
     raw_anchor_close: float = Field(gt=0, allow_inf_nan=False)
+    anchor_adjustment: AnchorAdjustment | None = None
 
     @model_validator(mode="after")
     def consistent(self):
@@ -93,7 +112,15 @@ class VendorPriceBasis(Evidence):
         for _, o, h, l, c, v in rows:
             if any(not math.isfinite(x) for x in (o,h,l,c,v)) or not 0 < l <= min(o,c) <= max(o,c) <= h or v < 0:
                 raise ValueError("Invalid history observation")
-        if rows[-1][4] != self.daily_anchor_close or abs(self.daily_anchor_close-self.raw_anchor_close) > 0.000001:
+        expected = Decimal(str(self.raw_anchor_close))
+        if self.anchor_adjustment is not None:
+            action = self.anchor_adjustment
+            if not self.anchor_session < action.effective_session == self.basis_session or clock(action.verified_at) > clock(self.verified_at) or clock(action.verified_at).date() != self.basis_session:
+                raise ValueError("Anchor adjustment interval/receipt invalid")
+            if action.kind == "split" and action.value == 1:
+                raise ValueError("Anchor split changes no shares")
+            expected = action.expected_close(self.raw_anchor_close)
+        if rows[-1][4] != self.daily_anchor_close or expected <= 0 or abs(Decimal(str(self.daily_anchor_close))-expected) > Decimal("0.000001"):
             raise ValueError("Daily/raw close pair disagrees")
         return self
 
@@ -129,6 +156,8 @@ def price_basis(df: pd.DataFrame, now, *, symbol: str | None = None) -> PriceEvi
         if basis.normalization == "unadjusted" and any(
                 d not in {basis.anchor_session, basis.basis_session} for d in df.index.tz_convert(ET).date):
             raise BarDataError("Raw history outside verified vendor anchor/current session")
+        if basis.normalization == "unadjusted" and basis.anchor_adjustment and basis.anchor_session in df.index.tz_convert(ET).date:
+            raise BarDataError("Historical raw anchor is on a pre-action price basis")
         return basis
     # Native raw history cannot cross an action or remain on yesterday's share basis.
     # A split-only series cannot bridge a dividend when comparing adjusted levels.
@@ -156,7 +185,7 @@ def compatible_prices(previous: dict | None, current: pd.DataFrame, now, *, symb
         if any(row[0] not in latest for row in old.daily_history):
             raise BarDataError("Missing original history overlap; cannot revalidate signal")
         if any(row[1:] != latest[row[0]] for row in old.daily_history):
-            raise PriceHistoryChanged("Daily OHLCV used to arm this signal was revised; rebuild signal")
+            raise DailyHistoryChanged("Daily OHLCV used to arm this signal was revised; rebuild signal")
         return new
 
     def events(basis):

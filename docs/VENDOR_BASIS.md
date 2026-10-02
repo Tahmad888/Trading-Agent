@@ -107,3 +107,10 @@ the automatic price path. No populated runtime configuration is committed here.
 Rollback: unset the opt-in setting or revert G3, retain the audit files, and rebuild
 candidates under the selected source. Do not delete identity pins to force a ticker
 through a conflict; reconcile that identity first.
+
+G3 follow-up, implemented separately from Claude's G4/G5: see
+[G3_FOLLOWUP.md](G3_FOLLOWUP.md) for targeted revision rebuild, optional ordinary
+cash/split anchor reconciliation and automatic batch split-window volume evidence.
+Its local fixtures do not establish new-source access or operational acceptance;
+the documented read-only host checks remain required. Existing profiles/settings
+are unchanged, and `action_coverage` remains `NOT_ATTESTED`.
