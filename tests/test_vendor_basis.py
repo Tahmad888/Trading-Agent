@@ -400,3 +400,102 @@ def test_history_revision_retires_older_volume_review_across_restart(tmp_path):
     restarted = source(tmp_path,native,fallback)
     with pytest.raises(BarDataError,match="Unverified volume"):
         volume_basis(daily(restarted))
+
+
+class Malformed(Native):
+    """Corrupts one ticker's frames in ways that break the adapter contract."""
+    def __init__(self, fault):
+        super().__init__()
+        self.fault = fault
+
+    def bars(self, symbols, **kwargs):
+        out = super().bars(symbols, **kwargs)
+        if "BAD" in out:
+            frame = out["BAD"]
+            if self.fault == "received_garbage":
+                frame.attrs["received_at"] = "not a time"
+            elif self.fault == "provenance_none":
+                frame.attrs["bar_provenance"] = None
+            elif self.fault == "request_none":
+                frame.attrs["webull_request"] = None
+            elif self.fault == "not_a_frame":
+                out["BAD"] = None
+            elif self.fault == "naive_index":
+                frame.index = frame.index.tz_localize(None)
+            elif self.fault == "no_attrs":
+                frame.attrs = {}
+            elif self.fault == "string_prices":
+                out["BAD"] = frame.astype(str)
+                out["BAD"].attrs = frame.attrs
+        return out
+
+
+@pytest.mark.parametrize("fault", ["received_garbage", "provenance_none", "request_none", "not_a_frame",
+                                   "naive_index", "no_attrs", "string_prices"])
+@pytest.mark.parametrize("timespan", ["D", "M15"])
+def test_one_malformed_ticker_does_not_take_down_a_healthy_peer(tmp_path, fault, timespan):
+    """Outside Claude #13 (G5.B3): per-ticker isolation also covers malformed frames."""
+    src = source(tmp_path, Malformed(fault))
+    out = src.bars(["BAD", "LEAD"], timespan=timespan, category="US_STOCK", count=40)
+    assert "LEAD" in out and "BAD" not in out
+    assert src.last_errors["BAD"] and src.store.latest(HOST, "BAD")["status"] == "UNAVAILABLE"
+    assert src.store.latest(HOST, "LEAD")["status"] == "CONSISTENT"
+
+
+class Sessions(Native):
+    """Daily history that grows by one session per day; 2026-09-29 is a 10% gap-up day."""
+    ROWS = {"2026-09-24": [990, 1010, 980, 1000, 10000], "2026-09-25": [990, 1010, 980, 1000, 10000],
+            "2026-09-28": [990, 1010, 980, 1000, 10000], "2026-09-29": [1100, 1125, 1095, 1110, 30000],
+            "2026-09-30": [1110, 1130, 1100, 1120, 15000]}
+
+    def __init__(self):
+        super().__init__()
+        self.edit = {}
+
+    def bars(self, symbols, *, timespan, category, count=1000, **kwargs):
+        out = super().bars(symbols, timespan=timespan, category=category, count=count, **kwargs)
+        today = self.now.date()
+        last = max(d for d in self.ROWS if pd.Timestamp(d).date() < today)
+        for symbol, raw in out.items():
+            attrs = raw.attrs
+            if timespan == "D":
+                days = [d for d in self.ROWS if d <= last]
+                rows = [list(self.edit.get(d, self.ROWS[d])) for d in days]
+                frame = pd.DataFrame(rows, index=pd.DatetimeIndex(days, tz=ET).tz_convert("UTC"),
+                                     columns=["open", "high", "low", "close", "volume"], dtype=float)
+            elif "start_time" in kwargs:
+                opened, closed = session(pd.Timestamp(last).date())
+                idx = pd.date_range(opened, closed - pd.Timedelta(minutes=15), freq="15min").tz_convert("UTC")
+                close = self.edit.get(last, self.ROWS[last])[3]
+                frame = pd.DataFrame([[close] * 4 + [1000]] * len(idx), index=idx,
+                                     columns=["open", "high", "low", "close", "volume"], dtype=float)
+            else:
+                idx = pd.date_range(pd.Timestamp(f"{today} 09:30", tz=ET), periods=2, freq="15min").tz_convert("UTC")
+                frame = pd.DataFrame([[1110, 1130, 1100, 1120, 1000]] * 2, index=idx,
+                                     columns=["open", "high", "low", "close", "volume"], dtype=float)
+            frame.attrs = attrs
+            out[symbol] = frame
+        return out
+
+
+def test_gap_day_inside_the_compared_history_is_not_a_revision(tmp_path):
+    """Outside Claude #16 (G5.B4): a genuine gap that has become history (EP day 2 and
+    later) stays CONSISTENT; an edit to an already-seen row is REVISED."""
+    native = Sessions()
+    src = source(tmp_path, native)
+    src.bars(["LEAD"], timespan="D", category="US_STOCK")             # 09-29: history to 09-28
+    assert src.store.latest(HOST, "LEAD")["status"] == "CONSISTENT"
+    native.now = NOW + timedelta(days=1)                               # 09-30: gap day 09-29 appended
+    src.bars(["LEAD"], timespan="D", category="US_STOCK")
+    assert src.store.latest(HOST, "LEAD")["status"] == "CONSISTENT"
+    native.now = NOW + timedelta(days=2)                               # 10-01: gap day is in the overlap
+    frame = src.bars(["LEAD"], timespan="D", category="US_STOCK")["LEAD"]
+    assert src.store.latest(HOST, "LEAD")["status"] == "CONSISTENT"
+    assert frame.loc[pd.Timestamp("2026-09-29", tz=ET).tz_convert("UTC"), "open"] == 1100
+    # Control: the same comparison does flag a changed row that was already seen.
+    native.edit["2026-09-29"] = [1100, 1125, 1095, 1110, 30001]
+    native.now = NOW + timedelta(days=2, minutes=15)
+    src.bars(["LEAD"], timespan="D", category="US_STOCK")
+    revised = src.store.latest(HOST, "LEAD")
+    assert revised["status"] == "REVISED" and revised["detail"] == "Daily OHLCV revised on 2026-09-29"
+    assert src.store.latest_revision(HOST, "LEAD") == native.now

@@ -710,6 +710,10 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
     if getattr(source, "earnings_source_issue", None):
         rec.discovery["earnings_source"] = {
             "status": "UNAVAILABLE", "reason": "earnings configuration or refresh unavailable"}
+    elif getattr(source, "earnings_refresh_status", None):
+        rec.discovery["earnings_source"] = {
+            "status": source.earnings_refresh_status,
+            "reason": "automatic earnings refresh did not complete; EP and cup stay pending without current evidence"}
     rec.slot = slot.isoformat()
     log.write(rec)
     return rec

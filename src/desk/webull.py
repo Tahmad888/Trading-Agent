@@ -140,7 +140,10 @@ class WebullData:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ, **kw) -> WebullData:
-        kw.setdefault("host", env.get("WEBULL_HOST") or HOST)
+        if not env.get("WEBULL_APP_KEY") or not env.get("WEBULL_APP_SECRET"):
+            raise WebullError("Webull app key and secret are not set")
+        # No default host: an unset WEBULL_HOST must not silently reach production.
+        kw.setdefault("host", env.get("WEBULL_HOST") or None)
         if kw["host"] not in (HOST, SANDBOX_HOST):
             raise WebullError(f"WEBULL_HOST must be {HOST} or {SANDBOX_HOST}")
         return cls(env.get("WEBULL_APP_KEY", ""), env.get("WEBULL_APP_SECRET", ""),

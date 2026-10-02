@@ -1,9 +1,11 @@
 # G1–G4 acceptance matrix (G5)
 
 2026-10-02. Prepared by Claude against Taz's full G5 prompt (17:02Z). **G5 acceptance
-is PENDING**: the actual-iMac evidence and the independent reviews are not in yet.
-Nothing here is Astra's approval (she is unavailable until 2026-10-07); Taz arranged
-an outside Claude review and a DeepSeek review of the iMac side in her place.
+is PENDING.** Three audits of `6d21ddf` came back at 20:18Z (Astra, an outside Claude
+session, DeepSeek on the iMac). Their findings are fixed in the audit-closure commit
+or listed below as decisions for Taz; Astra's re-audit of that commit is still to
+come. Nothing here is Astra's approval. Audit rows are prefixed `Audit` with the
+finding's source (Astra A–C; Claude #n; DeepSeek).
 
 Evidence types are kept apart. Each row's artifact is tagged:
 **[S]** automated synthetic test (labelled deterministic fixtures, no provider),
@@ -23,6 +25,7 @@ Choices and their evidence labels are listed after the matrix.
 | [Plan G1; G5.B2] Missing required earnings evidence still blocks EP and cup | `earnings.qualify`; `scanner.revalidate_signal` | [S] `test_earnings_isolation::test_failure_masks_underlying_success_but_breakout_trigger_and_review_continue` (EP, cup `PENDING_EVIDENCE`; cup event ineligible); [S] `g5` test 1 (EP) | Pass | Automatic earnings supply is Step 09 |
 | [Plan G1; G5.B11] Price and SPY/QQQ failures are not weakened by the wrapper | `scanner.close_scan` market gate | [S] `test_earnings_isolation::test_missing_benchmark_remains_visible_with_earnings_outage`, `::test_genuine_ticker_price_failure_is_not_converted_to_earnings_warning`; [S] `g5::test_bearish_market_is_an_acknowledged_warning_but_missing_spy_qqq_blocks` | Pass | — |
 | [Plan G1] Safe diagnostics persist, no secrets | `earnings` review log | [S] same G1 tests assert no `SECRET` text in the log | Pass | — |
+| [Plan G1; Audit Claude #12] A returned (not raised) refresh outcome such as `POLICY_EXPIRED` is reported in the scan record | `earnings.RefreshReportingSource`; `scanner.run` discovery | [S] `test_earnings_isolation::test_returned_refresh_outcome_is_reported_without_stopping_prices[4 statuses]`, `::test_ready_or_cached_refresh_adds_no_issue` | Pass | Reporting only; EP/cup were already pending |
 
 ## G2 — observed stops and independent risk terms
 
@@ -37,16 +40,17 @@ Choices and their evidence labels are listed after the matrix.
 
 | Requirement | Code path | Test or host artifact | Result | Remaining limitation |
 | --- | --- | --- | --- | --- |
-| [Plan G3; G5.B9; G5.A] Automatic price path; no manual daily action enrolment | `vendor_basis.VendorBasisSource` | [S] `test_vendor_basis::test_automatic_source_arms_and_triggers_breakout_without_manual_enrollment`; [S] `g5` test 1; [P] `vendor_check` NVDA/SPY/QQQ/AAPL **PASS** at bb75602 (2026-10-02 01:45Z, historical session) and at d529880 (17:41Z, current regular session) | Pass (price/history only) | [H] iMac probe pending |
+| [Plan G3; G5.B9; G5.A] Automatic price path; no manual daily action enrolment | `vendor_basis.VendorBasisSource` | [S] `test_vendor_basis::test_automatic_source_arms_and_triggers_breakout_without_manual_enrollment`; [S] `g5` test 1; [P] `vendor_check` NVDA/SPY/QQQ/AAPL **PASS** at bb75602 (2026-10-02 01:45Z, historical session) and at d529880 (17:41Z, current regular session); [H] iMac `vendor_check` at `6d21ddf`, 2026-10-02 15:22–15:23 EDT: PASS ×4, current regular session, host `api.sandbox.webull.com` (as reported by DeepSeek's audit) | Pass (price/history only) | Volume and action coverage still unverified on every host |
 | [Plan G3; G5.B5] Revised history invalidates the original signal; its approval cannot be consumed | `vendor_basis`, `data_basis.PriceHistoryChanged`/`DailyHistoryChanged`, `signal_state.invalidate_candidate` | [S] `test_vendor_basis::test_revision_invalidates_exact_event_and_new_detection_uses_fresh_history`, `::test_split_and_ordinary_or_special_dividend_revisions_cannot_validate_old_signal`; [S] `g5` tests 1–2 | Pass | — |
 | [Plan G3; G5.B6] Rebuild cannot reuse crossings through the detection time | `revision_rebuild.rebuild_pending`; `signal_state` no-replay boundary | [S] `test_vendor_basis::test_rebuilt_candidate_cannot_replay_gap_since_last_observation`, `::test_revision_before_first_event_retires_candidate_and_prevents_replay`; [S] `test_revision_rebuild::test_revision_rebuilds_in_same_scan_and_only_future_crossing_triggers`; [S] `g5` test 1 | Pass | — |
-| [Plan G3; G5.B4] Genuine gap with unchanged history is not a revision | `vendor_basis` overlap comparison | [S] `test_vendor_basis::test_genuine_overnight_gap_does_not_trigger_history_revision`; [S] `test_revision_rebuild::test_genuine_gap_does_not_queue_rebuild` | Pass | — |
+| [Plan G3; G5.B4] Genuine gap with unchanged history is not a revision | `vendor_basis` overlap comparison | [S] `test_vendor_basis::test_gap_day_inside_the_compared_history_is_not_a_revision` (gap day inside the overlap over three sessions, with a REVISED control; Audit Claude #16); [S] `::test_genuine_overnight_gap_does_not_trigger_history_revision`, `test_revision_rebuild::test_genuine_gap_does_not_queue_rebuild` (today's gap only) | Pass | — |
 | [Plan G3; G5.B7; G4.D3] Unchanged refresh keeps candidate and event identity | `vendor_basis` content dedup; G4 binding excludes receipt times | [S] `test_vendor_basis::test_unchanged_refresh_preserves_candidate_and_live_event_identity`, `::test_identical_history_is_content_deduplicated_and_survives_restart`; [S] `test_tickets::test_stale_or_revised_evidence_blocks_but_fresh_unchanged_evidence_passes` | Pass | — |
-| [Plan G3; G5.B3] One malformed ticker does not discard healthy peers | `vendor_basis` per-symbol errors; Webull partial parser | [S] `test_vendor_basis::test_bad_ticker_is_isolated_without_relabeling_unknown_data`, `::test_real_webull_partial_parser_preserves_valid_peers`, `::test_scanner_keeps_healthy_ticker_and_specific_error`; [S] `test_batch_actions::test_bad_attributable_action_does_not_disable_healthy_ticker` | Pass | [H] not observed with a real malformed ticker |
+| [Plan G3; G5.B3] One malformed ticker does not discard healthy peers | `vendor_basis` per-symbol errors; Webull partial parser | [S] `test_vendor_basis::test_bad_ticker_is_isolated_without_relabeling_unknown_data`, `::test_real_webull_partial_parser_preserves_valid_peers`, `::test_scanner_keeps_healthy_ticker_and_specific_error`; [S] `test_batch_actions::test_bad_attributable_action_does_not_disable_healthy_ticker`; [S] `test_vendor_basis::test_one_malformed_ticker_does_not_take_down_a_healthy_peer[7 faults × D/M15]` (Audit Claude #13: four variants escaped before) | Pass | [H] not observed with a real malformed ticker |
 | [G5.B8] Revision cannot revive an older volume attestation after restart | `data_basis.volume_basis`; reviewed ledger | [S] `test_vendor_basis::test_history_revision_retires_older_volume_review_across_restart` | Pass | — |
 | [G5.A2; G5.A3] Volume stays separate; a price PASS is not verified volume | `vendor_check`, `data_basis.volume_basis` | [S] `test_vendor_basis::test_probe_reports_price_pass_and_volume_limit_separately`; [S] `test_batch_actions::test_volume_probe_requires_pair_and_cannot_confuse_price_pass_with_volume_pass`; [P] both cloud reports: `volume_window: UNAVAILABLE_SEPARATE_EVIDENCE_REQUIRED` | Volume **unverified** (as designed) | EP/VCP/cup volume needs the opt-in G3a policy plus a Massive key and host check |
 | [Plan G3; G5.A2; G5.A4] No corporate-action completeness claim; reviewed files cannot override conflicting daily/minute prices | `vendor_basis` fallback (diagnostic only) | [S] `test_vendor_basis::test_reviewed_source_is_diagnostic_only_for_unresolved_price_pair`; [P] both cloud reports: `action_coverage: NOT_ATTESTED` | Pass | Completeness is not attested by any source |
 | [G5.B10; G4.E4–E6] Provider failure, recovery, restart and repeats: no stale eligibility, no duplicate consumption | `vendor_basis`, `revision_rebuild`, `tickets.consume` | [S] `test_vendor_basis::test_failed_provider_batch_not_retried_or_exposed`, `::test_identity_change_stays_blocked_after_restart`; [S] `test_revision_rebuild::test_rebuild_outage_waits_and_recovers_without_replaying_gap`; [S] `g5::test_provider_outage_recovery_restart_and_repeats_never_stale_or_double_consume`, `::test_outage_across_a_scan_leaves_no_stale_eligibility_after_recovery_and_restart` | Pass | — |
+| [Plan G3; Audit Astra lower (F4, F5)] A declined rebuild reports its outcome; a request from an earlier session is closed as `EXPIRED` | `revision_rebuild.rebuild_pending`; `signal_state.close_stale_rebuilds`/`rebuild_request` | [S] `test_revision_rebuild::test_declined_rebuild_is_reported_not_silent`, `::test_rebuild_request_from_an_earlier_session_gets_a_terminal_outcome` | Pass | — |
 | [Plan G3 "rebuild on revisions"] G3a: ordinary cash dividend or split explained by batch evidence; rebuild then a new crossing only | `batch_actions.BatchActions`, `revision_rebuild` | [S] `test_revision_rebuild::test_dividend_only_daily_adjustment_reconciles_rebuilds_and_triggers_future_crossing`; [S] `test_batch_actions` (rate limits, pagination, secrets); [S] `g5` test 1 | Pass (opt-in, off by default) | No Massive key; [P]/[H] probe in `G3_FOLLOWUP.md` not run |
 
 ## G4 — ticket approval bound to exact terms
@@ -57,7 +61,13 @@ Choices and their evidence labels are listed after the matrix.
 | [Plan G4; G4.2; G4.A] Exposure and stop estimate distinct; no invented dollar cap | `risk.evaluate`; `tickets` display | [S] `test_tickets::test_option_exposure_and_unavailable_stop_estimate_stay_distinct`, `::test_share_position_value_without_noisy_exposure_warning`, `::test_exact_budget_confirmation_for_25000` | Pass | — |
 | [Plan G4; G4.2; G4.C; G5.B11] Warning acknowledgement cannot validate corrupt data; missing SPY/QQQ is not a bearish warning | `risk.evaluate` blocking checks; `tickets.approve` | [S] `test_tickets::test_acknowledgement_cannot_override_a_blocking_check`; [S] `test_risk_warnings::test_unknown_or_stale_market_is_data_failure_not_overridable_warning`; [S] `g5::test_bearish_market_is_an_acknowledged_warning_but_missing_spy_qqq_blocks` | Pass | No production SPY/QQQ market adapter yet (fixture adapter uses the scan's own gate) |
 | [G4.B; G4.C; G4.E] Exact budget re-entry, exact per-warning codes, single use, revocation, expiry | `tickets.approve`/`consume`/`revoke` | [S] `test_tickets::test_ten_dollar_budget_with_1000_selected_shares_needs_exact_acknowledgement`, `::test_warning_acknowledgements_are_exact_per_version_and_value`, `::test_rejection_revocation_and_expiry`, `::test_concurrent_and_repeated_consumption_yield_one_permission`, `::test_restart_preserves_state_and_history` | Pass | Local SQLite is not a signed ledger; actor names are labels |
-| [G5.0; Astra A1–A5] Astra's five defects (manual stop race, double terms read, stale final clock, time stop, display precision) | `tickets`, `risk_state.held_revision` (`d529880`) | [S] `test_g4_fixes` (13 tests; record in `checkpoints/G4-ticket-approval.md`) | Pass; **re-audit pending** | — |
+| [G5.0; Astra A1–A5] Astra's five defects (manual stop race, double terms read, stale final clock, time stop, display precision) | `tickets` (`d529880`; A1's mechanism replaced in the audit-closure commit) | [S] `test_g4_fixes` (12 test functions, 17 collected cases; record in `checkpoints/G4-ticket-approval.md`) | Pass; Astra's second audit found A1/A3 incomplete (rows below) | — |
+| [G4.E1; G4.E2; Audit Astra A, Claude #6] Every age limit (account, quote, market, signal terms and event deadline) is judged at the final clock in approve and consume | `tickets.final_evaluation` under the final locks | [S] `test_audit_closure::test_evidence_expiring_during_consumption_is_refused[4]`, `::test_evidence_expiring_during_approval_is_refused[4]`, `::test_shorter_current_event_deadline_expiring_during_consumption_is_refused`, `::test_boundary_ages_still_pass_and_record_the_final_time` | Pass (all failed on `6d21ddf`) | — |
+| [G4.E2; G4.E3; Audit Astra B, Claude #5] A signal invalidated, suspended, withdrawn or revised during the check cannot be approved or consumed | `SignalStore.held_event`, `EventRiskSource.held_event`; `tickets._final_tx` | [S] `test_audit_closure::test_real_signal_change_after_resolve_blocks_consumption[3]`, `::test_real_signal_invalidated_during_approval_is_refused`, `::test_changed_event_generation_at_commit_is_refused`, `::test_signal_source_without_a_fence_cannot_consume`, `::test_held_event_blocks_signal_writers_until_released`, `::test_unchanged_real_signal_passes_the_fence` | Pass | — |
+| [G4.2; Audit Astra C, Claude #2, #7, #11, #20] Manual stop: fenced in rollback and WAL modes after reopen; never stuck behind a waiting consumer; never refused by a routine snapshot; a routine snapshot no longer refuses tickets | `RiskStateStore.held_account`, `set_manual_halt`; lock order in `tickets._final_tx` | [S] `test_audit_closure::test_account_guard_blocks_writers_in_both_journal_modes_after_reopen[2]`, `::test_manual_stop_mid_check_blocks_in_both_journal_modes[2]`, `::test_manual_stop_engages_while_a_consumer_waits_for_the_ticket_lock`, `::test_manual_stop_issued_while_the_guard_is_held_waits_and_then_lands`, `::test_routine_unchanged_snapshot_mid_check_does_not_refuse`, `::test_manual_stop_is_never_refused_by_a_newer_snapshot`, `::test_busy_store_reports_that_the_manual_stop_was_not_recorded` | Pass | — |
+| [G4 "Record Taz's explicit approval", "Do not simulate Taz's approval…"; Audit Claude #1] CLI approval needs a typed `--actor` and an interactive terminal; no default name | `tickets.main`, `_interactive` | [S] `test_tickets::test_cli_approval_refuses_piped_input_and_needs_a_typed_name`, `::test_terminal_interface_round_trip` | Pass | Still a label, not authentication; out-of-band approval is Step 13 |
+| [G4.E5; G4.F migration; Audit Claude #8, #21] A consumed approval cannot be reopened by editing rows; v1 files migrate; the permission names `binding_sha256` | `consumptions` table (insert-only), audit cross-check, schema `desk-tickets-v2` | [S] `test_audit_closure::test_editing_two_rows_cannot_reopen_a_consumed_approval`, `::test_audit_trail_alone_still_marks_an_approval_used`, `::test_v1_database_migrates_consumptions_into_the_insert_only_table`, `::test_consumption_permission_names_the_bound_terms` | Pass | Not a signed ledger: someone with file write access can still forge rows |
+| [Standing constraint "Fail closed"; Audit DeepSeek] An unset `WEBULL_HOST` is refused instead of reaching production | `webull.WebullData.from_env`; `action_source._host` | [S] `test_webull::test_unset_host_does_not_fall_back_to_production` | Pass | — |
 | [G5.B9; G4.E7] A valid signal reaches local approval without manual enrolment; no broker action | `tickets` + `EventRiskSource` + vendor path | [S] `test_tickets::test_complete_positive_path_from_persisted_signal_to_single_use`; [S] `g5` test 1 | Pass (`order_submitted: false`) | Live account, quote and contract adapters: Steps 11/13/15/20 |
 | [Plan G4; G4.F] Repo and external blueprint wording status recorded | `CLAUDE.md` rule 5 note; `GAP_REPAIR_PLAN.md` | Docs | Repo done; external blueprint **not updated** | Owner: "Independent check of v2.3" thread, if Taz asks |
 
@@ -120,14 +130,21 @@ evidence). Software mechanics are engineering decisions, not trading research.
 | --- | --- | --- | --- |
 | Bearish market, loss limits and drawdown are acknowledgeable warnings | User policy | `REPAIR_PLAN.md` D05 (loss and drawdown, 2026-09-30); G4 prompt for the bearish market | G4.2 |
 | Missing or stale SPY/QQQ market data blocks and offers no acknowledgement | User policy | G4 prompt (stale required evidence cannot be overridden) | G4.2, G5.B11 |
-| Manual stop blocks, including one switched on mid-check | User policy; Checked | G4 prompt; Astra's reproduction; `test_g4_fixes` | G4.2, A1 |
+| Manual stop blocks, including one switched on mid-check | User policy; Checked | G4 prompt; Astra's reproduction; `test_g4_fixes`, `test_audit_closure` | G4.2, A1, Audit Astra C |
 | Share default sizing = (budget − reserved costs) ÷ (limit − event stop), floored | User policy | G4 prompt "default share tickets to stop_budget"; arithmetic in `RISK_TERMS.md` | G4.A |
-| Breakout/EP stop at the observed day low | Sourced (G2) | Kullamägi cards, per `checkpoints/G2-stop-risk.md` | Plan G2 |
+| Breakout/EP stop at the low of the day, no wider than 1× ADR (EP up to 1.5×) | Sourced | Kullamägi: "Stop is always at the lows of the day"; "no more than 1x, or maximum 1.5x the average daily range" — https://qullamaggie.com/how-to-master-a-setup-episodic-pivots/ ; breakouts: https://qullamaggie.com/my-3-timeless-setups-that-have-made-me-tens-of-millions/ (cited by the outside review; EP page re-read 2026-10-02) | Plan G2 |
+| Desk adaptations of that stop: the low as of the completed 15-minute decision bar, frozen at the event, ADR measured against the entry price | Assumption | Engineering choices in G2; not stated on the source pages | Plan G2 |
+| EP entry at the completed opening-range high (15- or 60-minute) | Sourced (entry); User policy (either range through day one) | "I enter once the opening range highs break … I will buy the 5-minute highs or 60-minute highs" (EP page above); Taz 2026-09-30 | Plan G2 |
+| 3% `max_already_moved_pct` chase limit (measured from the candidate trigger; for EP that is the open) | Assumption | No source found in the blueprint or the cards; see open question 4 | Plan G2 |
 | Prices shown exactly as accepted (no rounding on display) | Checked | Astra A5 reproduction; `test_g4_fixes::test_price_formatting_is_exact` | A5, G4.A |
 | A ticket whose time stop has passed cannot be prepared, approved or consumed | Checked; Assumption (logic) | Astra A4 reproduction; the time stop is a bound exit instruction (G4.D). Not presented as trading research | A4, G4.E3 |
-| Fresh clock and held account revision in the final transaction | Assumption (engineering) | Locking/timestamp mechanics; Astra A1/A3 reproductions | A1, A3, G4.E2 |
+| Final transaction: lock order ticket → signal → account, `BEGIN IMMEDIATE` fences, full risk rerun at a fresh clock, final time recorded | Assumption (engineering) | Locking/timestamp mechanics; Astra A–C and Claude #2/#5/#6 reproductions; SQLite isolation: https://www.sqlite.org/isolation.html | G4.E1, G4.E2 |
+| Manual stop switch-on has no revision precondition; 30 s busy wait, then a loud "NOT recorded" error | Assumption (engineering) | Claude #2/#20 | G4.2 |
+| CLI approval requires an interactive terminal and a typed `--actor` (no default) | Assumption (engineering) | Claude #1; not authentication | G4 "Record Taz's explicit approval" |
+| Limit prices accepted with up to four decimals | Assumption (engineering) | Answers no prompt line; kept until Taz decides open question 1 (Rule 612) | — |
 | Approval lifetime 120 s default (1–3600 s configurable) | Assumption (engineering) | Recorded in G4; not trading research | G4.E |
-| An approval ends at the signal event's validity (15 min after the trigger bar, extended by each scan that observes it holding) | User policy (prompt) + existing Step 07 rule | G4.E1; window defined in `SIGNAL_LIFECYCLE.md`, unchanged here | G4.E1 |
+| An approval ends at the signal event's validity | User policy (prompt) | G4.E1 | G4.E1 |
+| That validity is 15 minutes after the trigger bar, extended by each scan that observes the event holding | Assumption | Existing Step 07 rule in `SIGNAL_LIFECYCLE.md`; the number has no external source | G4.E1 |
 | Test fixtures place buy limits on whole cents | Sourced | SEC Rule 612 (17 CFR 242.612) minimum increments: $0.01, or $0.005 for tight-spread stocks, for NMS stocks ≥ $1.00 — https://www.law.cornell.edu/cfr/text/17/242.612 | G5.C (labelled fixtures) |
 | Fixture market adapter derives "available" from the scan's own SPY/QQQ gate | Assumption (fixture) | No production market adapter exists yet (later steps) | G5.B11 |
 | Ordinary cash dividend / split reconciliation (G3a) | Astra's G3a labels (Sourced/Checked/inference) | `checkpoints/G3a-targeted-rebuild.md` | Plan G3 |
@@ -143,6 +160,30 @@ evidence). Software mechanics are engineering decisions, not trading research.
    current fix only displays the exact value.
 2. **Approval lifetime of 120 s** is an Assumption; the journal or Taz's use should
    confirm it.
+3. **Loss/drawdown warning values in the binding (Audit Claude #3).** P&L includes
+   unrealized P&L, so with a position open any one-cent change between prepare and
+   approve, or approve and consume, refuses the ticket. That follows G4.C ("a changed
+   warning value must not authorize the ticket") literally but makes these warnings
+   act like blocks. Options: keep as is; or bind the warning code and threshold and
+   re-ask only when the warning set changes or the value worsens past a band Taz picks.
+   Needs Taz's decision because it changes a prompt line's behaviour.
+4. **EP chase reference (Audit Claude #4).** Risk measures the 3% chase from the
+   candidate trigger, which for EP is the day's open, while the EP entry is the
+   opening-range high. An EP whose opening-range high is more than 3% above the open
+   can never pass. Kullamägi's EP page buys the 1-, 5- or 60-minute high with the stop
+   at the day's low and no open-anchored chase rule (link above). Candidate fix: for EP,
+   measure the chase from the entry level. This changes a setup rule (CLAUDE.md rule 5),
+   so it waits for Taz.
+5. **SPY/QQQ ex-dividend days (Audit Claude #10).** On an ETF's ex-dividend date the
+   adjusted daily close differs from the raw minute close, so the default vendor path
+   reports `DAILY_RAW_CLOSE_MISMATCH` for it unless the opt-in G3a dividend evidence
+   (Massive key) is configured; a market gate built on that path would block that
+   day. About 8 sessions a year (SPY and QQQ quarterly). Inferred, not host-checked.
+6. **Volume-only revisions (Audit Claude #14, suspected).** Overnight volume
+   finalisation, if Webull does it, would retire every armed price-only signal. Needs
+   two host `vendor_check` runs (16:10 and 09:35 next day) compared before any change.
+7. **`SSL_CERT_FILE` on the iMac (Audit DeepSeek).** Set in the desk's env file; Taz
+   to confirm it is intentional.
 
 ## Evidence by type
 
@@ -156,8 +197,17 @@ evidence). Software mechanics are engineering decisions, not trading research.
   (historical session) and `research/ai-trading/g5/g5-vendor-check-cloud-d529880-2026-10-02T1741Z.json`
   (current regular session, 16 M15 rows). Price/history PASS ×4; volume unavailable;
   actions not attested. These are **not** iMac verification.
-- **[H] Actual iMac integration:** **PENDING.** Taz runs the command block in
-  `research/ai-trading/g5/imac-commands.md`; the result is recorded here when pasted back.
+- **[H] Actual iMac integration (for `6d21ddf`), as reported in DeepSeek's audit of
+  2026-10-02 (the implementer has not seen the raw transcript):** HEAD `6d21ddf`, tree
+  clean, env file mode 0600; strict suite 997 passed on Python 3.14.7 (`.venv`) and on
+  3.13 in a throwaway venv; `vendor_check` result.json (15:22–15:23 EDT) PASS for NVDA,
+  SPY, QQQ and AAPL, current regular session, `volume_window:
+  UNAVAILABLE_SEPARATE_EVIDENCE_REQUIRED`, `action_coverage: NOT_ATTESTED`, host
+  `api.sandbox.webull.com`, no secrets; no launchd/cron/scanner process; the `DESK_*`
+  opt-ins unset; Webull order tools denied. Other platforms (not the iMac): Astra
+  997 passed on 3.12.14 and 3.14.6; outside Claude 997 passed on 3.12.13 and 3.14.6
+  (macOS arm64). The audit-closure commit has **not** yet run on the iMac; the command
+  block in `research/ai-trading/g5/imac-commands.md` is updated for it.
 - **[U] Human-facing acceptance:** **PENDING.** Taz has seen the G4 CLI demo transcripts
   built from synthetic adapters (`research/ai-trading/g4/`), not a real ticket. A real
   ticket needs the live adapters (later steps). No setup was fabricated and no

@@ -14,10 +14,12 @@ def rebuild_pending(source, log, now, *, removed=(), decision_clock=None, rebuil
     from desk.scanner import close_scan, episodic_pivots
 
     day = clock(now).date()
+    outcomes = [{"symbol":r["symbol"],"setup_id":r["setup_id"],"status":"EXPIRED",
+                 "reason":"entry session ended before the rebuild completed"}
+                for r in log.signals.close_stale_rebuilds(day,now)]
     if not trading_day(day) or not session(day)[0] <= clock(now) < session(day)[1]:
-        return []
+        return outcomes
     pending = log.signals.pending_rebuilds(day)
-    outcomes = []
     active = []
     for request in pending:
         if request["symbol"] in removed:
@@ -55,4 +57,10 @@ def rebuild_pending(source, log, now, *, removed=(), decision_clock=None, rebuil
             if replacement is not None and rebuilt is not None:
                 rebuilt.append(replacement)
             outcomes.append({"symbol":name,"setup_id":setup,"status":status,"reason":reason})
+        else:
+            # Declined: withdrawn/replaced meanwhile, or closed by another scan. Report
+            # the stored outcome; nothing is armed from this attempt.
+            row = log.signals.rebuild_request(request["candidate_id"]) or {}
+            outcomes.append({"symbol":name,"setup_id":setup,"status":row.get("status","REMOVED"),
+                             "reason":row.get("reason") or "rebuild request no longer pending"})
     return outcomes

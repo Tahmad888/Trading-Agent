@@ -107,6 +107,14 @@ class ActionBackedSource:
         return out
 
 
+def _host(env):
+    """The Webull host must be configured explicitly; there is no production default."""
+    host = env.get("WEBULL_HOST")
+    if host not in {"api.sandbox.webull.com", "api.webull.com"}:
+        raise BarDataError("WEBULL_HOST must be set to api.sandbox.webull.com or api.webull.com")
+    return host
+
+
 def configured_source(source, env, *, clock=lambda: datetime.now(timezone.utc)):
     """Scanner opt-in; configuring an API key alone does not enable profiles."""
     vendor_path = env.get("DESK_VENDOR_BASIS_DB")
@@ -135,7 +143,7 @@ def configured_source(source, env, *, clock=lambda: datetime.now(timezone.utc)):
             except (BarDataError,OSError,ValueError,sqlite3.Error):
                 action_issue = "Optional automatic action configuration unavailable"
         wrapped = VendorBasisSource(source,store,
-            host=env.get("WEBULL_HOST") or "api.webull.com",clock_fn=clock,fallback=fallback,actions=actions)
+            host=_host(env),clock_fn=clock,fallback=fallback,actions=actions)
         wrapped.fallback_issue = fallback_issue
         wrapped.auto_action_issue = action_issue
         return wrapped
@@ -150,4 +158,4 @@ def configured_source(source, env, *, clock=lambda: datetime.now(timezone.utc)):
     except (OSError, ValueError, TypeError):
         raise BarDataError("Invalid reviewed price channel configuration") from None
     return ActionBackedSource(source, ActionLedger(ledger_path), channels,
-                              host=env.get("WEBULL_HOST") or "api.webull.com", clock=clock)
+                              host=_host(env), clock=clock)

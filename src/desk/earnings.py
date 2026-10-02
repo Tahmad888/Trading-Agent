@@ -311,6 +311,17 @@ class UnavailableEarningsSource:
         raise ValueError(self.earnings_source_issue)
 
 
+class RefreshReportingSource:
+    """The configured earnings source plus a returned (not raised) refresh outcome
+    other than READY/CACHED, so the scan record reports it. EP and cup still stay
+    pending through the read-time checks; this only makes the reason visible."""
+    def __init__(self, source, status):
+        self.source, self.earnings_refresh_status = source, status
+
+    def __getattr__(self, name):
+        return getattr(self.source, name)
+
+
 def scanner_source(source, env, *, refresh_source):
     """Optional earnings setup must never disable working price/action adapters."""
     try:
@@ -318,7 +329,10 @@ def scanner_source(source, env, *, refresh_source):
         from desk.earnings_refresh import load_policy, refresh_configured
         if env.get('DESK_EARNINGS_POLICY'):
             load_policy(env['DESK_EARNINGS_POLICY'])
-        refresh_configured(refresh_source, env)
+        outcome = refresh_configured(refresh_source, env)
+        status = outcome.get('status') if isinstance(outcome, dict) else None
+        if outcome is not None and status not in {'READY', 'CACHED'}:
+            return RefreshReportingSource(result, str(status or 'UNKNOWN'))
         return result
     except Exception:
         # Includes SQLite/configuration/provider failures, but not process interrupts.

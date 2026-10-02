@@ -145,3 +145,12 @@ def test_rankings_are_signed_gets_and_fail_closed():
         client(FakeTransport([{"price": "1"}])).most_active()
     with pytest.raises(WebullError):
         client(FakeTransport([])).gainers("MONTH_6")
+
+
+def test_unset_host_does_not_fall_back_to_production():
+    """DeepSeek iMac audit: an unset WEBULL_HOST used to reach api.webull.com silently."""
+    env = {"WEBULL_APP_KEY": "k", "WEBULL_APP_SECRET": "s"}
+    with pytest.raises(WebullError, match="WEBULL_HOST"):
+        WebullData.from_env(env)
+    with pytest.raises(WebullError, match="WEBULL_HOST"):
+        WebullData.from_env({**env, "WEBULL_HOST": ""})

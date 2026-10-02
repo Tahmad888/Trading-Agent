@@ -143,3 +143,35 @@ def test_genuine_ticker_price_failure_is_not_converted_to_earnings_warning():
     source = UnavailableEarningsSource(Fake(frames(), fail={'LEAD'}))
     rec, armed = sc.close_scan(source, ['LEAD'], datetime(2026, 9, 29, 16, 10, tzinfo=ET))
     assert 'LEAD' in rec.skipped and not armed
+
+
+@pytest.mark.parametrize('status', ['POLICY_EXPIRED', 'UNAVAILABLE', 'REFRESH_IN_PROGRESS', 'INCOMPLETE'])
+def test_returned_refresh_outcome_is_reported_without_stopping_prices(tmp_path, monkeypatch, status, capsys):
+    """Outside Claude #12: a returned (not raised) refresh outcome reaches the scan record."""
+    from desk import earnings_refresh
+    monkeypatch.setattr(earnings_refresh, 'refresh_configured', lambda *args: {'status': status})
+    config = policy(tmp_path)
+    monkeypatch.setenv('DESK_EARNINGS_POLICY', str(config))
+    monkeypatch.setenv('DESK_EARNINGS_CACHE', str(tmp_path / 'earnings.sqlite'))
+    source = Fake(frames())
+    monkeypatch.setattr(WebullData, 'from_env', staticmethod(lambda: source))
+    monkeypatch.setattr(sc, 'datetime', type('Clock', (datetime,), {
+        'now': staticmethod(lambda tz=None: datetime(2026, 9, 29, 20, 11, tzinfo=timezone.utc))}))
+    watchlist = tmp_path / 'watchlist.json'
+    watchlist.write_text(json.dumps(['LEAD']))
+    root = tmp_path / 'scan'
+    assert sc.main(['--watchlist', str(watchlist), '--data-dir', str(root)]) == 0
+    record = sc.ScanLog(root).records()[0]
+    assert record['error'] is None and any(s['setup_id'] == BREAKOUT for s in record['armed'])
+    assert record['discovery']['earnings_source']['status'] == status
+    assert qualify(scanner_source(Fake({}), {'DESK_EARNINGS_POLICY': str(config),
+                                            'DESK_EARNINGS_CACHE': str(tmp_path / 'earnings.sqlite')},
+                                  refresh_source=None), sig(EP), now())['status'] == 'PENDING_EVIDENCE'
+
+
+def test_ready_or_cached_refresh_adds_no_issue(monkeypatch):
+    from desk import earnings_refresh
+    for status in ('READY', 'CACHED'):
+        monkeypatch.setattr(earnings_refresh, 'refresh_configured', lambda *args, s=status: {'status': s})
+        source = scanner_source(Fake({}), {}, refresh_source=None)
+        assert getattr(source, 'earnings_refresh_status', None) is None

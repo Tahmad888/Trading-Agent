@@ -238,3 +238,39 @@ def test_rebuild_does_not_resurrect_candidate_withdrawn_during_fetch(tmp_path):
     assert not log.signals.finish_rebuild(candidate_id(old,NOW.date()),src.source.now,'REBUILT','new chart',replacement)
     assert not log.load_armed(NOW.date())[1]
     assert not log.signals.pending_rebuilds(NOW.date())
+
+
+def test_declined_rebuild_is_reported_not_silent(tmp_path, monkeypatch):
+    """F4 (Astra G3a follow-up): a rebuild declined because the candidate was
+    withdrawn meanwhile still reports its stored outcome in discovery."""
+    src,log,old,event=seed(tmp_path)
+    src.source.factor['LEAD']=.99
+    src.source.now+=timedelta(minutes=15)
+    sc.intraday_scan(src,[old],src.source.now,store=log.signals)
+    assert log.signals.pending_rebuilds(NOW.date())
+    original = sc.close_scan
+
+    def withdraw_during_fetch(*args, **kwargs):
+        log.signals.save_armed(NOW.date(),'full',[])  # Taz withdraws the candidate mid-fetch
+        return original(*args, **kwargs)
+    monkeypatch.setattr(sc, "close_scan", withdraw_during_fetch)
+    outcomes = rebuild_pending(src,log,src.source.now)
+    assert outcomes == [{"symbol":"LEAD","setup_id":old.setup_id,"status":"REMOVED",
+                         "reason":"retired candidate already withdrawn/replaced"}]
+    assert not log.load_armed(NOW.date())[1] and not log.signals.pending_rebuilds(NOW.date())
+
+
+def test_rebuild_request_from_an_earlier_session_gets_a_terminal_outcome(tmp_path):
+    """F5: a request left pending when its entry session ended is closed and reported."""
+    src,log,old,event=seed(tmp_path)
+    src.source.factor['LEAD']=.99
+    src.source.now+=timedelta(minutes=15)
+    sc.intraday_scan(src,[old],src.source.now,store=log.signals)
+    cid = candidate_id(old,NOW.date())
+    assert log.signals.rebuild_request(cid)["status"] == "PENDING"
+    next_day = NOW + timedelta(days=1)
+    outcomes = rebuild_pending(src,log,next_day)
+    assert outcomes[0]["status"] == "EXPIRED" and outcomes[0]["symbol"] == "LEAD"
+    assert log.signals.rebuild_request(cid)["status"] == "EXPIRED"
+    assert rebuild_pending(src,log,next_day) == []           # closed once, not reported again
+    assert not log.signals.get(event,next_day)["eligible"]     # nothing became eligible

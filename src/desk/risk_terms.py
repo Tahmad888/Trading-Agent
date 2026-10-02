@@ -5,9 +5,10 @@ only denies stop-budget sizing. Selected exposure remains reviewable.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime
 from fractions import Fraction
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Callable, ContextManager, Literal, NamedTuple, Protocol
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
@@ -41,6 +42,21 @@ class RiskTermsSource(Protocol):
     def resolve(self, event_id: str, now: datetime) -> RiskTerms: ...
 
 
+class EventStatus(NamedTuple):
+    """The signal event as the final ticket transaction sees it."""
+    eligible: bool
+    event_digest: str | None
+
+
+class EventFence(Protocol):
+    """Optional companion of a terms source; tickets refuse a source without it.
+
+    ``held_event`` holds the signal store's write lock for the final approve or
+    consume write and yields ``status(at)`` read under that lock.
+    """
+    def held_event(self, event_id: str) -> ContextManager[Callable[[datetime], EventStatus]]: ...
+
+
 def stop_distance(entry: float, stop: float, direction: str) -> Fraction:
     """Exact directional arithmetic; this does not enable short execution."""
     distance = (Fraction(str(entry)) - Fraction(str(stop))) * (1 if direction == "long" else -1)
@@ -58,6 +74,14 @@ class EventRiskSource:
     """
     def __init__(self, source, log, quote_source):
         self.source, self.log, self.quote_source = source, log, quote_source
+
+    @contextmanager
+    def held_event(self, event_id):
+        with self.log.signals.held_event(event_id) as view:
+            def status(at):
+                event = view(at)
+                return EventStatus(bool(event["eligible"]), event["terms_digest"])
+            yield status
 
     def resolve(self, event_id, now):
         from desk.playbook.cards import CARDS

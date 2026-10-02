@@ -17,8 +17,9 @@ approval core of Step 13; the planner, earnings line and live adapters do not mo
 Astra's G3 follow-up (G3a, `da33b59`: targeted rebuilds after history revisions,
 opt-in batch action evidence) is integrated; its volume and ex-dividend paths stay
 operationally open pending the checks in `G3_FOLLOWUP.md`. G4's five audit defects are
-fixed in `d529880` (re-audit pending). G5 combined verification is implemented by
-Claude; acceptance is pending iMac evidence and review: see
+fixed in `d529880`; three audits of `6d21ddf` were addressed in the audit-closure
+commit. G5 combined verification is implemented by Claude; acceptance is pending
+Astra's re-audit and Taz's open decisions: see
 `checkpoints/G5-combined-verification.md` and `G5_ACCEPTANCE.md`. Step 09 has not resumed. Ownership from 2026-10-02 (Taz): Claude implements, Astra/Codex audits;
 earlier rows keep their recorded authorship. G2 pulls forward only the actual day-low stop repair
 from Step 10; the rest of Step 10 and operational runner start are not implied.

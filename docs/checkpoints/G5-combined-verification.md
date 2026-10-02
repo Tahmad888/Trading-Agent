@@ -2,9 +2,11 @@
 
 2026-10-02. Implementer: Claude (cloud container). Requested by Taz ("Lets continue
 G5", relayed 07:10Z). **Status: G5 ACCEPTANCE PENDING** (actual-iMac evidence and the
-independent reviews). Astra's G4 audit found five defects, fixed in `d529880`; her
-re-audit is pending (she is unavailable until 2026-10-07). Nothing here is Astra's
-approval. The first pass below (`5b63b8a`) was built from a copy of the spec that
+independent reviews were then supplied). Astra's G4 audit found five defects, fixed in
+`d529880`. On 2026-10-02 Taz relayed three audits of `6d21ddf` (Astra, an outside
+Claude session, DeepSeek on the iMac); their fixes are recorded in "Audit closure"
+at the end and in `checkpoints/G4-ticket-approval.md`. Astra's re-audit of the
+audit-closure commit is pending. Nothing here is Astra's approval. The first pass below (`5b63b8a`) was built from a copy of the spec that
 ended at G4; the completion pass at the end follows Taz's full G5 prompt (17:02Z).
 
 ## Before-code record
@@ -74,16 +76,16 @@ a subsequent crossing triggers.
 | F1 | Test fixture `RevisedCharts` scaled integer-typed M15 prices in place; with exactly two bars (10:00–10:14 ET) pandas raised `LossySetitemError`, surfacing as "independent evidence unavailable (TypeError)" instead of the revision. Test-only; production fails closed either way. | **Resolved in G5**: prices cast to float before scaling (`tests/test_revision_rebuild.py`). | Claude |
 | F2 | Does G4's consumption recheck see G3/G3a revisions? | **Verified**: refused, event invalidated, rebuild queued, approval never transfers (test 1). | Claude |
 | F3 | An approval cannot outlive its event window (15 min after the trigger bar, extended by each scan while the breakout holds). Consuming at the next bar boundary with no intervening scan returns "expired", by G4 design. | Recorded, not a defect. Live use depends on the scheduled scan (not activated). | — |
-| F4 | `rebuild_pending` omits an outcome when `finish_rebuild` declines (candidate withdrawn during fetch). The queue row closes and nothing is resurrected, but discovery does not report it. | Tracked, low; fail-closed. Not changed in G5. | Astra (G3a author) to decide |
-| F5 | Rebuild requests still `PENDING` when the session ends are day-keyed and never retried or closed on later days. Candidates are per day, so no stale signal can arm. | Tracked, low; fail-closed. Not changed in G5. | Astra to decide |
+| F4 | `rebuild_pending` omits an outcome when `finish_rebuild` declines (candidate withdrawn during fetch). The queue row closes and nothing is resurrected, but discovery does not report it. | **Resolved in the audit-closure commit** (Astra's suggested fix): the stored outcome is reported. | Claude |
+| F5 | Rebuild requests still `PENDING` when the session ends are day-keyed and never retried or closed on later days. Candidates are per day, so no stale signal can arm. | **Resolved in the audit-closure commit**: closed as `EXPIRED` and reported on the next scan. | Claude |
 | F6 | G3a volume policy and ex-dividend price pairing need a Massive key and the read-only host probe in `G3_FOLLOWUP.md`; both stay operationally OPEN. | Tracked. | Taz (key/host), Astra (procedure) |
-| F7 | G3 actual-host check (`VENDOR_BASIS.md`) not yet run on the iMac. | Tracked. | Taz |
+| F7 | G3 actual-host check (`VENDOR_BASIS.md`) on the iMac. | **Run at `6d21ddf`** (PASS ×4, price/history only, as reported in DeepSeek's audit); to repeat for the audit-closure commit. | Taz |
 | F8 | Live account, market-filter, contract-metadata and quote adapters for tickets do not exist; the CLI refuses to prepare/approve/consume without them. | Tracked. | Steps 11, 13, 15, 20 |
 | F9 | Earnings date and catalyst confirmation on the ticket (rule 4), whole-watchlist earnings queue, source budgets, per-symbol status, Step 09 actual-host acceptance. | Tracked; Step 09 is not started by G5. | Step 09 |
 | F10 | Broker submission, idempotency, fills and reconciliation. | Tracked. | Steps 15, 16 |
 | F11 | External blueprint still says loss limits halt and carries `$100` wording. | Tracked; not edited here. | "Independent check of v2.3" thread, if Taz asks |
-| F12 | Python 3.14: only 3.14.0rc2 is installable here and it fails at import with pydantic 2.13.5 on every base. Astra reported 975 strict on 3.14 for `da33b59` (G4 tests included); the two G5 tests have not run on 3.14. | Tracked. | Codex host run |
-| F13 | Astra's audit of G4 (`d1e4514`). | **Pending.** | Astra via Taz |
+| F12 | Python 3.14: only 3.14.0rc2 is installable here and it fails at import with pydantic 2.13.5 on every base. Astra reported 975 strict on 3.14 for `da33b59` (G4 tests included); the two G5 tests have not run on 3.14. | **Closed for `6d21ddf`**: 997 passed on 3.14.6 (Astra; outside Claude, macOS) and 3.14.7 (iMac). | — |
+| F13 | Astra's audit of G4 (`d1e4514`). | Done; second audit of `6d21ddf` done; fixes recorded below. Re-audit of the audit-closure commit pending. | Astra via Taz |
 
 ## Step 09 resumption (not started)
 
@@ -164,3 +166,36 @@ budgets, per-symbol status, catalyst confirmation on the ticket, actual-host
 acceptance), Step 10, live adapters (Steps 11/13/15/20), broker execution (15/16).
 No scheduled runner, paper orders or live orders are activated by G4/G5, and no
 operational trading-day count starts from these development tests.
+
+## Audit closure (three audits of 6d21ddf, 2026-10-02)
+
+Consolidated list with sources, severity, prompt lines and outcomes:
+`research/ai-trading/g5/audits/consolidated-findings-2026-10-02.md` in the project
+folder. Summary:
+
+- **Fixed (code + regressions):** final-time freshness (Astra A), signal fence
+  (Astra B), WAL-safe account guard (Astra C), manual stop lock order and retry
+  (Claude #2, #20), routine snapshots no longer refuse (#7), CLI approval needs a
+  terminal and a typed name (#1), insert-only consumptions with audit cross-check
+  and v1 migration (#8), `binding_sha256` in the permission (#21), returned earnings
+  refresh outcomes reported (#12), malformed frames isolated per ticker (#13),
+  declined and stale rebuilds reported (F4, F5), unset `WEBULL_HOST` refused
+  (DeepSeek), misnamed test renamed (#15), gap-inside-history test (#16).
+- **Docs:** labels and sources (#17, #18), test count (#19), iMac evidence [H].
+- **Waiting for Taz:** #3 (P&L warning values in the binding vs G4.C), #4 (EP chase
+  reference), #9 (Rule 612), #10 (SPY/QQQ ex-dividend days), #14 (volume-only
+  revisions; host evidence), DeepSeek's `SSL_CERT_FILE` question.
+
+`tests/test_audit_closure.py`: 30 of its first 31 tests fail on `6d21ddf` and pass now (the
+remaining one is the positive control). The malformed-frame test fails on `6d21ddf`
+for exactly the four variants the outside review named.
+
+### Verification (cloud container, audit-closure commit)
+
+| Python | `python -m pytest -q -W error` |
+| --- | --- |
+| 3.12.3 | **1053 passed** |
+| 3.13.14 | **1053 passed** |
+
+Not yet run on the iMac or on Python 3.14 for this commit. `git diff --check` passes.
+G5 acceptance stays **pending** Astra's re-audit and Taz's decisions above.

@@ -86,7 +86,8 @@ python -m desk.vendor_check \
 ```
 
 The expected suite count was **892 passed** at G3; at the G5 checkpoint it is
-**997 passed** (see `checkpoints/G5-combined-verification.md`).
+**997 passed**; after the audit closure it is **1053 passed** (see
+`checkpoints/G5-combined-verification.md`).
 No Alpha Vantage call/key is required for the primary price test. The CLI writes
 only its chosen local audit database/report. It neither exports a persistent
 scanner setting nor runs scans, creates signals or places orders. It supports an

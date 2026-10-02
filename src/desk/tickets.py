@@ -18,7 +18,7 @@ older code and can be kept for audit. See docs/TICKETS.md.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -42,7 +42,7 @@ from desk.contracts import (OPTION_STRUCTURES, ApprovalRecord, Grade, Leg, RiskD
                             TradeProposal)
 from desk.instruments import ContractBook, InstrumentError, canonical_symbol, loss_measures
 from desk.playbook.cards import CARDS
-from desk.risk import RiskLimits, evaluate
+from desk.risk import AccountState, RiskLimits, evaluate
 from desk.risk_context import MarketContext, SetupRegistry
 from desk.risk_state import RiskStateError, RiskStateStore
 from desk.risk_terms import RiskTerms, RiskTermsSource, stop_distance
@@ -50,7 +50,7 @@ from desk.risk_terms import RiskTerms, RiskTermsSource, stop_distance
 Text = Annotated[str, Field(min_length=1)]
 DEFAULT_APPROVAL_LIFETIME = timedelta(seconds=120)  # Assumption; see docs/TICKETS.md
 MAX_APPROVAL_LIFETIME = timedelta(hours=1)
-SCHEMA = "desk-tickets-v1"
+SCHEMA = "desk-tickets-v2"  # v2 adds the insert-only consumptions table
 
 
 class TicketError(ValueError):
@@ -173,6 +173,7 @@ class Check:
     problems: tuple[str, ...]
     book: ContractBook | None
     account_revision: int | None = None
+    market: MarketContext | None = None
 
 
 class _TermsSnapshot:
@@ -193,7 +194,8 @@ def final_clock(inputs: RiskInputs, started: datetime) -> datetime:
 
 
 TIME_STOP_PASSED = "The ticket's time stop has passed; no new entry is allowed"
-ACCOUNT_CHANGED = "Account changed during the check (for example a manual stop or a new snapshot)"
+EVENT_NOT_ELIGIBLE = ("The signal event is no longer eligible at the final check "
+                      "(invalidated, suspended, closed, expired or revised)")
 
 
 def _contract_id(book: ContractBook | None, symbol: str) -> str | None:
@@ -337,7 +339,7 @@ def recheck(ticket_id: str, version: int, request: TicketRequest, inputs: RiskIn
             now: datetime) -> Check:
     """Independent rerun from the stored request and fresh trusted evidence."""
     problems: list[str] = []
-    terms = book = proposal = decision = None
+    terms = book = proposal = decision = market = None
     try:
         revision, account = inputs.risk_state.load(request.account_id)
     except (RiskStateError, ValidationError, ValueError) as exc:
@@ -349,8 +351,9 @@ def recheck(ticket_id: str, version: int, request: TicketRequest, inputs: RiskIn
         observation = MarketObservation.model_validate(
             inputs.observe(terms.symbol, tuple(l.symbol for l in request.legs), now).model_dump())
         proposal = build_proposal(f"{ticket_id}:v{version}", request, terms, observation, book, now)
+        market = inputs.market(now)
         decision = evaluate(proposal, account, inputs.limits, now, live=request.environment == "live",
-                            contract_book=book, registry=inputs.registry, market=inputs.market(now),
+                            contract_book=book, registry=inputs.registry, market=market,
                             terms_source=_TermsSnapshot(terms))
     except Exception as exc:  # provider faults are isolated; raw responses are never shown
         problems.append(f"independent evidence unavailable or invalid ({type(exc).__name__})")
@@ -359,7 +362,35 @@ def recheck(ticket_id: str, version: int, request: TicketRequest, inputs: RiskIn
     if now >= request.time_stop:
         problems.append("time stop has passed; no new entry")
     bound = json.loads(_json(binding(ticket_id, version, request, proposal, decision, terms, book)))
-    return Check(proposal, decision, terms, bound, tuple(problems), book, revision)
+    return Check(proposal, decision, terms, bound, tuple(problems), book, revision, market)
+
+
+def final_evaluation(ticket_id: str, version: int, request: TicketRequest, inputs: RiskInputs,
+                     check: Check, account: AccountState, at: datetime) -> tuple[RiskDecision, dict]:
+    """Rerun every risk check at the final clock on the same evidence snapshots and
+    the account state read under the final lock. No provider is called here, so the
+    lock is held only for this computation. Every age limit (account, quote, market,
+    signal terms, contract metadata) is judged at ``at``, not at the check's start."""
+    decision = evaluate(check.proposal, account, inputs.limits, at, live=request.environment == "live",
+                        contract_book=check.book, registry=inputs.registry, market=check.market,
+                        terms_source=_TermsSnapshot(check.terms))
+    bound = json.loads(_json(binding(ticket_id, version, request, check.proposal, decision, check.terms, check.book)))
+    return decision, bound
+
+
+def final_problem(ticket_id: str, version: int, request: TicketRequest, inputs: RiskInputs, check: Check,
+                  stored: dict, status, account: AccountState, at: datetime) -> tuple[str | None, RiskDecision]:
+    """Signal fence and full risk rerun at the final clock; returns (refusal, decision)."""
+    event = status(at)
+    decision, bound = final_evaluation(ticket_id, version, request, inputs, check, account, at)
+    if not event.eligible or event.event_digest != check.terms.event_digest:
+        return EVENT_NOT_ELIGIBLE, decision
+    if not decision.approved:
+        failed = ", ".join(sorted(c.rule for c in decision.checks if not c.passed))
+        return f"Final check at {at.isoformat()} failed: {failed}", decision
+    if bound != stored:
+        return "Terms, evidence or warnings changed by the final check; prepare a new version", decision
+    return None, decision
 
 
 class TicketStore:
@@ -372,6 +403,10 @@ class TicketStore:
         self.lifetime = approval_lifetime
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
+            known = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
+            tag = db.execute("SELECT value FROM meta WHERE key='schema'").fetchone() if known else None
+            if tag is not None and tag[0] not in {"desk-tickets-v1", SCHEMA}:
+                raise TicketError("Unsupported ticket database schema")  # refused before any change
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS tickets (
@@ -391,12 +426,29 @@ class TicketStore:
                     BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
                 CREATE TRIGGER IF NOT EXISTS audit_append_only_delete BEFORE DELETE ON audit
                     BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
+                CREATE TABLE IF NOT EXISTS consumptions (
+                    approval_id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, version INTEGER NOT NULL,
+                    request_id TEXT NOT NULL, consumed_at TEXT NOT NULL, outcome TEXT NOT NULL);
+                CREATE TRIGGER IF NOT EXISTS consumptions_insert_only_update BEFORE UPDATE ON consumptions
+                    BEGIN SELECT RAISE(ABORT, 'consumptions are insert-only'); END;
+                CREATE TRIGGER IF NOT EXISTS consumptions_insert_only_delete BEFORE DELETE ON consumptions
+                    BEGIN SELECT RAISE(ABORT, 'consumptions are insert-only'); END;
             """)
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
             if row is None:
                 db.execute("INSERT INTO meta VALUES ('schema', ?)", (SCHEMA,))
+            elif row[0] == "desk-tickets-v1":
+                # Migration keeps every v1 row; earlier consumptions move into the
+                # insert-only table so they can never be reopened by editing two rows.
+                db.execute("INSERT OR IGNORE INTO consumptions SELECT approval_id, ticket_id, version, "
+                           "consumed_request, consumed_at, consumption FROM approvals "
+                           "WHERE consumed_request IS NOT NULL")
+                db.execute("UPDATE meta SET value=? WHERE key='schema'", (SCHEMA,))
             elif row[0] != SCHEMA:
+                db.execute("ROLLBACK")
                 raise TicketError("Unsupported ticket database schema")
+            db.execute("COMMIT")
 
     @contextmanager
     def _db(self):
@@ -419,11 +471,40 @@ class TicketStore:
                 raise
 
     @contextmanager
-    def _final_tx(self, inputs: RiskInputs, account_id: str):
-        """Ticket write lock plus a held account revision, so a manual stop or new
-        snapshot either shows here as a changed revision or commits after this write."""
-        with inputs.risk_state.held_revision(account_id) as revision, self._tx() as db:
-            yield db, revision
+    def _final_tx(self, inputs: RiskInputs, request: TicketRequest):
+        """The final approve/consume transaction.
+
+        Lock order: ticket store, then signal store (``held_event``), then account
+        store (``held_account``). The account lock is taken last and held only for
+        local computation and the ticket commit, so a manual stop never waits behind a
+        ticket operation that is itself waiting. The ticket write commits before the
+        signal and account locks are released: an invalidation, suspension, revision,
+        snapshot or manual stop either shows in this transaction or lands after it.
+        No provider is called while these locks are held.
+        """
+        fence = getattr(inputs.terms_source, "held_event", None)
+        if fence is None:
+            raise TicketError("The signal source cannot hold the event for the final check; nothing was changed")
+        with self._db() as db, ExitStack() as guards:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                status = guards.enter_context(fence(request.event_id))
+                _, account = guards.enter_context(inputs.risk_state.held_account(request.account_id))
+                yield db, status, account
+                db.execute("COMMIT")
+            except BaseException:
+                if db.in_transaction:
+                    db.execute("ROLLBACK")
+                raise
+
+    @staticmethod
+    def _consumption(db, approval_id, ticket_id, version):
+        """The insert-only consumption row, cross-checked against the audit trail."""
+        row = db.execute("SELECT request_id, outcome FROM consumptions WHERE approval_id=?",
+                         (approval_id,)).fetchone()
+        audited = db.execute("SELECT 1 FROM audit WHERE ticket_id=? AND version=? AND event='consumed'",
+                             (ticket_id, version)).fetchone()
+        return row, bool(audited)
 
     @staticmethod
     def _audit(db, now, ticket_id, version, event, actor, payload):
@@ -513,6 +594,8 @@ class TicketStore:
             row = self._expire(db, self._row(db, ticket_id, version), now)
             approval = db.execute("SELECT * FROM approvals WHERE approval_id=?", (row["approval_id"],)).fetchone() \
                 if row["approval_id"] else None
+            used = self._consumption(db, row["approval_id"], ticket_id, row["version"])[0] \
+                if row["approval_id"] else None
         binding_ = json.loads(row["binding"])
         return {
             "ticket_id": row["ticket_id"], "version": row["version"], "state": row["state"],
@@ -523,7 +606,7 @@ class TicketStore:
             "terms": json.loads(row["terms"]) if row["terms"] else None,
             "acknowledgement_tokens": [ack_token(row["binding_sha256"], w) for w in binding_["warnings"]],
             "approval": json.loads(approval["record"]) if approval else None,
-            "consumption": json.loads(approval["consumption"]) if approval and approval["consumption"] else None,
+            "consumption": json.loads(used["outcome"]) if used else None,
         }
 
     def history(self, ticket_id: str) -> list[dict]:
@@ -593,39 +676,43 @@ class TicketStore:
         if expires <= now:
             self._refused(now, ticket_id, version, "approval_refused", actor, "Evidence validity has already ended")
         approval_id = "A-" + uuid.uuid4().hex[:16]
-        record = ApprovalRecord(
-            schema_version=2, approval_id=approval_id, ticket_id=ticket_id, ticket_version=version,
-            decision="approve", actor=actor, channel=channel, terminal_user=terminal_user, decided_at=now,
-            expires_at=expires, budget_confirmed_usd=f"{typed:.2f}", acknowledgements=tuple(sorted(acknowledgements)),
-            snapshot=stored, snapshot_sha256=row["binding_sha256"])
-        payload = record.model_dump(mode="json")
-        refused = None
+        refused = record = None
         try:
-            with self._final_tx(inputs, request.account_id) as (db, account_revision):
+            with self._final_tx(inputs, request) as (db, status, account):
                 at = final_clock(inputs, now)
                 current = db.execute("SELECT state,binding_sha256 FROM tickets WHERE ticket_id=? AND version=?",
                                      (ticket_id, version)).fetchone()
                 if current["state"] != "pending" or current["binding_sha256"] != row["binding_sha256"]:
-                    refused = "Ticket changed during approval; nothing was approved"
-                elif account_revision != result.account_revision:
-                    refused = ACCOUNT_CHANGED + "; nothing was approved"
+                    refused = "Ticket changed during approval"
                 elif at >= expires:
-                    refused = "Evidence validity ended during the approval check; nothing was approved"
+                    refused = "Evidence validity ended during the approval check"
+                else:
+                    refused, _ = final_problem(ticket_id, version, request, inputs, result, stored, status, account, at)
                 if refused:
+                    refused += "; nothing was approved"
                     self._audit(db, at, ticket_id, version, "approval_refused", actor, {"reason": refused})
                 else:
+                    record = ApprovalRecord(
+                        schema_version=2, approval_id=approval_id, ticket_id=ticket_id, ticket_version=version,
+                        decision="approve", actor=actor, channel=channel, terminal_user=terminal_user,
+                        decided_at=at, expires_at=expires, budget_confirmed_usd=f"{typed:.2f}",
+                        acknowledgements=tuple(sorted(acknowledgements)), snapshot=stored,
+                        snapshot_sha256=row["binding_sha256"])
+                    payload = record.model_dump(mode="json")
                     db.execute("INSERT INTO approvals(approval_id,ticket_id,version,record,record_sha256,expires_at) "
                                "VALUES (?,?,?,?,?,?)", (approval_id, ticket_id, version, _json(payload),
                                                         _sha(payload), expires.isoformat()))
                     db.execute("UPDATE tickets SET state='approved', approval_id=? WHERE ticket_id=? AND version=?",
                                (approval_id, ticket_id, version))
-                    self._audit(db, now, ticket_id, version, "approved", actor, {
+                    self._audit(db, at, ticket_id, version, "approved", actor, {
                         "approval_id": approval_id, "channel": channel, "terminal_user": terminal_user,
                         "expires_at": expires.isoformat(), "budget_confirmed_usd": f"{typed:.2f}",
                         "acknowledgements": sorted(acknowledgements), "binding_sha256": row["binding_sha256"]})
-        except RiskStateError as exc:
+        except TicketError:
+            raise
+        except (ValueError, sqlite3.Error) as exc:
             self._refused(now, ticket_id, version, "approval_refused", actor,
-                          f"Account snapshot unavailable at the final check ({type(exc).__name__})")
+                          f"Final check unavailable ({type(exc).__name__}); nothing was approved")
         if refused:
             raise TicketError(refused)
         return record
@@ -666,11 +753,16 @@ class TicketStore:
             row = self._expire(db, self._row(db, ticket_id, version), now)
             approval = db.execute("SELECT * FROM approvals WHERE approval_id=?", (row["approval_id"],)).fetchone() \
                 if row["approval_id"] else None
-        if row["state"] == "consumed" and approval is not None:
-            if approval["consumed_request"] == request_id:
-                return {**json.loads(approval["consumption"]), "replay": True}
+            used, audited = self._consumption(db, row["approval_id"], ticket_id, version) \
+                if row["approval_id"] else (None, False)
+        if used is not None:
+            if used["request_id"] == request_id:
+                return {**json.loads(used["outcome"]), "replay": True}
             self._refused(now, ticket_id, version, "consumption_refused", actor,
                           "Approval was already consumed by another request")
+        if audited or row["state"] == "consumed":
+            self._refused(now, ticket_id, version, "consumption_refused", actor,
+                          "The audit trail shows this approval was already used; the record is inconsistent")
         if row["state"] != "approved" or approval is None:
             self._refused(now, ticket_id, version, "consumption_refused", actor,
                           f"Ticket version is {row['state']}; there is no usable approval")
@@ -699,45 +791,54 @@ class TicketStore:
         if result.binding != stored:
             self._refused(now, ticket_id, version, "consumption_refused", actor,
                           "Current terms, evidence or warnings differ from the approved ticket")
-        permission = _sha({"approval": record.approval_id, "request": request_id})[:16]
-        outcome = {
-            "ticket_id": ticket_id, "version": version, "approval_id": record.approval_id,
-            "request_id": request_id, "permission_id": permission, "consumed_at": now.isoformat(),
-            "final_leg_quantities": result.decision.final_leg_quantities, "replay": False,
-            "broker_action": "none", "order_submitted": False,
-            "note": "Local single-use consumption only. No order was submitted, routed or filled.",
-        }
-        refused = None
+        binding_sha = row["binding_sha256"]
+        permission = _sha({"approval": record.approval_id, "request": request_id, "binding_sha256": binding_sha})[:16]
+        refused = outcome = None
         try:
-            with self._final_tx(inputs, request.account_id) as (db, account_revision):
+            with self._final_tx(inputs, request) as (db, status, account):
                 at = final_clock(inputs, now)  # a slow check cannot reuse its start time
                 current = db.execute("SELECT state,approval_id FROM tickets WHERE ticket_id=? AND version=?",
                                      (ticket_id, version)).fetchone()
-                used = db.execute("SELECT consumed_request,consumption FROM approvals WHERE approval_id=?",
-                                  (record.approval_id,)).fetchone()
-                if current["state"] == "consumed" and used["consumed_request"] == request_id:
-                    return {**json.loads(used["consumption"]), "replay": True}
-                if current["state"] != "approved" or current["approval_id"] != record.approval_id:
+                used, audited = self._consumption(db, record.approval_id, ticket_id, version)
+                if used is not None and used["request_id"] == request_id:
+                    return {**json.loads(used["outcome"]), "replay": True}
+                if used is not None or audited:
+                    refused = "Approval was already consumed by another request"
+                elif current["state"] != "approved" or current["approval_id"] != record.approval_id:
                     refused = f"Ticket version is {current['state']}; there is no usable approval"
                 elif at >= request.time_stop:
                     refused = TIME_STOP_PASSED
                 elif at >= record.expires_at:
                     refused = "Approval has expired"
-                elif account_revision != result.account_revision:
-                    refused = ACCOUNT_CHANGED + "; nothing was consumed"
+                else:
+                    refused, decision = final_problem(ticket_id, version, request, inputs, result, stored,
+                                                      status, account, at)
                 if refused:
+                    refused += "; nothing was consumed"
                     self._audit(db, at, ticket_id, version, "consumption_refused", actor, {"reason": refused})
                 else:
-                    outcome["consumed_at"] = at.isoformat()
+                    outcome = {
+                        "ticket_id": ticket_id, "version": version, "approval_id": record.approval_id,
+                        "request_id": request_id, "permission_id": permission, "binding_sha256": binding_sha,
+                        "consumed_at": at.isoformat(), "final_leg_quantities": decision.final_leg_quantities,
+                        "replay": False, "broker_action": "none", "order_submitted": False,
+                        "note": "Local single-use consumption only. No order was submitted, routed or filled.",
+                    }
+                    # The insert-only row is the authority; its primary key admits one use.
+                    db.execute("INSERT INTO consumptions VALUES (?,?,?,?,?,?)", (
+                        record.approval_id, ticket_id, version, request_id, at.isoformat(), _json(outcome)))
                     db.execute("UPDATE tickets SET state='consumed' WHERE ticket_id=? AND version=? "
                                "AND state='approved'", (ticket_id, version))
                     db.execute("UPDATE approvals SET consumed_request=?, consumed_at=?, consumption=? "
                                "WHERE approval_id=?", (request_id, at.isoformat(), _json(outcome), record.approval_id))
                     self._audit(db, at, ticket_id, version, "consumed", actor,
-                                {"request_id": request_id, "permission_id": permission, "order_submitted": False})
-        except RiskStateError as exc:
+                                {"request_id": request_id, "permission_id": permission,
+                                 "binding_sha256": binding_sha, "order_submitted": False})
+        except TicketError:
+            raise
+        except (ValueError, sqlite3.Error) as exc:
             self._refused(now, ticket_id, version, "consumption_refused", actor,
-                          f"Account snapshot unavailable at the final check ({type(exc).__name__})")
+                          f"Final check unavailable ({type(exc).__name__}); nothing was consumed")
         if refused:
             raise TicketError(refused)
         return outcome
@@ -860,6 +961,15 @@ def _lifetime(env) -> timedelta:
     return timedelta(seconds=int(raw)) if raw else DEFAULT_APPROVAL_LIFETIME
 
 
+def _interactive(stream) -> bool:
+    """A real terminal on standard input. Engineering control, not authentication:
+    it stops scripts, pipes and other non-interactive processes from approving."""
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 def main(argv=None, *, stdin=None, stdout=None) -> int:
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
     ap = argparse.ArgumentParser(prog="python -m desk.tickets", description=__doc__.splitlines()[0])
@@ -876,7 +986,8 @@ def main(argv=None, *, stdin=None, stdout=None) -> int:
         if name != "history":
             p.add_argument("--version", type=int, required=name != "show")
         if name in {"approve", "reject", "revoke"}:
-            p.add_argument("--actor", default=os.environ.get("DESK_APPROVER", "Taz"))
+            # No default: the name is typed for each decision, never assumed.
+            p.add_argument("--actor", required=True)
         if name in {"reject", "revoke"}:
             p.add_argument("--reason", required=True)
         if name == "consume":
@@ -899,6 +1010,9 @@ def main(argv=None, *, stdin=None, stdout=None) -> int:
         elif args.command == "show":
             write(store.display(args.ticket, args.version, now=now))
         elif args.command == "approve":
+            if not _interactive(stdin):
+                raise TicketError("Approval needs an interactive terminal; piped or scripted input "
+                                  "cannot approve a ticket")
             view = store.get(args.ticket, args.version, now=now)
             write(render(view))
             write("Type the budget amount to confirm (separate from the amount you entered):")

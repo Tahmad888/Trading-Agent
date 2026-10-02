@@ -6,6 +6,7 @@ they are never Taz's approval.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
@@ -14,6 +15,7 @@ from pathlib import Path
 
 from desk.risk import AccountState
 from desk.risk_state import RiskStateStore
+from desk.risk_terms import EventStatus
 from desk.tickets import MarketObservation, RiskInputs, TicketLeg, TicketRequest
 from tests.conftest import NOW, TODAY
 from tests.risk_support import BOOK, MARKET, REGISTRY, FixtureTerms
@@ -23,12 +25,23 @@ CALL = "AAPL 261120C00230000"
 
 
 class Terms(FixtureTerms):
-    """The fixed synthetic event catalogue with explicit evidence changes."""
-    def __init__(self, **changes):
-        self.changes = changes
+    """The fixed synthetic event catalogue with explicit evidence changes.
+
+    ``status`` overrides what the final transaction's signal fence reads; by default
+    the event is eligible with the catalogue's current digest."""
+    def __init__(self, *, status=None, **changes):
+        self.changes, self.status = changes, status
 
     def resolve(self, event_id, at):
         return super().resolve(event_id, at).model_copy(update=self.changes)
+
+    @contextmanager
+    def held_event(self, event_id):
+        def status(at):
+            if self.status is not None:
+                return self.status(event_id, at)
+            return EventStatus(True, Terms.resolve(self, event_id, at).event_digest)
+        yield status
 
 
 def account(**changes) -> AccountState:

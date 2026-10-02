@@ -546,6 +546,12 @@ def test_complete_positive_path_from_persisted_signal_to_single_use(store, tmp_p
     assert len(log.signals.events(at)) == 1
 
 
+class FakeTerminal(io.StringIO):
+    """Fixture keyboard input that reports itself as an interactive terminal."""
+    def isatty(self):
+        return True
+
+
 def test_terminal_interface_round_trip(tmp_path, monkeypatch):
     """The CLI path Taz would use, driven here with fixture adapters and fixture input."""
     monkeypatch.setenv("DESK_DEMO_RISK_STATE", str(tmp_path / "demo-risk.sqlite"))
@@ -560,15 +566,15 @@ def test_terminal_interface_round_trip(tmp_path, monkeypatch):
     token = next(l.split(": ")[1] for l in text.splitlines() if "acknowledgement code:" in l)
     out = io.StringIO()
     assert tk.main(base + ["approve", tid, "--version", "1", "--actor", "fixture:cli"],
-                   stdin=io.StringIO("10\n" + token + "\n"), stdout=out) == 2
+                   stdin=FakeTerminal("10\n" + token + "\n"), stdout=out) == 2
     assert "labelled" in out.getvalue()  # the terminal channel refuses fixture actors
     out = io.StringIO()
     assert tk.main(base + ["approve", tid, "--version", "1", "--actor", "cli-fixture-operator"],
-                   stdin=io.StringIO("1000\n" + token + "\n"), stdout=out) == 2
+                   stdin=FakeTerminal("1000\n" + token + "\n"), stdout=out) == 2
     assert "Budget confirmation does not match" in out.getvalue()
     out = io.StringIO()
     assert tk.main(base + ["approve", tid, "--version", "1", "--actor", "cli-fixture-operator"],
-                   stdin=io.StringIO("10\n" + token + "\n"), stdout=out) == 0
+                   stdin=FakeTerminal("10\n" + token + "\n"), stdout=out) == 0
     assert "APPROVED" in out.getvalue() and "Not an order" in out.getvalue()
     out = io.StringIO()
     assert tk.main(base + ["consume", tid, "--version", "1", "--request-id", "cli-1"], stdout=out) == 0
@@ -581,3 +587,24 @@ def test_terminal_interface_round_trip(tmp_path, monkeypatch):
     out = io.StringIO()
     assert tk.main(["--db", str(tmp_path / "t.sqlite"), "prepare", str(request)], stdout=out) == 2
     assert "No trusted adapters configured" in out.getvalue()
+
+
+def test_cli_approval_refuses_piped_input_and_needs_a_typed_name(tmp_path, monkeypatch):
+    """Outside Claude #1: a script piping the right answers cannot approve as anyone."""
+    monkeypatch.setenv("DESK_DEMO_RISK_STATE", str(tmp_path / "demo-risk.sqlite"))
+    monkeypatch.setenv("DESK_APPROVER", "Taz")  # ignored: there is no default approver
+    request = tmp_path / "request.json"
+    request.write_text(share_request().model_dump_json())
+    base = ["--db", str(tmp_path / "t.sqlite"), "--adapters", "tests.ticket_support:demo_inputs"]
+    out = io.StringIO()
+    assert tk.main(base + ["prepare", str(request)], stdout=out) == 0
+    tid = out.getvalue().split()[1]
+    out = io.StringIO()
+    assert tk.main(base + ["approve", tid, "--version", "1", "--actor", "someone"],
+                   stdin=io.StringIO("50\n"), stdout=out) == 2
+    assert "interactive terminal" in out.getvalue()
+    with pytest.raises(SystemExit):  # argparse: --actor is required, nothing is assumed
+        tk.main(base + ["approve", tid, "--version", "1"], stdin=FakeTerminal("50\n"), stdout=io.StringIO())
+    store = TicketStore(tmp_path / "t.sqlite")
+    assert store.get(tid, 1, now=NOW)["state"] == "pending"
+    assert [e["event"] for e in store.history(tid)] == ["prepared"]

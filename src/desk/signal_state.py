@@ -311,6 +311,22 @@ class SignalStore:
             self._expire(db, now)
             return self._view(db, event_id, now)
 
+    @contextmanager
+    def held_event(self, event_id):
+        """Hold the signal store's write lock and yield ``view(at)`` for one event.
+
+        A ticket's final approve/consume write runs inside this block, so an
+        invalidation, suspension, closure or new terms revision either committed
+        before (and shows in the view) or waits until that write has committed.
+        """
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+
+            def view(at):
+                self._expire(db, at)
+                return self._view(db, event_id, at)
+            yield view
+
     def events(self, now):
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -366,6 +382,27 @@ class SignalStore:
             return [dict(r) for r in db.execute(
                 "SELECT * FROM revision_rebuilds WHERE day=? AND status='PENDING' ORDER BY requested_at,candidate_id",
                 (day.isoformat(),))]
+
+    def rebuild_request(self, cid):
+        with self._db() as db:
+            row = db.execute("SELECT * FROM revision_rebuilds WHERE candidate_id=?", (cid,)).fetchone()
+            return dict(row) if row else None
+
+    def close_stale_rebuilds(self, day, now):
+        """Give requests from an earlier entry session an explicit terminal outcome.
+
+        Their candidates already expired with that session (no entry is possible);
+        this only stops them sitting PENDING in storage forever.
+        """
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = [dict(r) for r in db.execute(
+                "SELECT * FROM revision_rebuilds WHERE day<? AND status='PENDING' ORDER BY day,candidate_id",
+                (day.isoformat(),))]
+            db.execute("""UPDATE revision_rebuilds SET status='EXPIRED',attempted_at=?,
+                          reason='entry session ended before the rebuild completed'
+                          WHERE day<? AND status='PENDING'""", (_time(now), day.isoformat()))
+            return rows
 
     def finish_rebuild(self, cid, now, status, reason, replacement=None):
         """Replace exactly the retired candidate and queue state in one transaction."""

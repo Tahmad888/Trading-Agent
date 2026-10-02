@@ -15,9 +15,9 @@ python -m desk.tickets [--db PATH] [--adapters module:factory] <command>
 prepare REQUEST.json           prepare version 1 and display it
 revise TICKET REQUEST.json     prepare the next version (supersedes earlier ones)
 show TICKET [--version N]      display a version (latest by default)
-approve TICKET --version N     display, then type the budget and each warning code
-reject TICKET --version N --reason TEXT
-revoke TICKET --version N --reason TEXT
+approve TICKET --version N --actor NAME   display, then type the budget and each warning code
+reject TICKET --version N --actor NAME --reason TEXT
+revoke TICKET --version N --actor NAME --reason TEXT
 consume TICKET --version N --request-id ID   local single-use test interface
 history TICKET                 append-only audit, one JSON line per event
 list
@@ -33,8 +33,14 @@ list
   `approve` and `consume` refuse to run without one. **No live factory exists yet**:
   wiring real account, market-context, contract and quote adapters is Step 11/13/
   15/20 work. `tests.ticket_support:demo_inputs` is a labelled synthetic demo.
-- Approver name: `--actor`, else `DESK_APPROVER`, else `Taz`, plus the OS login. A
-  local terminal is not authentication; these are audit labels.
+- Approver name: `--actor` is required for approve, reject and revoke; there is no
+  default name (the earlier `DESK_APPROVER`/`Taz` default was removed after the
+  2026-10-02 audit). The OS login is recorded too. `approve` refuses unless standard
+  input is an interactive terminal, so a script or pipe cannot answer the prompts.
+  This is an engineering control, not authentication: the name is still a label
+  and anyone at the keyboard can type it. Out-of-band confirmation (the Telegram
+  approval path) is Step 13 work. Library callers of `TicketStore.approve` are
+  trusted code; automated fixtures must use `fixture:` actors.
 - Approval lifetime: `DESK_APPROVAL_LIFETIME_SECONDS` (1 to 3600, default 120).
 
 The request JSON is `TicketRequest`: account, environment (`paper` or `live`),
@@ -71,9 +77,10 @@ as not supplied: they depend on Step 09 and Steps 11–13.
 | approved | consume (rerun matches, still unexpired) | consumed |
 
 Approval expiry is the earliest of the configured lifetime, the signal event's own
-validity and contract-metadata validity. Quote, account and market freshness are
-rechecked at consumption rather than shortening expiry, because their receipt
-times refresh without changing the terms.
+validity and contract-metadata validity. Quote, account, market and signal-terms
+freshness are rechecked at approval and consumption, at the final clock, rather
+than shortening expiry, because their receipt times refresh without changing the
+terms.
 
 **Lifetime rationale (Assumption):** consumption reruns every check, so the
 lifetime limits how stale Taz's intent can be, not data freshness. 120 seconds
@@ -97,15 +104,58 @@ warning value, contract id or event revision refuses with a message to prepare a
 new version.
 
 Each check reads the signal terms once; the risk rerun validates that same snapshot
-(G4 fix 2). The final approve/consume transaction holds the account store's current
-revision while it writes: if the revision differs from the one the check read (a
-manual stop or a new snapshot arrived mid-check), nothing is approved or consumed
-(fix 1), and a control arriving later waits for the write. That transaction takes a
-fresh clock reading (`RiskInputs.clock`, else UTC wall clock, never earlier than the
-check's start) for the expiry and time-stop tests (fix 3). A ticket whose time stop
-has passed is blocked at prepare, cannot be approved or consumed, and an approval
-never outlives the time stop (fix 4). Limit, stop and target are displayed exactly
-as accepted, e.g. `$250.0049`, never rounded to cents (fix 5).
+(G4 fix 2). Limit, stop and target are displayed exactly as accepted, e.g.
+`$250.0049`, never rounded to cents (fix 5). A ticket whose time stop has passed is
+blocked at prepare, cannot be approved or consumed, and an approval never outlives
+the time stop (fix 4).
+
+### The final transaction (revised after the 2026-10-02 audits)
+
+Provider calls (account load, terms resolution and revalidation, contract book,
+quote, market context) all happen in the check, before any lock. The final
+approve/consume step then takes three locks in a fixed order and holds them only
+for local computation and the ticket write:
+
+1. the ticket store (`BEGIN IMMEDIATE`);
+2. the signal store, through the terms source's `held_event` (`BEGIN IMMEDIATE`);
+3. the account store, through `RiskStateStore.held_account` (`BEGIN IMMEDIATE`).
+
+Under those locks it reads a fresh clock (`RiskInputs.clock`, else UTC wall clock,
+never earlier than the check's start), re-reads the event's eligibility and digest
+and the current account snapshot, and reruns `risk.evaluate` at that clock on the
+same quote, market, terms and contract snapshots. Every age limit (account 30 s,
+quote 60 s, market context 60 s, signal terms 60 s and their event deadline,
+contract metadata) is therefore judged at the moment of the write, with the
+existing boundaries unchanged. Approval or consumption commits only if the event is
+still eligible with the same digest, every check still passes and the binding still
+equals the stored one. The ticket write commits before the signal and account locks
+are released, so an invalidation, suspension, withdrawal, revision, snapshot or
+manual stop either shows in the final check or lands after the write.
+
+`BEGIN IMMEDIATE` takes SQLite's single writer lock in both rollback-journal and WAL
+modes, so the account and signal fences do not depend on the journal mode, and the
+stores never rewrite an operator's mode. The account lock is taken last, so a manual
+stop never waits behind a ticket operation that is itself waiting for a lock; it
+waits at most for one final computation and commit. A routine account snapshot that
+changes nothing in the binding no longer refuses the ticket: the final rerun uses
+the current snapshot. `set_manual_halt(True)` has no revision precondition and
+retries for up to 30 s; if the store stays busy it raises `RiskStateError` saying
+the stop was NOT recorded. A resume still requires the current revision. A terms
+source without `held_event` cannot approve or consume (fail closed).
+
+Successful approvals record the final clock as `decided_at`; consumptions record it
+as `consumed_at`. These mechanics are engineering decisions (Assumption), not trading
+research.
+
+### Single use
+
+A consumption is a row in the insert-only `consumptions` table (primary key
+`approval_id`; triggers refuse UPDATE and DELETE). Consume and replay read that row
+and also refuse when the append-only audit already has a `consumed` event for the
+version, so editing the ticket and approval rows cannot reopen a spent approval.
+The permission id hashes the approval id, the request id and `binding_sha256`, and
+the outcome carries `binding_sha256` so a later order adapter (Step 15) can verify
+it against the stored ticket rather than trusting the payload.
 
 ## Failure messages (all print `REFUSED: ...` and exit 2)
 
@@ -120,7 +170,12 @@ as accepted, e.g. `$250.0049`, never rounded to cents (fix 5).
 - `Current terms, evidence or warnings differ from the approved ticket`
 - `The ticket's time stop has passed; no new entry is allowed`
 - `Approval has expired` (also judged by the fresh final-transaction clock)
-- `Account changed during the check (for example a manual stop or a new snapshot); nothing was consumed` (or approved)
+- `Final check at <time> failed: <rules>; nothing was consumed` (or approved), e.g. `not_halted`, `quote_fresh`, `account_state_fresh`
+- `The signal event is no longer eligible at the final check (invalidated, suspended, closed, expired or revised)`
+- `Terms, evidence or warnings changed by the final check; prepare a new version`
+- `The signal source cannot hold the event for the final check; nothing was changed`
+- `The audit trail shows this approval was already used; the record is inconsistent`
+- `Approval needs an interactive terminal; piped or scripted input cannot approve a ticket`
 - `Evidence validity ended during the approval check; nothing was approved`
 - `Automated fixtures must be labelled 'fixture:'; terminal actors must not be`
 - `No trusted adapters configured ...`
@@ -131,6 +186,10 @@ as accepted, e.g. `$250.0049`, never rounded to cents (fix 5).
 shape had no producer and now fails validation, so a legacy or partial record can
 never be consumed. Rollback: revert the G4 commit. Older code ignores
 `tickets.sqlite`; keep the file for its audit history. Restoring G4 later reopens
-the same file (schema tag `desk-tickets-v1`; a different tag is refused, not
-reinitialised). A forger with write access to the database file could construct
-a consistent record; the local file is not a signed ledger.
+the same file. Schema `desk-tickets-v2` adds the `consumptions` table: opening a
+`desk-tickets-v1` file copies every earlier consumption into it and retags the file,
+keeping all rows and the audit history; any other tag is refused, not reinitialised.
+Code older than v2 refuses a v2 file (unsupported schema), which fails closed.
+Someone with write access to the file can still drop triggers and forge consistent
+rows; the local file is not a signed ledger. A keyed signature was suggested by the
+outside review; it needs a key kept outside the database and is not built here.

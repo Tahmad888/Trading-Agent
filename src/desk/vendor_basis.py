@@ -92,6 +92,11 @@ class VendorHistoryStore:
         return dict(zip(("at","status","detail","snapshot"), row)) if row else None
 
 
+# A frame that breaks the adapter contract (unparsable receipt time, missing
+# provenance or request, not a DataFrame). BarDataError is handled first.
+MALFORMED = (AttributeError, TypeError, ValueError, KeyError)
+
+
 def _raw(frame, metadata, timeframe, now, host):
     if frame.attrs.get("webull_host") != host:
         raise BarDataError("WRONG_PROVIDER_HOST")
@@ -217,6 +222,9 @@ class VendorBasisSource:
                 groups.setdefault(day,[]).append(symbol)
             except BarDataError as exc:
                 self.last_errors[symbol] = str(exc)
+            except MALFORMED as exc:
+                # An adapter-contract violation for one ticker stays with that ticker.
+                self.last_errors[symbol] = "MALFORMED_FRAME (" + type(exc).__name__ + ")"
         anchors = {}
         for day, names in groups.items():
             opened,closed = session(day)
@@ -276,6 +284,9 @@ class VendorBasisSource:
                     except (BarDataError,KeyError,sqlite3.Error):
                         pass
                 self.last_errors[symbol] = reason + "; source evidence/rebuild required"
+            except MALFORMED as exc:
+                self.last_errors[symbol] = ("MALFORMED_FRAME (" + type(exc).__name__ + ")"
+                                            "; source evidence/rebuild required")
         for symbol, reason in self.last_errors.items():
             self.store.record(self.host,symbol,self._clock(),"UNAVAILABLE",reason)
         return out

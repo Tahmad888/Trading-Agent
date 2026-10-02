@@ -40,9 +40,8 @@ def halting_observer(risk_state):
     def observe(symbol, legs, now):
         if not fired:
             fired.append(now)
-            revision, _ = risk_state.load("fixture-account")
-            risk_state.set_manual_halt("fixture-account", True, expected_revision=revision,
-                                       actor=FIXTURE_ACTOR, reason="fixture manual stop mid-check", now=now)
+            risk_state.set_manual_halt("fixture-account", True, actor=FIXTURE_ACTOR,
+                                       reason="fixture manual stop mid-check", now=now)
         return base(symbol, legs, now)
     return observe
 
@@ -63,7 +62,8 @@ class Revising(Terms):
 def test_manual_stop_during_consumption_check_blocks(store, risk_state, adapters):
     tid, v = store.prepare(share_request(), adapters, now=NOW)
     approve(store, tid, v, adapters)
-    with pytest.raises(TicketError, match="Account changed"):
+    # The final transaction reads the account under its lock and reruns risk: the stop shows.
+    with pytest.raises(TicketError, match="Final check .* failed: not_halted"):
         store.consume(tid, v, request_id="r", inputs=inputs(risk_state, observe=halting_observer(risk_state)),
                       now=NOW)
     assert store.get(tid, v, now=NOW)["state"] == "approved"
@@ -75,7 +75,7 @@ def test_manual_stop_during_consumption_check_blocks(store, risk_state, adapters
 
 def test_manual_stop_during_approval_check_blocks(store, risk_state, adapters):
     tid, v = store.prepare(share_request(), adapters, now=NOW)
-    with pytest.raises(TicketError, match="Account changed"):
+    with pytest.raises(TicketError, match="Final check .* failed: not_halted"):
         approve(store, tid, v, inputs(risk_state, observe=halting_observer(risk_state)))
     assert store.get(tid, v, now=NOW)["state"] == "pending"
 
@@ -166,13 +166,13 @@ def test_price_formatting_is_exact(value, shown):
     assert tk.price(value) == shown
 
 
-def test_held_revision_makes_a_manual_stop_wait_for_the_final_write(risk_state):
-    with risk_state.held_revision("fixture-account") as revision:
+def test_account_guard_refuses_a_competing_writer_with_a_short_timeout(risk_state):
+    """Was misnamed ("…makes a manual stop wait…"); it shows exclusion, not waiting.
+    Waiting with the production timeout is test_audit_closure::
+    test_manual_stop_issued_while_the_guard_is_held_waits_and_then_lands."""
+    with risk_state.held_account("fixture-account") as (revision, _):
         writer = sqlite3.connect(risk_state.path, timeout=0.1, isolation_level=None)
-        writer.execute("BEGIN IMMEDIATE")
-        writer.execute("UPDATE accounts SET revision=revision+1 WHERE account_id='fixture-account'")
         with pytest.raises(sqlite3.OperationalError, match="locked"):
-            writer.execute("COMMIT")  # cannot land while the final check holds the revision
-        writer.execute("ROLLBACK")
+            writer.execute("BEGIN IMMEDIATE")  # cannot start while the final check holds the account
         writer.close()
     assert risk_state.load("fixture-account")[0] == revision

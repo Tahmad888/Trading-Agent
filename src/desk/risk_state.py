@@ -70,8 +70,8 @@ class RiskStateStore:
             """)
 
     @contextmanager
-    def _connect(self):
-        db = sqlite3.connect(self.path, timeout=5)
+    def _connect(self, timeout: float = 5):
+        db = sqlite3.connect(self.path, timeout=timeout)
         try:
             db.execute("PRAGMA foreign_keys=ON")
             with db:
@@ -97,19 +97,23 @@ class RiskStateStore:
         return revision, AccountState(**payload)
 
     @contextmanager
-    def held_revision(self, account_id: str):
-        """Yield the current revision while holding a read lock on the account store.
+    def held_account(self, account_id: str):
+        """Yield (revision, account) while holding the account store's write lock.
 
-        A dependent write (a ticket consumption) runs inside this block. In SQLite's
-        rollback-journal mode no snapshot or manual control can commit until the block
-        ends, so it is ordered after that write; one that committed earlier shows as a
-        newer revision. Keep the block short: a writer waits at most 5 seconds.
+        A dependent final write (a ticket approval or consumption) runs inside this
+        block, so no snapshot or manual control can commit between this read and that
+        write: it waits and lands afterwards. BEGIN IMMEDIATE takes the single writer
+        lock in both rollback-journal and WAL modes (a plain read transaction does not
+        block a WAL writer). Callers take this lock last and hold it only for local
+        computation and their own commit, never while waiting for another lock.
         """
         db = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         try:
-            db.execute("BEGIN")
-            revision, _ = self._read(db, account_id)
-            yield revision
+            db.execute("BEGIN IMMEDIATE")
+            revision, evidence = self._read(db, account_id)
+            payload = evidence.model_dump()
+            payload["exposures"] = evidence.exposures
+            yield revision, AccountState(**payload)
         finally:
             if db.in_transaction:
                 db.execute("ROLLBACK")
@@ -165,25 +169,39 @@ class RiskStateStore:
         db.execute("INSERT INTO audit(account_id,event,at,actor,reason,payload) VALUES (?,?,?,?,?,?)",
                    (account_id, event, now.isoformat(), actor, reason, _json(payload)))
 
-    def set_manual_halt(self, account_id: str, halted: bool, *, expected_revision: int,
+    def set_manual_halt(self, account_id: str, halted: bool, *, expected_revision: int | None = None,
                         actor: str, reason: str, now: datetime) -> int:
+        """Switch the blocking manual stop on or off.
+
+        Switching it on has no precondition: a routine snapshot that landed in the
+        meantime cannot refuse a stop. Switching it off (resume) still requires the
+        current revision, so a resume is always made against the state just read.
+        A store that stays busy raises a RiskStateError saying the change was NOT
+        recorded; it never fails quietly.
+        """
         _actor(actor, reason, now)
         if type(halted) is not bool:
             raise RiskStateError("Manual halt must be an explicit boolean")
-        with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            revision, evidence = self._read(db, account_id)
-            if revision != expected_revision:
-                raise RiskStateError("Manual control requires current revision")
-            if now < evidence.as_of:
-                raise RiskStateError("Control time predates the account snapshot")
-            evidence.halted = halted
-            revision += 1
-            db.execute("UPDATE accounts SET revision=?,payload=? WHERE account_id=?",
-                       (revision, evidence.model_dump_json(), account_id))
-            self._audit(db, account_id, "manual_halt" if halted else "manual_resume", now, actor, reason,
-                        {"revision": revision})
-            return revision
+        if not halted and expected_revision is None:
+            raise RiskStateError("Resuming requires the current revision")
+        try:
+            with self._connect(timeout=30) as db:
+                db.execute("BEGIN IMMEDIATE")
+                revision, evidence = self._read(db, account_id)
+                if not halted and revision != expected_revision:
+                    raise RiskStateError("Manual control requires current revision")
+                if now < evidence.as_of:
+                    raise RiskStateError("Control time predates the account snapshot")
+                evidence.halted = halted
+                revision += 1
+                db.execute("UPDATE accounts SET revision=?,payload=? WHERE account_id=?",
+                           (revision, evidence.model_dump_json(), account_id))
+                self._audit(db, account_id, "manual_halt" if halted else "manual_resume", now, actor, reason,
+                            {"revision": revision})
+                return revision
+        except sqlite3.OperationalError as exc:
+            what = "Manual stop" if halted else "Manual resume"
+            raise RiskStateError(f"{what} was NOT recorded: account store busy ({exc}); try again") from exc
 
     def review(self, account_id: str, proposal: TradeProposal, *, now: datetime, **risk_inputs):
         """Compute the decision from the current saved snapshot before recording it."""
