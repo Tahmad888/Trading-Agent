@@ -4,7 +4,9 @@
 
 Current priority (2026-10-01): gap repairs G1–G5 in `docs/GAP_REPAIR_PLAN.md`,
 then resume unfinished Step 09. Read `docs/checkpoints/G5-combined-verification.md`
-for the active checkpoint; G4 and G5 both await Astra's audit. G3 automatic price/history handling is implemented and
+for the active checkpoint and `docs/G5_ACCEPTANCE.md` for the matrix. G5 acceptance
+is pending iMac evidence and independent review; G4's five audit defects are fixed in
+`d529880`, re-audit pending. G3 automatic price/history handling is implemented and
 locally verified; the read-only iMac probe in `docs/VENDOR_BASIS.md` is still pending.
 It does not establish universal action/volume coverage or activate the scanner. Later user decisions supersede maximum-loss-only
 option sizing proposals: show full exposure and supported stop-loss estimates

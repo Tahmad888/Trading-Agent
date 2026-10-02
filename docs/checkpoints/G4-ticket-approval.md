@@ -198,3 +198,25 @@ option rationale on the ticket (Step 09, 11–13); broker submission, idempotenc
 fills and reconciliation (Steps 15/16); a signed or tamper-evident ledger beyond
 local SQLite (not scheduled); G3 ex-dividend retirement and automatic volume
 evidence (G5/Step 10 review); external blueprint wording (blueprint owner thread).
+
+## Astra's audit of d1e4514 and resolution (2026-10-02)
+
+Astra audited `d1e4514` with local fixtures (no source edits, no orders) and
+reproduced five defects; Taz relayed them at 07:25Z. All five are fixed in
+`d529880` ("G4 fixes: close five approval/consumption gaps Astra reproduced") with
+regressions in `tests/test_g4_fixes.py`; each listed test failed on `5b63b8a`
+(G4 code unchanged since `d1e4514`) before the fix.
+
+| # | Finding (Astra) | Resolution in `d529880` | Regression tests |
+| --- | --- | --- | --- |
+| 1 | Manual stop switched on after the account read still allowed consumption; the final transaction did not recheck the account revision. | The final approve/consume transaction holds the account store's revision (`RiskStateStore.held_revision`) and refuses if it differs from the revision the check read; later controls wait for the write. | `test_manual_stop_during_consumption_check_blocks`, `test_manual_stop_during_approval_check_blocks`, `test_held_revision_makes_a_manual_stop_wait_for_the_final_write` |
+| 2 | Terms were read twice; risk could validate a newer revision while the approval stayed bound to the older one. | One `RiskTerms` snapshot per check; `risk.evaluate` validates the same snapshot the binding records. | `test_risk_and_binding_use_one_terms_snapshot`, `test_newer_terms_revision_blocks_consumption` |
+| 3 | A slow check crossed the approval deadline yet consumption succeeded, because the final check reused the start time. | The final transaction takes a fresh clock (`RiskInputs.clock`, else UTC wall clock, never earlier than the start) for expiry. | `test_slow_check_crossing_expiry_blocks_consumption`, `test_final_clock_never_runs_backwards` |
+| 4 | A passed time stop did not block entry (consumed 4 s after the required exit). | Time stop blocks prepare, approve and consume once passed; approvals never outlive it; rechecked with the fresh clock. | `test_passed_time_stop_blocks_consumption`, `test_time_stop_crossed_during_check_blocks_consumption`, `test_ticket_prepared_after_its_time_stop_is_blocked` |
+| 5 | Displayed prices lost precision ($250.0049 shown as $250.00). | Limit, stop and target are shown exactly as accepted. | `test_display_shows_exact_limit_and_stop`, `test_price_formatting_is_exact` (parametrized) |
+
+Evidence (cloud container): 994 strict tests passed on Python 3.12.3 and 3.13.14 at
+`d529880`; see `G5-combined-verification.md` for the final counts at the G5 commit.
+Status: **fixed, awaiting re-audit.** Astra is unavailable until 2026-10-07; Taz
+arranged an independent Claude review and a DeepSeek review of the iMac side in her
+place. Neither is Astra's approval. Python 3.14 results come only from the iMac run.

@@ -14,6 +14,8 @@ import pytest
 from desk import scanner as sc
 from desk.batch_actions import POLICY, BatchActions
 from desk.earnings import UnavailableEarningsSource, qualify, scanner_source
+from desk.playbook.filters import MarketSize
+from desk.risk_context import MarketContext
 from desk.risk_state import RiskStateStore
 from desk.risk_terms import EventRiskSource
 from desk.signal_state import signal_payload
@@ -62,18 +64,25 @@ class Desk:
                                          pnl_week_start=at.date() - timedelta(days=at.weekday())),
                                  f"obs{self.snapshots}", now=at)
 
-    def adapters(self):
+    def adapters(self, market=None):
         terms = EventRiskSource(self.src, self.log, lambda symbol: (symbol, self.price, self.now))
-        return inputs(self.state, terms=terms, market=MARKET.model_copy(update={"as_of": self.now}),
+        market = MARKET.model_copy(update={"as_of": self.now}) if market is None else market
+        return inputs(self.state, terms=terms, market=market(self) if callable(market) else market,
                       observe=observer(quote_as_of=self.now - timedelta(seconds=1)))
 
-    def ticket(self, event_id, entry):
+    def restart(self):
+        """New store objects over the same files, as after a process restart."""
+        self.log = sc.ScanLog(self.tmp / "scan")
+        self.state = RiskStateStore(self.tmp / "risk.sqlite")
+        self.tickets = TicketStore(self.tmp / "tickets.sqlite", approval_lifetime=timedelta(hours=1))
+
+    def ticket(self, event_id, entry, market=None):
         limit = Decimal(str(entry)).quantize(Decimal("0.01"), rounding=ROUND_CEILING)  # buy limit in cents
         self.price = float(limit)
         self.snapshot()
         request = share_request(event_id=event_id, legs=(TicketLeg(symbol="LEAD", limit_price=limit),),
                                 budget_usd=Decimal("100"), time_stop=self.now + timedelta(days=15))
-        return self.tickets.prepare(request, self.adapters(), now=self.now)
+        return self.tickets.prepare(request, self.adapters(market), now=self.now)
 
 
 def approved_breakout(desk):
@@ -168,3 +177,94 @@ def test_unexplained_ex_dividend_revision_blocks_the_approved_ticket_without_reb
     with pytest.raises(TicketError):
         desk.tickets.consume(tid, v, request_id="g5-3", inputs=desk.adapters(), now=desk.now)
     assert desk.tickets.get(tid, v, now=desk.now)["state"] != "consumed"
+
+
+def test_provider_outage_recovery_restart_and_repeats_never_stale_or_double_consume(tmp_path):
+    desk = Desk(tmp_path)
+    event, tid, v = approved_breakout(desk)
+    # Outage at the final check: refused, nothing consumed, the approval is not spent.
+    desk.native.outage = True
+    desk.advance(3)
+    desk.snapshot()
+    with pytest.raises(TicketError, match="Recheck failed"):
+        desk.tickets.consume(tid, v, request_id="g5-out", inputs=desk.adapters(), now=desk.now)
+    assert desk.tickets.get(tid, v, now=desk.now)["state"] == "approved"
+    # Recovery inside the event window: the same approval is consumed once.
+    desk.native.outage = False
+    desk.advance(3)
+    desk.snapshot()
+    first = desk.tickets.consume(tid, v, request_id="g5-out", inputs=desk.adapters(), now=desk.now)
+    assert first["replay"] is False and first["order_submitted"] is False
+    # Restart: every store is reopened from disk; repeats replay or are refused.
+    desk.restart()
+    again = desk.tickets.consume(tid, v, request_id="g5-out", inputs=desk.adapters(), now=desk.now)
+    assert again["replay"] is True and again["permission_id"] == first["permission_id"]
+    with pytest.raises(TicketError, match="already consumed"):
+        desk.tickets.consume(tid, v, request_id="g5-other", inputs=desk.adapters(), now=desk.now)
+    with pytest.raises(TicketError):
+        approve(desk.tickets, tid, v, desk.adapters(), now=desk.now)
+    assert desk.tickets.get(tid, v, now=desk.now)["state"] == "consumed"
+
+
+def test_outage_across_a_scan_leaves_no_stale_eligibility_after_recovery_and_restart(tmp_path):
+    desk = Desk(tmp_path)
+    event, tid, v = approved_breakout(desk)
+    desk.native.outage = True
+    desk.advance()                                    # 10:15 scan during the outage
+    during = sc.run(desk.src, ["LEAD"], desk.log, desk.now)
+    assert not during.triggered
+    desk.native.outage = False
+    desk.advance(5)                                   # recovered, but the event window lapsed unobserved
+    desk.restart()
+    desk.snapshot()
+    with pytest.raises(TicketError):
+        desk.tickets.consume(tid, v, request_id="g5-stale", inputs=desk.adapters(), now=desk.now)
+    assert not desk.log.signals.get(event["id"], desk.now)["eligible"]
+    desk.advance(10)                                  # first scan after recovery: the old crossing is not replayed
+    after = sc.run(desk.src, ["LEAD"], desk.log, desk.now)
+    assert all(t["event_id"] != event["id"] for t in after.triggered)
+    assert desk.tickets.get(tid, v, now=desk.now)["state"] != "consumed"
+
+
+def benchmark_market(regime):
+    """Labelled fixture adapter: a regime only when both SPY and QQQ daily bars arrive.
+
+    No production SPY/QQQ market adapter exists yet (live adapters are later steps);
+    this stands in for one so the ticket sees the same shared prerequisite as the scan.
+    """
+    def market(desk):
+        rec, _ = sc.close_scan(desk.src, ["LEAD"], desk.now, preparing=True)  # the scan's own SPY/QQQ gate
+        if rec.error or rec.market is None:
+            return None
+        return MarketContext(regime=regime, source="fixture SPY/QQQ adapter", as_of=desk.now,
+                             reason=f"fixture regime: {regime.value}")
+    return market
+
+
+def test_bearish_market_is_an_acknowledged_warning_but_missing_spy_qqq_blocks(tmp_path):
+    desk = Desk(tmp_path)
+    event, _, _ = approved_breakout(desk)
+    bearish = benchmark_market(MarketSize.NO_NEW_LONGS)
+    tid, v = desk.ticket(event["id"], event["entry_level"], market=bearish)
+    view = desk.tickets.get(tid, v, now=desk.now)
+    assert view["state"] == "pending" and not view["binding"]["failed_checks"], view["binding"]["failed_checks"]
+    assert [w["code"] for w in view["binding"]["warnings"]] == ["bearish_market"]
+    full = desk.tickets.get(*desk.ticket(event["id"], event["entry_level"]), now=desk.now)
+    assert view["binding"]["legs"] == full["binding"]["legs"]   # the warning never changes size
+    with pytest.raises(TicketError, match="Acknowledge"):
+        approve(desk.tickets, tid, v, desk.adapters(bearish), acks=[], now=desk.now)
+    approve(desk.tickets, tid, v, desk.adapters(bearish), now=desk.now)
+    assert desk.tickets.get(tid, v, now=desk.now)["state"] == "approved"
+
+    # Missing QQQ is a data failure: the scan cannot arm and the ticket is blocked.
+    desk.native.missing.add("QQQ")
+    rec, armed = sc.close_scan(desk.src, ["LEAD"], NOW, preparing=True)
+    assert rec.error and "QQQ" in rec.skipped and not armed
+    tid2, v2 = desk.ticket(event["id"], event["entry_level"], market=bearish)
+    blocked = desk.tickets.get(tid2, v2, now=desk.now)
+    assert blocked["state"] == "blocked" and "market_context_valid" in blocked["binding"]["failed_checks"]
+    assert not blocked["acknowledgement_tokens"]
+    with pytest.raises(TicketError):
+        approve(desk.tickets, tid2, v2, desk.adapters(bearish), now=desk.now)
+    with pytest.raises(TicketError):   # the earlier approval cannot be consumed without market data either
+        desk.tickets.consume(tid, v, request_id="g5-mkt", inputs=desk.adapters(bearish), now=desk.now)

@@ -22,10 +22,11 @@ is pending; unknown volume evidence and unresolved price conflicts stay explicit
 G4 local ticket approval is implemented and locally verified by Claude, awaiting
 Astra's audit: see `checkpoints/G4-ticket-approval.md` and `TICKETS.md`. G2 hashes
 are not G4 approval. Astra's G3a follow-up (`da33b59`, `checkpoints/G3a-targeted-rebuild.md`)
-is integrated; its provider checks remain open. G5 combined verification (Taz asked to
-continue, 2026-10-02) is implemented by Claude with the G4 audit still pending: see
-`checkpoints/G5-combined-verification.md` for the end-to-end evidence and tracked
-findings. Step 09 has not resumed; it waits for the audits and Taz's go-ahead.
+is integrated; its provider checks remain open. Astra's G4 audit found five defects,
+fixed in `d529880` (record in `checkpoints/G4-ticket-approval.md`; re-audit pending).
+G5 combined verification is implemented by Claude; **G5 acceptance is pending**
+actual-iMac evidence and independent review: see `checkpoints/G5-combined-verification.md`
+and the acceptance matrix `G5_ACCEPTANCE.md`. Step 09 has not resumed; it waits for the audits and Taz's go-ahead.
 
 ## Latest user policy
 

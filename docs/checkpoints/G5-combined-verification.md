@@ -1,8 +1,11 @@
 # G5 — combined verification of G1–G4 and G3a
 
 2026-10-02. Implementer: Claude (cloud container). Requested by Taz ("Lets continue
-G5", relayed 07:10Z). **Astra's audit of G4 is still pending**; nothing here is
-Astra's approval, and this self-check does not replace it.
+G5", relayed 07:10Z). **Status: G5 ACCEPTANCE PENDING** (actual-iMac evidence and the
+independent reviews). Astra's G4 audit found five defects, fixed in `d529880`; her
+re-audit is pending (she is unavailable until 2026-10-07). Nothing here is Astra's
+approval. The first pass below (`5b63b8a`) was built from a copy of the spec that
+ended at G4; the completion pass at the end follows Taz's full G5 prompt (17:02Z).
 
 ## Before-code record
 
@@ -105,3 +108,59 @@ engineering tests on synthetic data, not provider, host or trading observations.
 
 Rollback: revert the G5 commit (tests and docs only, plus the fixture cast).
 Reverting `da33b59` as well restores the G4 state; G3a's SQLite tables are additive.
+
+## Completion pass against the full G5 prompt (2026-10-02, after `d529880`)
+
+Taz pasted the full G5 prompt at 17:02Z and said go at 17:37Z (Step 09 excluded).
+Gaps found by comparing `d529880` with it (project folder
+`research/ai-trading/g5/G5-prompt-check.md`) and how each was closed:
+
+- **Astra's G4 findings record:** added to `G4-ticket-approval.md` (finding,
+  resolution, regression tests, commit `d529880`).
+- **Combined scenarios not yet chained:** three tests added to `test_g5_integration.py`:
+  - `test_provider_outage_recovery_restart_and_repeats_never_stale_or_double_consume`:
+    a provider outage at the final check refuses without spending the approval;
+    after recovery it is consumed once; after reopening every store, the same request
+    replays the same permission, another request is refused, and re-approval fails.
+  - `test_outage_across_a_scan_leaves_no_stale_eligibility_after_recovery_and_restart`:
+    an outage spanning a scan lets the event window lapse; after recovery and restart
+    the approval cannot be consumed, the event is ineligible, and the old crossing is
+    not replayed.
+  - `test_bearish_market_is_an_acknowledged_warning_but_missing_spy_qqq_blocks`: a
+    bearish regime is a `bearish_market` warning that needs its code and never changes
+    size; missing QQQ fails the scan's shared gate, blocks a new ticket on
+    `market_context_valid` with no acknowledgement offered, and refuses the earlier
+    approval. The market adapter is a labelled fixture built on the scan's own SPY/QQQ
+    gate; no production market adapter exists yet.
+- **Acceptance matrix:** `docs/G5_ACCEPTANCE.md`, with synthetic, replay, provider,
+  iMac and human-facing evidence tagged separately.
+- **G3 host verification (A):** the iMac is not reachable from this session. A single
+  read-only cloud run of `desk.vendor_check` (NVDA, SPY, QQQ, AAPL; current regular
+  session; Webull sandbox host) passed price/history for all four, with volume
+  `UNAVAILABLE_SEPARATE_EVIDENCE_REQUIRED` and actions `NOT_ATTESTED`; it is recorded
+  as a provider observation, **not** iMac verification. Taz has one copyable iMac
+  command block (`research/ai-trading/g5/imac-commands.md`). The reviewed-file
+  override stays removed. No retries were made.
+
+### Verification (cloud container)
+
+| Python | `tests/test_g5_integration.py` | `python -m pytest -q -W error` |
+| --- | --- | --- |
+| 3.12.3 | 5 passed | **997 passed** |
+| 3.13.14 | 5 passed | **997 passed** |
+| 3.14 | iMac run pending | iMac run pending |
+
+`git diff --check` passes. All approvals in tests are `fixture:automated-test`.
+
+### Remaining before G5 can close
+
+1. Actual-iMac evidence: G3 probe and full suites (including Python 3.14 if present).
+2. Independent reviews (outside Claude session; DeepSeek on the iMac) and Claude's
+   comparison; Astra's re-audit when she returns.
+3. Human-facing acceptance of a real ticket needs live adapters (later steps).
+
+Remaining dependencies, not started: Step 09 (whole-watchlist earnings queue, source
+budgets, per-symbol status, catalyst confirmation on the ticket, actual-host
+acceptance), Step 10, live adapters (Steps 11/13/15/20), broker execution (15/16).
+No scheduled runner, paper orders or live orders are activated by G4/G5, and no
+operational trading-day count starts from these development tests.
