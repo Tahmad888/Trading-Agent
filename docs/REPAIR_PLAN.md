@@ -14,7 +14,11 @@ G4 (local ticket preparation, exact approval, revocation and single-use
 consumption, no orders) is implemented by Claude and awaits Astra's audit: see
 `checkpoints/G4-ticket-approval.md` and `TICKETS.md`. It pulls forward the local
 approval core of Step 13; the planner, earnings line and live adapters do not move.
-G5 remains. Ownership from 2026-10-02 (Taz): Claude implements, Astra/Codex audits;
+Astra's G3 follow-up (G3a, `da33b59`: targeted rebuilds after history revisions,
+opt-in batch action evidence) is integrated; its volume and ex-dividend paths stay
+operationally open pending the checks in `G3_FOLLOWUP.md`. G5 combined verification
+is implemented by Claude, awaiting Astra's audit with G4: see
+`checkpoints/G5-combined-verification.md`. Step 09 has not resumed. Ownership from 2026-10-02 (Taz): Claude implements, Astra/Codex audits;
 earlier rows keep their recorded authorship. G2 pulls forward only the actual day-low stop repair
 from Step 10; the rest of Step 10 and operational runner start are not implied.
 

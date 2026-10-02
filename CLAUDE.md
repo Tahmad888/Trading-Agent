@@ -3,8 +3,8 @@
 ## Active repair work
 
 Current priority (2026-10-01): gap repairs G1–G5 in `docs/GAP_REPAIR_PLAN.md`,
-then resume unfinished Step 09. Read `docs/checkpoints/G4-ticket-approval.md`
-for the active checkpoint (awaiting Astra's audit). G3 automatic price/history handling is implemented and
+then resume unfinished Step 09. Read `docs/checkpoints/G5-combined-verification.md`
+for the active checkpoint; G4 and G5 both await Astra's audit. G3 automatic price/history handling is implemented and
 locally verified; the read-only iMac probe in `docs/VENDOR_BASIS.md` is still pending.
 It does not establish universal action/volume coverage or activate the scanner. Later user decisions supersede maximum-loss-only
 option sizing proposals: show full exposure and supported stop-loss estimates
@@ -12,8 +12,9 @@ separately; Taz approves exact quantity/exposure on the final ticket. Read `docs
 explicit sizing mode. G4 (Claude implements, Astra audits, per Taz 2026-10-02)
 adds `desk.tickets`: local ticket display, exact budget re-entry, exact warning
 acknowledgement, revocation, expiry and single-use consumption with no orders. Read
-`docs/TICKETS.md` and `docs/checkpoints/G4-ticket-approval.md`; G5 waits for Astra's
-audit and Taz's go-ahead. No hardcoded dollar cap or silent over-budget execution. Step 09/10 and runner activation are
+`docs/TICKETS.md` and `docs/checkpoints/G4-ticket-approval.md`. Astra's G3a follow-up
+(targeted rebuilds, opt-in batch action evidence; `docs/G3_FOLLOWUP.md`) is integrated
+and stays operationally open. Step 09 resumes only after the audits and Taz's go-ahead. No hardcoded dollar cap or silent over-budget execution. Step 09/10 and runner activation are
 not completed by these repairs.
 
 Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify and

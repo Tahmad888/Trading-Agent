@@ -46,7 +46,8 @@ class RevisedCharts(Native):
                         (150,151,148,149),(149,154,149,153)]
                 n = int((pd.Timestamp(self.now)-pd.Timestamp(NOW.replace(hour=9,minute=30))).total_seconds()//900)
                 output[name] = m15(rows[:n])
-                output[name].loc[:,["open","high","low","close"]] *= scale
+                prices = ["open","high","low","close"]
+                output[name][prices] = output[name][prices].astype(float)*scale
                 output[name].attrs = attrs
         return output
 

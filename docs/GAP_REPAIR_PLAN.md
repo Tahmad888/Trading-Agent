@@ -20,8 +20,12 @@ G3 automatic vendor price/history handling is implemented and locally verified
 see `checkpoints/G3-vendor-basis.md` and `VENDOR_BASIS.md`. Actual-host acceptance
 is pending; unknown volume evidence and unresolved price conflicts stay explicit.
 G4 local ticket approval is implemented and locally verified by Claude, awaiting
-Astra's audit: see `checkpoints/G4-ticket-approval.md` and `TICKETS.md`. G5 has not
-started and waits for that audit and Taz's go-ahead. G2 hashes are not G4 approval.
+Astra's audit: see `checkpoints/G4-ticket-approval.md` and `TICKETS.md`. G2 hashes
+are not G4 approval. Astra's G3a follow-up (`da33b59`, `checkpoints/G3a-targeted-rebuild.md`)
+is integrated; its provider checks remain open. G5 combined verification (Taz asked to
+continue, 2026-10-02) is implemented by Claude with the G4 audit still pending: see
+`checkpoints/G5-combined-verification.md` for the end-to-end evidence and tracked
+findings. Step 09 has not resumed; it waits for the audits and Taz's go-ahead.
 
 ## Latest user policy
 
