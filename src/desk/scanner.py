@@ -50,6 +50,7 @@ from desk.signal_state import SignalStore, SignalStateError, restore_signal
 from desk.security import securities
 from desk.symbols import canonical_symbol
 from desk.earnings import qualify
+from desk.risk_terms import chase_reference
 from desk.playbook.cards import CARDS, INDEX_ETFS
 from desk.playbook.filters import GateResult, MarketSize, market_filter, trend_template
 from desk.playbook.triggers import Context, Signal, connors_rsi2, episodic_pivot, minimum_history, scan
@@ -777,7 +778,7 @@ def revalidate_signal(source: BarSource, log: ScanLog, event_id: str, now: datet
             log.signals.invalidate(event_id, checked, "fresh underlying quote breached the stop")
     if (price < event["entry_level"] if long else price > event["entry_level"]):
         reasons.append("price is on the wrong side of entry")
-    moved = (price / candidate.trigger - 1) * (1 if long else -1)
+    moved = (price / chase_reference(event) - 1) * (1 if long else -1)  # EP: frozen ORH (Taz 2026-10-02)
     chase = min(limits.max_already_moved_pct,
                 CARDS[sig.setup_id].p("max_chase") if "max_chase" in CARDS[sig.setup_id].params else float("inf"))
     if moved > chase + 1e-12:

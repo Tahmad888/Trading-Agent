@@ -39,6 +39,12 @@ class OptionContract(BaseModel):
     settlement: Literal["physical", "cash"]
     currency: Text
     tradable: bool
+    # Simple-order minimum price increment class, supplied by the adapter from the
+    # exchange's class list (Cboe Rule 5.4(a)): "penny_all_prices" ($0.01 at every
+    # price: QQQ, SPY, IWM), "penny" (Penny Interval Program: $0.01 below $3.00,
+    # $0.05 at $3.00 and above) or "standard" ($0.05 below $3.00, $0.10 at $3.00 and
+    # above). None means not supplied: unknown, never assumed.
+    price_increment: Literal["penny_all_prices", "penny", "standard"] | None = None
 
 
 class ContractBook(BaseModel):

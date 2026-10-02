@@ -23,6 +23,7 @@ def contract(underlying, expiry, right, strike):
         right=right, strike=strike, expiry=expiry, multiplier=100,
         deliverable_symbol=underlying, deliverable_shares=100, deliverable_cash_usd=0,
         adjusted=False, exercise_style="american", settlement="physical", currency="USD", tradable=True,
+        price_increment="penny_all_prices" if underlying in {"SPY", "QQQ", "IWM"} else "penny",  # synthetic
     )
 
 

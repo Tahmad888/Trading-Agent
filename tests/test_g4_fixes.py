@@ -146,16 +146,16 @@ def test_ticket_prepared_after_its_time_stop_is_blocked(store, adapters):
         approve(store, tid, v, adapters)
 
 
-# Finding 5: the visible ticket shows the exact accepted prices.
+# Finding 5: the visible ticket shows the exact accepted prices. A sub-penny share
+# limit is now refused when the ticket is prepared (Taz 2026-10-02, decision 1).
 def test_display_shows_exact_limit_and_stop(store, risk_state):
     adapters = inputs(risk_state, terms=Terms(stop=248.7512))
-    leg = TicketLeg(symbol="MSFT", limit_price=Decimal("250.0049"))
+    leg = TicketLeg(symbol="MSFT", limit_price=Decimal("250.01"))
     tid, v = store.prepare(share_request(legs=(leg,)), adapters, now=NOW)
     text = store.display(tid, v, now=NOW)
-    assert "limit $250.0049;" in text
-    assert "$250.00;" not in text
+    assert "limit $250.01;" in text
     assert "Stop (structural, from the signal event): $248.7512" in text
-    assert store.get(tid, v, now=NOW)["binding"]["legs"][0]["limit_price"] == "250.0049"
+    assert store.get(tid, v, now=NOW)["binding"]["legs"][0]["limit_price"] == "250.01"
 
 
 @pytest.mark.parametrize("value,shown", [

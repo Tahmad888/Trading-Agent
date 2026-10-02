@@ -91,6 +91,34 @@ class TicketLeg(BaseModel):
     qty: Annotated[int, Field(gt=0, strict=True)] | None = None
 
 
+CENT, HUNDREDTH_CENT = Decimal("0.01"), Decimal("0.0001")
+# Simple-order option increments by class (Cboe Rule 5.4(a)): (below $3.00, $3.00 and above).
+OPTION_INCREMENTS = {"penny_all_prices": (CENT, CENT), "penny": (CENT, Decimal("0.05")),
+                     "standard": (Decimal("0.05"), Decimal("0.10"))}
+
+
+def increment(structure: str, limit: Decimal) -> Decimal:
+    """The finest increment a limit may use before contract metadata is known.
+
+    Shares: whole cents at $1.00 and above, $0.0001 below (SEC Rule 612, 17 CFR
+    242.612). The amended half-cent tier is not assumed: its compliance date was
+    delayed to November 2027. Options: whole cents at most (no listed option or
+    complex-order increment is finer); a single-leg ticket is then held to its
+    class schedule by ``option_increment_problems``.
+    """
+    if structure == "shares" and limit < 1:
+        return HUNDREDTH_CENT
+    return CENT
+
+
+def increment_error(structure: str, limit: Decimal) -> str:
+    if structure == "shares":
+        rule = "whole cents at $1.00 and above, $0.0001 below (SEC Rule 612)"
+    else:
+        rule = "whole cents or coarser for options"
+    return f"Limit price {limit} is not a valid price increment: {rule}. The desk does not round it; enter a valid limit"
+
+
 class TicketRequest(BaseModel):
     """What Taz (or a planner draft he edits) asks for. Never a source of evidence."""
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -118,8 +146,8 @@ class TicketRequest(BaseModel):
             if amount.as_tuple().exponent < -2:
                 raise ValueError("Dollar amounts are whole cents")
         for leg in self.legs:
-            if leg.limit_price.as_tuple().exponent < -4:
-                raise ValueError("Limit prices have at most four decimals")
+            if not leg.limit_price % increment(self.structure, leg.limit_price) == 0:
+                raise ValueError(increment_error(self.structure, leg.limit_price))
         if self.structure == "shares":
             if len(self.legs) != 1 or self.legs[0].side != "buy":
                 raise ValueError("A share ticket has one buy leg")
@@ -207,6 +235,29 @@ def _contract_id(book: ContractBook | None, symbol: str) -> str | None:
     except InstrumentError:
         return None
     return found[0].broker_contract_id if len(found) == 1 else None
+
+
+def option_increment_problems(request: TicketRequest, book: ContractBook | None) -> list[str]:
+    """A single-leg option limit must sit on its class's simple-order schedule
+    (Cboe Rule 5.4(a)). A multi-leg ticket is one complex order whose net price and
+    legs trade in $0.01 increments (Cboe Rule 5.33(f)(1)); the request already
+    requires whole cents. An unknown class is a problem, never a guess."""
+    if request.structure not in OPTION_STRUCTURES or len(request.legs) != 1:
+        return []
+    leg = request.legs[0]
+    try:
+        wanted = canonical_symbol(leg.symbol)
+        found = [c for c in (book.contracts if book else ()) if canonical_symbol(c.symbol) == wanted]
+    except InstrumentError:
+        found = []
+    if len(found) != 1 or found[0].price_increment is None:
+        return [f"option price increment class for {leg.symbol} is unavailable; the limit cannot be checked"]
+    below, above = OPTION_INCREMENTS[found[0].price_increment]
+    step = below if leg.limit_price < 3 else above
+    if leg.limit_price % step:
+        return [f"limit {price(leg.limit_price)} is not a multiple of {price(step)}, the minimum increment for "
+                f"this option ({found[0].price_increment} class, Cboe Rule 5.4(a)); the desk does not round it"]
+    return []
 
 
 def _expiry(book: ContractBook | None, symbol: str):
@@ -319,6 +370,49 @@ def ack_token(binding_sha256: str, warning: dict) -> str:
     return f"{warning['code']}:{digest[:10]}"
 
 
+# User policy (Taz 2026-10-02, a suggested starting policy, not a researched trading
+# rule): small P&L moves must not invalidate an approval. For these account warnings
+# the binding is re-asked only when the warning is new, its threshold or wording
+# changes, or it has deteriorated from the acknowledged (prepared) value by 10% of its
+# threshold or more ($20 daily and $40 weekly loss, 1 point of drawdown at the
+# defaults). The baseline never resets. An improvement, including the warning
+# clearing, does not re-ask; the latest checked value is shown. Every other warning
+# must match exactly (G4.C), and fresh account evidence, funding checks and the
+# manual stop stay mandatory in the risk rerun.
+BANDED_WARNINGS = frozenset({"daily_loss", "weekly_loss", "account_drawdown"})
+WARNING_BAND = 0.10
+
+
+def binding_change(stored: dict, current: dict) -> str | None:
+    """Why ``current`` no longer matches the bound ticket ``stored``, or None."""
+    if {k: v for k, v in stored.items() if k != "warnings"} != {k: v for k, v in current.items() if k != "warnings"}:
+        return "terms or evidence changed"
+    before = {w["code"]: w for w in stored["warnings"]}
+    after = {w["code"]: w for w in current["warnings"]}
+    if len(before) != len(stored["warnings"]) or len(after) != len(current["warnings"]):
+        return "warnings changed"
+    for code, now_w in after.items():
+        then = before.get(code)
+        if then is None:
+            return f"new warning {code}"
+        if (then["threshold"], then["message"]) != (now_w["threshold"], now_w["message"]):
+            return f"warning {code} threshold changed"
+        if code in BANDED_WARNINGS:
+            if now_w["value"] - then["value"] >= WARNING_BAND * then["threshold"] - 1e-9:
+                return (f"warning {code} worsened from {_warning_values(then)} to {_warning_values(now_w)}, "
+                        f"at least {WARNING_BAND:.0%} of its threshold since it was acknowledged")
+        elif now_w != then:
+            return f"warning {code} value changed"
+    if any(code not in after and code not in BANDED_WARNINGS for code in before):
+        return "warnings changed"
+    return None
+
+
+def _checked_values(decision: RiskDecision) -> dict:
+    """Banded warning values seen by a final check (absent = the warning cleared)."""
+    return {w.code: w.value for w in decision.warnings if w.code in BANDED_WARNINGS}
+
+
 _AMOUNT = re.compile(r"\$?(\d{1,3}(,\d{3})+|\d+)(\.\d{1,2})?")
 
 
@@ -357,6 +451,7 @@ def recheck(ticket_id: str, version: int, request: TicketRequest, inputs: RiskIn
                             terms_source=_TermsSnapshot(terms))
     except Exception as exc:  # provider faults are isolated; raw responses are never shown
         problems.append(f"independent evidence unavailable or invalid ({type(exc).__name__})")
+    problems.extend(option_increment_problems(request, book))
     if decision is not None and not decision.approved:
         problems.append("blocking checks failed: " + ", ".join(sorted(c.rule for c in decision.checks if not c.passed)))
     if now >= request.time_stop:
@@ -388,8 +483,9 @@ def final_problem(ticket_id: str, version: int, request: TicketRequest, inputs: 
     if not decision.approved:
         failed = ", ".join(sorted(c.rule for c in decision.checks if not c.passed))
         return f"Final check at {at.isoformat()} failed: {failed}", decision
-    if bound != stored:
-        return "Terms, evidence or warnings changed by the final check; prepare a new version", decision
+    change = binding_change(stored, bound)
+    if change:
+        return f"Terms, evidence or warnings changed by the final check ({change}); prepare a new version", decision
     return None, decision
 
 
@@ -481,12 +577,20 @@ class TicketStore:
         signal and account locks are released: an invalidation, suspension, revision,
         snapshot or manual stop either shows in this transaction or lands after it.
         No provider is called while these locks are held.
+
+        The ticket store is opened with BEGIN EXCLUSIVE, before the other locks and
+        before the caller samples its final clock. In rollback-journal mode that waits
+        for existing readers here, so no reader can delay the COMMIT after the final
+        freshness check (BEGIN IMMEDIATE would let a reader hold COMMIT back). In WAL
+        mode readers never block a commit and EXCLUSIVE acts like IMMEDIATE. Every
+        wait therefore happens before the clock sample; after it come only local
+        computation, writes and a commit that needs no further lock.
         """
         fence = getattr(inputs.terms_source, "held_event", None)
         if fence is None:
             raise TicketError("The signal source cannot hold the event for the final check; nothing was changed")
         with self._db() as db, ExitStack() as guards:
-            db.execute("BEGIN IMMEDIATE")
+            db.execute("BEGIN EXCLUSIVE")
             try:
                 status = guards.enter_context(fence(request.event_id))
                 _, account = guards.enter_context(inputs.risk_state.held_account(request.account_id))
@@ -596,7 +700,11 @@ class TicketStore:
                 if row["approval_id"] else None
             used = self._consumption(db, row["approval_id"], ticket_id, row["version"])[0] \
                 if row["approval_id"] else None
+            checked = db.execute("SELECT at, payload FROM audit WHERE ticket_id=? AND version=? AND event IN "
+                                 "('approved','consumed') ORDER BY sequence DESC LIMIT 1",
+                                 (ticket_id, row["version"])).fetchone()
         binding_ = json.loads(row["binding"])
+        latest = json.loads(checked["payload"]).get("warning_values") if checked else None
         return {
             "ticket_id": row["ticket_id"], "version": row["version"], "state": row["state"],
             "created_at": row["created_at"], "valid_until": row["valid_until"],
@@ -607,6 +715,7 @@ class TicketStore:
             "acknowledgement_tokens": [ack_token(row["binding_sha256"], w) for w in binding_["warnings"]],
             "approval": json.loads(approval["record"]) if approval else None,
             "consumption": json.loads(used["outcome"]) if used else None,
+            "latest_warning_check": {"at": checked["at"], "values": latest} if latest is not None else None,
         }
 
     def history(self, ticket_id: str) -> list[dict]:
@@ -654,9 +763,11 @@ class TicketStore:
         if result.problems:
             self._refused(now, ticket_id, version, "approval_refused", actor,
                           "Recheck failed: " + "; ".join(result.problems))
-        if result.binding != stored:
+        change = binding_change(stored, result.binding)
+        if change:
             self._refused(now, ticket_id, version, "approval_refused", actor,
-                          "Ticket terms or warnings changed since this version was prepared; prepare a new version")
+                          f"Ticket terms or warnings changed since this version was prepared ({change}); "
+                          "prepare a new version")
         typed = parse_amount(budget_confirmation)
         if typed is None or typed != request.budget_usd:
             self._refused(now, ticket_id, version, "approval_refused", actor,
@@ -687,7 +798,8 @@ class TicketStore:
                 elif at >= expires:
                     refused = "Evidence validity ended during the approval check"
                 else:
-                    refused, _ = final_problem(ticket_id, version, request, inputs, result, stored, status, account, at)
+                    refused, final = final_problem(ticket_id, version, request, inputs, result, stored, status,
+                                                   account, at)
                 if refused:
                     refused += "; nothing was approved"
                     self._audit(db, at, ticket_id, version, "approval_refused", actor, {"reason": refused})
@@ -707,7 +819,8 @@ class TicketStore:
                     self._audit(db, at, ticket_id, version, "approved", actor, {
                         "approval_id": approval_id, "channel": channel, "terminal_user": terminal_user,
                         "expires_at": expires.isoformat(), "budget_confirmed_usd": f"{typed:.2f}",
-                        "acknowledgements": sorted(acknowledgements), "binding_sha256": row["binding_sha256"]})
+                        "acknowledgements": sorted(acknowledgements), "binding_sha256": row["binding_sha256"],
+                        "warning_values": _checked_values(final)})
         except TicketError:
             raise
         except (ValueError, sqlite3.Error) as exc:
@@ -788,9 +901,10 @@ class TicketStore:
         if result.problems:
             self._refused(now, ticket_id, version, "consumption_refused", actor,
                           "Recheck failed: " + "; ".join(result.problems))
-        if result.binding != stored:
+        change = binding_change(stored, result.binding)
+        if change:
             self._refused(now, ticket_id, version, "consumption_refused", actor,
-                          "Current terms, evidence or warnings differ from the approved ticket")
+                          f"Current terms, evidence or warnings differ from the approved ticket ({change})")
         binding_sha = row["binding_sha256"]
         permission = _sha({"approval": record.approval_id, "request": request_id, "binding_sha256": binding_sha})[:16]
         refused = outcome = None
@@ -833,7 +947,8 @@ class TicketStore:
                                "WHERE approval_id=?", (request_id, at.isoformat(), _json(outcome), record.approval_id))
                     self._audit(db, at, ticket_id, version, "consumed", actor,
                                 {"request_id": request_id, "permission_id": permission,
-                                 "binding_sha256": binding_sha, "order_submitted": False})
+                                 "binding_sha256": binding_sha, "order_submitted": False,
+                                 "warning_values": _checked_values(decision)})
         except TicketError:
             raise
         except (ValueError, sqlite3.Error) as exc:
@@ -934,6 +1049,12 @@ def render(view: dict) -> str:
         for i, (w, token) in enumerate(zip(b["warnings"], view["acknowledgement_tokens"]), 1):
             out.append(f"  {i}. {w['code']}: {WARNING_TEXT.get(w['code'], w['message'])} "
                        f"Value {_warning_values(w)}.")
+            latest = view.get("latest_warning_check")
+            if w["code"] in BANDED_WARNINGS and latest:
+                value = latest["values"].get(w["code"])
+                now_text = _warning_values({**w, "value": value}) if value is not None else "below its threshold"
+                out.append(f"     latest final check ({latest['at']}): {now_text}. Re-asked if it worsens by "
+                           f"{WARNING_BAND:.0%} of the threshold from the acknowledged value.")
             out.append(f"     acknowledgement code: {token}")
     else:
         out.append("Warnings: none")

@@ -98,14 +98,56 @@ receipt timestamps, so fresh evidence with unchanged terms gives the same bindin
 `RiskDecision.terms_sha256` includes receipt times and is not an approval binding.
 
 Approve and consume reload the stored ticket and rerun `risk.evaluate` against the
-current account snapshot and fresh evidence; the rerun binding must equal the
-stored one, and the approval record's snapshot must equal both. Any changed term,
-warning value, contract id or event revision refuses with a message to prepare a
-new version.
+current account snapshot and fresh evidence; the rerun binding must match the
+stored one, and the approval record's snapshot must equal the stored binding. Any
+changed term, contract id or event revision refuses with a message to prepare a new
+version, and so does any change to a warning other than the three account warnings
+below.
+
+**Account warning band (User policy, Taz 2026-10-02; his suggested starting policy,
+not a researched trading rule).** For `daily_loss`, `weekly_loss` and
+`account_drawdown`, small P&L moves no longer refuse. The ticket is re-asked
+(refused, prepare a new version) when:
+
+- a warning appears that the ticket did not show;
+- a warning's threshold or wording changes;
+- a warning has worsened from the value shown and acknowledged on the ticket by 10%
+  of its threshold or more. At the defaults that is $20 more daily loss, $40 more
+  weekly loss or 1 percentage point more drawdown.
+
+Deterioration is cumulative from the acknowledged value; the baseline never resets
+on later updates. An improvement, including the warning clearing, does not re-ask.
+Each successful approval or consumption records the values its final check saw
+(`warning_values` in the audit), and the ticket display shows them as "latest final
+check" next to the acknowledged value. Fresh account evidence, funding checks and
+the manual stop stay mandatory in every rerun. Every other warning still has to
+match exactly (G4.C).
+
+**Price increments (User policy, Taz 2026-10-02).** An invalid limit is refused when
+the ticket is prepared; the desk never rounds it.
+
+- Shares: whole cents at $1.00 and above, $0.0001 below. Sourced: SEC Rule 612,
+  https://www.law.cornell.edu/cfr/text/17/242.612. The amended half-cent tier is
+  not assumed: its compliance was delayed to November 2027
+  (https://www.sec.gov/files/rules/exorders/2026/34-105656.pdf).
+- Options, every leg: whole cents at most.
+- Single-leg options: the class's simple-order schedule. Sourced: Cboe Rule 5.4(a)
+  as quoted in SEC filings (e.g. https://www.govinfo.gov/content/pkg/FR-2025-12-22/html/2025-23533.htm):
+  Penny Interval Program classes $0.01 below $3.00 and $0.05 at $3.00 and above;
+  QQQ, SPY and IWM $0.01 at every price; other classes $0.05 below $3.00 and
+  $0.10 at $3.00 and above. The class comes from the adapter's contract book
+  (`OptionContract.price_increment`); when it is missing the ticket is blocked, not
+  guessed.
+- Multi-leg options: whole cents. Sourced: Cboe Rule 5.33(f)(1), complex-order bids
+  and offers and their legs trade in $0.01 increments
+  (https://www.sec.gov/files/rules/sro/c2/2022/34-95342.pdf). This assumes the
+  later order adapter (Step 13/15) sends a multi-leg ticket as one complex order;
+  sent as separate simple orders, each leg would need its class schedule
+  (engineering Assumption, for that step to check).
 
 Each check reads the signal terms once; the risk rerun validates that same snapshot
-(G4 fix 2). Limit, stop and target are displayed exactly as accepted, e.g.
-`$250.0049`, never rounded to cents (fix 5). A ticket whose time stop has passed is
+(G4 fix 2). Limit, stop and target are displayed exactly as accepted, e.g. a
+stop of `$248.7512`, never rounded to cents (fix 5). A ticket whose time stop has passed is
 blocked at prepare, cannot be approved or consumed, and an approval never outlives
 the time stop (fix 4).
 
@@ -116,7 +158,7 @@ quote, market context) all happen in the check, before any lock. The final
 approve/consume step then takes three locks in a fixed order and holds them only
 for local computation and the ticket write:
 
-1. the ticket store (`BEGIN IMMEDIATE`);
+1. the ticket store (`BEGIN EXCLUSIVE`, revised after Astra's re-audit);
 2. the signal store, through the terms source's `held_event` (`BEGIN IMMEDIATE`);
 3. the account store, through `RiskStateStore.held_account` (`BEGIN IMMEDIATE`).
 
@@ -132,15 +174,36 @@ equals the stored one. The ticket write commits before the signal and account lo
 are released, so an invalidation, suspension, withdrawal, revision, snapshot or
 manual stop either shows in the final check or lands after the write.
 
-`BEGIN IMMEDIATE` takes SQLite's single writer lock in both rollback-journal and WAL
-modes, so the account and signal fences do not depend on the journal mode, and the
+**No reader can delay the write after the final clock (re-audit P1b).** In
+rollback-journal mode `BEGIN IMMEDIATE` lets existing readers keep their shared
+locks, and COMMIT then waits for them; a reader could therefore delay the commit
+after the freshness check had passed. The ticket store now opens the final
+transaction with `BEGIN EXCLUSIVE`, before the signal and account locks and before
+the clock is read, so any wait for readers happens first and the clock reflects it.
+After the clock come only local computation, the writes and a commit that needs no
+further lock. In WAL mode readers never block a commit and `EXCLUSIVE` behaves like
+`IMMEDIATE`. Both modes are tested with a real reader holding a read transaction
+during the check (`tests/test_reaudit_closure.py`): with account, quote, market and
+signal-terms evidence half a second inside its limit and a one-second reader, the
+rollback-mode write is refused (the clock is read after the wait) and the WAL-mode
+write succeeds; the approval-lifetime and event deadlines are covered the same way.
+While the exclusive lock is held, other readers of the ticket store wait (up to the
+10 s busy timeout) for one final computation and commit.
+
+`BEGIN IMMEDIATE` on the signal and account stores takes SQLite's single writer lock
+in both rollback-journal and WAL modes, so the account and signal fences do not depend on the journal mode, and the
 stores never rewrite an operator's mode. The account lock is taken last, so a manual
 stop never waits behind a ticket operation that is itself waiting for a lock; it
 waits at most for one final computation and commit. A routine account snapshot that
 changes nothing in the binding no longer refuses the ticket: the final rerun uses
-the current snapshot. `set_manual_halt(True)` has no revision precondition and
+the current snapshot. `set_manual_halt(True)` has no precondition: neither a newer
+revision nor the as-of time of a routine snapshot that committed while the stop
+waited for the lock can refuse it (re-audit P1a). The audit keeps the request time
+(`at` and `requested_at`), the commit time read under the lock (`committed_at`;
+UTC wall clock unless a clock is passed) and the snapshot's `snapshot_as_of`. It
 retries for up to 30 s; if the store stays busy it raises `RiskStateError` saying
-the stop was NOT recorded. A resume still requires the current revision. A terms
+the stop was NOT recorded. A resume still requires the current revision and a
+request time no earlier than the snapshot. A terms
 source without `held_event` cannot approve or consume (fail closed).
 
 Successful approvals record the final clock as `decided_at`; consumptions record it
@@ -162,23 +225,25 @@ it against the stored ticket rather than trusting the payload.
 - `Budget confirmation does not match the ticket budget of $X` (wrong, missing or malformed amount)
 - `Acknowledge exactly the warnings displayed on this ticket version: <codes>`
 - `Ticket failed blocking checks and cannot be approved`
-- `Ticket terms or warnings changed since this version was prepared; prepare a new version`
+- `Ticket terms or warnings changed since this version was prepared (<why>); prepare a new version`, where `<why>` is e.g. `new warning daily_loss`, `warning daily_loss threshold changed` or `warning daily_loss worsened from $250.00 against $200.00 to $270.00 against $200.00, ...`
 - `Recheck failed: blocking checks failed: <rules>` or `independent evidence unavailable or invalid (<type>)`
 - `Ticket version is <state>; there is no usable approval` (rejected, revoked, expired, superseded, pending)
 - `Approval was already consumed by another request`
 - `Approval record is unknown, legacy or does not match this ticket version`
-- `Current terms, evidence or warnings differ from the approved ticket`
+- `Current terms, evidence or warnings differ from the approved ticket (<why>)`
 - `The ticket's time stop has passed; no new entry is allowed`
 - `Approval has expired` (also judged by the fresh final-transaction clock)
 - `Final check at <time> failed: <rules>; nothing was consumed` (or approved), e.g. `not_halted`, `quote_fresh`, `account_state_fresh`
 - `The signal event is no longer eligible at the final check (invalidated, suspended, closed, expired or revised)`
-- `Terms, evidence or warnings changed by the final check; prepare a new version`
+- `Terms, evidence or warnings changed by the final check (<why>); prepare a new version`
 - `The signal source cannot hold the event for the final check; nothing was changed`
 - `The audit trail shows this approval was already used; the record is inconsistent`
 - `Approval needs an interactive terminal; piped or scripted input cannot approve a ticket`
 - `Evidence validity ended during the approval check; nothing was approved`
 - `Automated fixtures must be labelled 'fixture:'; terminal actors must not be`
 - `No trusted adapters configured ...`
+- At prepare (invalid request): `Limit price <x> is not a valid price increment: whole cents at $1.00 and above, $0.0001 below (SEC Rule 612). The desk does not round it; enter a valid limit` (options: `whole cents or coarser for options`)
+- Blocked at prepare: `limit $<x> is not a multiple of $<step>, the minimum increment for this option (<class> class, Cboe Rule 5.4(a)); the desk does not round it` or `option price increment class for <symbol> is unavailable; the limit cannot be checked`
 
 ## Migration and rollback
 

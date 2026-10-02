@@ -6,9 +6,10 @@ SQLite transactions serialize updates and preserve earlier state on failure.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -170,14 +171,18 @@ class RiskStateStore:
                    (account_id, event, now.isoformat(), actor, reason, _json(payload)))
 
     def set_manual_halt(self, account_id: str, halted: bool, *, expected_revision: int | None = None,
-                        actor: str, reason: str, now: datetime) -> int:
+                        actor: str, reason: str, now: datetime,
+                        clock: Callable[[], datetime] | None = None) -> int:
         """Switch the blocking manual stop on or off.
 
-        Switching it on has no precondition: a routine snapshot that landed in the
-        meantime cannot refuse a stop. Switching it off (resume) still requires the
-        current revision, so a resume is always made against the state just read.
-        A store that stays busy raises a RiskStateError saying the change was NOT
-        recorded; it never fails quietly.
+        ``now`` is the request time; ``clock`` (UTC wall clock when unset) is read
+        once this call holds the store's write lock, as the commit time. Both are
+        audited. Switching the stop on has no precondition: neither a newer revision
+        nor the as-of time of a routine snapshot that committed while this request
+        waited can refuse it. Switching it off (resume) still requires the current
+        revision and a request time no earlier than the snapshot. A store that stays
+        busy raises a RiskStateError saying the change was NOT recorded; it never
+        fails quietly.
         """
         _actor(actor, reason, now)
         if type(halted) is not bool:
@@ -187,17 +192,24 @@ class RiskStateStore:
         try:
             with self._connect(timeout=30) as db:
                 db.execute("BEGIN IMMEDIATE")
+                committed_at = clock() if clock else datetime.now(timezone.utc)
+                if committed_at.tzinfo is None or committed_at.utcoffset() is None:
+                    raise RiskStateError("Manual control commit clock must be timezone aware")
                 revision, evidence = self._read(db, account_id)
-                if not halted and revision != expected_revision:
-                    raise RiskStateError("Manual control requires current revision")
-                if now < evidence.as_of:
-                    raise RiskStateError("Control time predates the account snapshot")
+                if not halted:
+                    if revision != expected_revision:
+                        raise RiskStateError("Manual control requires current revision")
+                    if now < evidence.as_of:
+                        raise RiskStateError("Resume request time predates the account snapshot")
+                snapshot_as_of = evidence.as_of
                 evidence.halted = halted
                 revision += 1
                 db.execute("UPDATE accounts SET revision=?,payload=? WHERE account_id=?",
                            (revision, evidence.model_dump_json(), account_id))
                 self._audit(db, account_id, "manual_halt" if halted else "manual_resume", now, actor, reason,
-                            {"revision": revision})
+                            {"revision": revision, "requested_at": now.isoformat(),
+                             "committed_at": committed_at.isoformat(),
+                             "snapshot_as_of": snapshot_as_of.isoformat()})
                 return revision
         except sqlite3.OperationalError as exc:
             what = "Manual stop" if halted else "Manual resume"

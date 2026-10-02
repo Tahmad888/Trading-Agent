@@ -26,7 +26,8 @@ is integrated; its provider checks remain open. Astra's G4 audit found five defe
 fixed in `d529880` (record in `checkpoints/G4-ticket-approval.md`; re-audit pending).
 G5 combined verification is implemented by Claude. Three audits of `6d21ddf` (Astra,
 outside Claude, DeepSeek on the iMac) were addressed in the audit-closure commit;
-**G5 acceptance is pending** Astra's re-audit and Taz's open decisions: see `checkpoints/G5-combined-verification.md`
+Astra's re-audit of `ee4dc90` found two timing defects, fixed with Taz's 2026-10-02 decisions in the re-audit closure commit.
+**G5 acceptance is pending** Astra's independent check, iMac evidence for that commit and the Massive/`SSL_CERT_FILE` iMac steps: see `checkpoints/G5-combined-verification.md`
 and the acceptance matrix `G5_ACCEPTANCE.md`. Step 09 has not resumed; it waits for the audits and Taz's go-ahead.
 
 ## Latest user policy

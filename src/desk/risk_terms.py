@@ -65,6 +65,23 @@ def stop_distance(entry: float, stop: float, direction: str) -> Fraction:
     return distance
 
 
+EP_SETUP = "5_qullamaggie_episodic_pivot"
+
+
+def chase_reference(event: dict) -> float:
+    """The level the chase allowance is measured from.
+
+    EP: the selected opening-range high frozen into the event (its entry level), per
+    Taz 2026-10-02 (User policy): Kullamägi buys the break of the opening-range high
+    (https://qullamaggie.com/how-to-master-a-setup-episodic-pivots/), so an EP whose
+    range high is far above the open is not a chase by itself. The 3% allowance stays
+    the desk's Assumption. Other setups: the candidate's trigger, unchanged.
+    """
+    if event["signal"]["setup_id"] == EP_SETUP:
+        return event["entry_level"]
+    return event["candidate_signal"]["trigger"]
+
+
 class EventRiskSource:
     """Resolve from SignalStore after fresh scanner revalidation.
 
@@ -102,7 +119,7 @@ class EventRiskSource:
         return RiskTerms(event_id=event_id, event_digest=event["terms_digest"],
                          symbol=sig["symbol"], setup_id=sig["setup_id"],
                          setup_version=sig["setup_version"], direction=sig["direction"],
-                         entry_level=event["entry_level"], chase_reference=event["candidate_signal"]["trigger"],
+                         entry_level=event["entry_level"], chase_reference=chase_reference(event),
                          stop=sig["stop"], target=sig["target"],
                          checked_at=report["checked_at"], valid_until=event["valid_until"],
                          underlying_price=price, quote_at=quote_at, max_stop_fraction=width)

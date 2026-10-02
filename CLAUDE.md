@@ -5,9 +5,11 @@
 Current priority (2026-10-01): gap repairs G1–G5 in `docs/GAP_REPAIR_PLAN.md`,
 then resume unfinished Step 09. Read `docs/checkpoints/G5-combined-verification.md`
 for the active checkpoint and `docs/G5_ACCEPTANCE.md` for the matrix. G5 acceptance
-is pending Astra's re-audit of the audit-closure commit (three audits of `6d21ddf`
-fixed; open Taz decisions listed in `docs/G5_ACCEPTANCE.md`); G4's five audit defects
-were fixed in `d529880`. G3 automatic price/history handling is implemented and
+is pending Astra's independent check of the re-audit closure commit (her two re-audit
+timing defects of `ee4dc90` fixed; Taz's 2026-10-02 decisions on price increments,
+the 10% account-warning band and the EP chase from the frozen opening-range high are
+implemented; Massive dividend evidence and `SSL_CERT_FILE` wait on the iMac); G4's
+five audit defects were fixed in `d529880`. G3 automatic price/history handling is implemented and
 locally verified; the read-only iMac probe in `docs/VENDOR_BASIS.md` is still pending.
 It does not establish universal action/volume coverage or activate the scanner. Later user decisions supersede maximum-loss-only
 option sizing proposals: show full exposure and supported stop-loss estimates

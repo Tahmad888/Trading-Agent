@@ -253,4 +253,25 @@ Not changed here, waiting for Taz (details in the consolidated list): Claude #3
 are open, but G4.C says "a changed warning value must not authorize the ticket");
 Claude #4 (EP chase measured from the open); Claude #9 (sub-penny limits, Rule 612);
 Claude #10 (SPY/QQQ ex-dividend days); Claude #14 (volume-only revisions, needs host
-evidence). Status: **fixed in the audit-closure commit, awaiting Astra's re-audit.**
+evidence). Status: **fixed in the audit-closure commit, re-audited by Astra (next section).**
+
+## Third round: Astra's re-audit of ee4dc90 and Taz's decisions (2026-10-02)
+
+Taz relayed Astra's re-audit at 21:02Z. She confirmed 1053 passed on Python 3.12.14
+and 3.14.6 and that the original probes pass, and found two remaining timing defects.
+Taz answered the open questions in the same message and said the decisions do not
+close G4/G5. Regressions are in `tests/test_reaudit_closure.py` (P1a, P1b) and
+`tests/test_taz_decisions.py` (decisions 1–3).
+
+| # | Source | Finding | Resolution | Regression tests | Prompt line; label |
+| --- | --- | --- | --- | --- | --- |
+| P1a | Astra re-audit | A manual stop that waited behind a routine snapshot was refused ("Control time predates the account snapshot") when that snapshot's as-of time was later than the stop request. | Switching the stop on no longer checks the snapshot time. The request time stays in the audit (`at`, `requested_at`); the commit time is read under the lock (`committed_at`) with `snapshot_as_of`. A resume keeps the revision check and the request-time chronology check; both timestamps must be timezone aware. | `test_manual_stop_waiting_on_a_routine_snapshot_still_engages[2]` (Astra's two-store scenario and her positive control; the newer case failed on `ee4dc90`), `test_resume_keeps_the_revision_and_chronology_checks`, `test_manual_control_timestamps_must_be_timezone_aware` | G4.2 manual stop. Engineering decision |
+| P1b | Astra re-audit | In rollback-journal mode a reader on the ticket store delayed COMMIT after the freshness check (approved/consumed at about 31 s account age). | The final ticket transaction opens with `BEGIN EXCLUSIVE`, before the signal and account locks and before the clock is read, so reader waits come first. Lock order is unchanged. | `test_reader_wait_happens_before_the_final_clock_in_rollback_mode[12]` (account, quote, market, terms, approval and event deadlines × approve/consume; all 12 failed with `BEGIN IMMEDIATE`), `test_wal_readers_never_delay_the_final_commit[12]`, `test_commit_follows_the_recorded_final_time_promptly[4]` | G4.E1, E2. Engineering decision; SQLite https://www.sqlite.org/lang_transaction.html |
+| D1 | Taz decision 1 | Sub-penny limits were accepted. | Refused at prepare, never rounded: shares Rule 612; options whole cents, single-leg class schedule (Cboe Rule 5.4(a)), multi-leg whole cents (Cboe Rule 5.33(f)(1)); an unknown option class blocks. | decision 1 tests (26 cases) | User policy; Sourced |
+| D2 | Taz decision 2 | A one-cent P&L move refused the ticket. | `daily_loss`, `weekly_loss`, `account_drawdown` are re-asked only when new, re-thresholded or worse by 10% of threshold from the acknowledged value (cumulative); improvements are shown as the latest final check. | decision 2 tests (12 cases) | User policy (Taz's suggested starting policy) |
+| D3 | Taz decision 3 | The EP chase was measured from the open. | Measured from the frozen opening-range high with the executable limit, in risk and in scanner revalidation; the 3% stays an Assumption. | decision 3 tests (7 cases) | User policy |
+
+Decisions 4 (free Massive plan, SPY/QQQ dividend reconciliation on the iMac) and 5
+(`SSL_CERT_FILE`, investigate first) need the iMac; read-only steps are in
+`research/ai-trading/g5/imac-commands.md`. Status: **fixed in the re-audit closure
+commit; awaiting Astra's independent check and iMac evidence for that commit.**

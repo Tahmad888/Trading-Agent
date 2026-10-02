@@ -25,7 +25,11 @@ all checks immediately before approval/execution. G4/15 own those later boundari
 
 The entry limit is the proposed executable price, checked against independently
 resolved entry, current underlying quote, stop, target and original chase reference.
-The existing 3%/stricter-card chase policy is retained. An option must have the same
+The existing 3%/stricter-card chase policy is retained. For EP the chase is measured
+from the selected, frozen opening-range high (the event's entry level), with the
+executable limit (Taz 2026-10-02, User policy); other setups measure it from the
+candidate trigger. The 3% stays an Assumption. Scanner revalidation uses the same
+reference (`risk_terms.chase_reference`). An option must have the same
 directional exposure as its signal, or be a supported neutral structure. Short
 share arithmetic is tested, but short share execution remains unsupported.
 

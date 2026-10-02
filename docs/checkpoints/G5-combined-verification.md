@@ -199,3 +199,28 @@ for exactly the four variants the outside review named.
 
 Not yet run on the iMac or on Python 3.14 for this commit. `git diff --check` passes.
 G5 acceptance stays **pending** Astra's re-audit and Taz's decisions above.
+
+## Re-audit closure (Astra's re-audit of ee4dc90, 2026-10-02)
+
+- **P1a fixed:** a manual stop is never vetoed by the as-of time of a snapshot that
+  committed while it waited; request and commit times are audited separately.
+- **P1b fixed:** the final ticket transaction is `BEGIN EXCLUSIVE`, taken before the
+  signal/account locks and the clock, so no reader can delay the commit after the
+  freshness check; validated in rollback and WAL modes.
+- **Taz's decisions implemented:** price increments (1), account warning band (2),
+  EP chase from the frozen opening-range high (3). Decisions 4 (Massive dividend
+  evidence) and 5 (`SSL_CERT_FILE`) are iMac steps; unexplained price mismatches stay
+  blocking until decision 4's verification passes.
+
+Details: `checkpoints/G4-ticket-approval.md` (third round) and `G5_ACCEPTANCE.md`.
+
+### Verification (cloud container, re-audit closure commit)
+
+| Python | `python -m pytest -q -W error` |
+| --- | --- |
+| 3.12.3 | **1130 passed** |
+| 3.13.14 | **1130 passed** |
+
+Not yet run on the iMac or on Python 3.14 for this commit. `git diff --check` passes.
+G5 acceptance stays **pending** Astra's independent check, iMac evidence for this
+exact commit, and the decision 4 and 5 iMac results.
