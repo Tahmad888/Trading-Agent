@@ -96,6 +96,17 @@ stored one, and the approval record's snapshot must equal both. Any changed term
 warning value, contract id or event revision refuses with a message to prepare a
 new version.
 
+Each check reads the signal terms once; the risk rerun validates that same snapshot
+(G4 fix 2). The final approve/consume transaction holds the account store's current
+revision while it writes: if the revision differs from the one the check read (a
+manual stop or a new snapshot arrived mid-check), nothing is approved or consumed
+(fix 1), and a control arriving later waits for the write. That transaction takes a
+fresh clock reading (`RiskInputs.clock`, else UTC wall clock, never earlier than the
+check's start) for the expiry and time-stop tests (fix 3). A ticket whose time stop
+has passed is blocked at prepare, cannot be approved or consumed, and an approval
+never outlives the time stop (fix 4). Limit, stop and target are displayed exactly
+as accepted, e.g. `$250.0049`, never rounded to cents (fix 5).
+
 ## Failure messages (all print `REFUSED: ...` and exit 2)
 
 - `Budget confirmation does not match the ticket budget of $X` (wrong, missing or malformed amount)
@@ -107,6 +118,10 @@ new version.
 - `Approval was already consumed by another request`
 - `Approval record is unknown, legacy or does not match this ticket version`
 - `Current terms, evidence or warnings differ from the approved ticket`
+- `The ticket's time stop has passed; no new entry is allowed`
+- `Approval has expired` (also judged by the fresh final-transaction clock)
+- `Account changed during the check (for example a manual stop or a new snapshot); nothing was consumed` (or approved)
+- `Evidence validity ended during the approval check; nothing was approved`
 - `Automated fixtures must be labelled 'fixture:'; terminal actors must not be`
 - `No trusted adapters configured ...`
 

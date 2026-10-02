@@ -50,10 +50,18 @@ def observer(**changes):
 
 
 def inputs(risk_state: RiskStateStore, *, terms=None, book=BOOK, market=MARKET, observe=None,
-           registry=REGISTRY, **kw) -> RiskInputs:
+           registry=REGISTRY, clock=None, **kw) -> RiskInputs:
+    """Without an explicit clock, no time passes during a check: the final-transaction
+    reading is the time the check itself was given. Tests of slow checks pass one."""
+    seen = []
+
+    def market_at(now):
+        seen.append(now)
+        return market
     return RiskInputs(risk_state=risk_state, terms_source=terms or Terms(),
-                      market=lambda now: market, contract_book=lambda now: book,
-                      observe=observe or observer(), registry=registry, **kw)
+                      market=market_at, contract_book=lambda now: book,
+                      observe=observe or observer(), registry=registry,
+                      clock=clock or (lambda: seen[-1] if seen else NOW), **kw)
 
 
 def share_request(**changes) -> TicketRequest:

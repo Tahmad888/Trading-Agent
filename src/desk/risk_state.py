@@ -96,6 +96,25 @@ class RiskStateStore:
         payload["exposures"] = evidence.exposures
         return revision, AccountState(**payload)
 
+    @contextmanager
+    def held_revision(self, account_id: str):
+        """Yield the current revision while holding a read lock on the account store.
+
+        A dependent write (a ticket consumption) runs inside this block. In SQLite's
+        rollback-journal mode no snapshot or manual control can commit until the block
+        ends, so it is ordered after that write; one that committed earlier shows as a
+        newer revision. Keep the block short: a writer waits at most 5 seconds.
+        """
+        db = sqlite3.connect(self.path, timeout=5, isolation_level=None)
+        try:
+            db.execute("BEGIN")
+            revision, _ = self._read(db, account_id)
+            yield revision
+        finally:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            db.close()
+
     def save_snapshot(self, snapshot: AccountState, observation_id: str, *, now: datetime,
                       cash_flow_usd: float = 0, actor: str = "", reason: str = "") -> int:
         evidence = AccountEvidence.model_validate(asdict(snapshot))
