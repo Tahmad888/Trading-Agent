@@ -58,7 +58,8 @@ entry limit; structural stop; target or "none set by the setup"; estimated stop
 loss (or why it is unavailable); reserved costs; stop loss including costs; share
 position value as information, or option strategy exposure and net premium; the
 funding estimate labelled as not broker-verified; exits; failed blocking checks;
-and each warning with its meaning, values and acknowledgement code. The next
+the warning levels it was checked against; and each warning with its meaning, values
+and acknowledgement code. The next
 earnings date, timeframe notes and option rationale (CLAUDE.md rule 4) are shown
 as not supplied: they depend on Step 09 and Steps 11–13.
 
@@ -93,7 +94,9 @@ setup id/version and direction, instrument, structure, each leg (symbol, broker
 contract id for options, side, requested/ceiling/final quantity, limit, expiry),
 stop, target, time stop and exit rules, budget, sizing mode, cost reserve, every
 disclosure (stop loss and basis, totals, exposure, premium, position value, funding
-estimate) and every warning's code, message, value and threshold. It excludes
+estimate), every warning's code, message, value and threshold, and the account-warning
+policy the ticket was checked against (`warning_policy`: the daily loss, weekly loss
+and drawdown thresholds, the 10% band and how each is measured). It excludes
 receipt timestamps, so fresh evidence with unchanged terms gives the same binding.
 `RiskDecision.terms_sha256` includes receipt times and is not an approval binding.
 
@@ -116,7 +119,12 @@ not a researched trading rule).** For `daily_loss`, `weekly_loss` and
   weekly loss or 1 percentage point more drawdown.
 
 Deterioration is cumulative from the acknowledged value; the baseline never resets
-on later updates. An improvement, including the warning clearing, does not re-ask.
+on later updates. Any change to the bound `warning_policy` re-asks, even when it
+makes a warning disappear or the ticket showed no warning at all (Astra's re-audit of
+`5e24e02`: without the policy, a warning missing from a later check could mean an
+improvement or a relaxed threshold, and the two could not be told apart). Refusing a
+no-warning ticket on a policy change is a deliberate fail-closed engineering choice;
+it costs one new version. An improvement, including the warning clearing, does not re-ask.
 Each successful approval or consumption records the values its final check saw
 (`warning_values` in the audit), and the ticket display shows them as "latest final
 check" next to the acknowledged value. Fresh account evidence, funding checks and
@@ -255,6 +263,10 @@ the same file. Schema `desk-tickets-v2` adds the `consumptions` table: opening a
 `desk-tickets-v1` file copies every earlier consumption into it and retags the file,
 keeping all rows and the audit history; any other tag is refused, not reinitialised.
 Code older than v2 refuses a v2 file (unsupported schema), which fails closed.
+A ticket prepared before the warning-policy snapshot existed (no `warning_policy` in
+its stored binding) cannot be approved or consumed: it is refused with "this ticket
+predates the warning-policy snapshot" and needs a new version. An absent current
+warning is never taken as proof that the policy is unchanged.
 Someone with write access to the file can still drop triggers and forge consistent
 rows; the local file is not a signed ledger. A keyed signature was suggested by the
 outside review; it needs a key kept outside the database and is not built here.

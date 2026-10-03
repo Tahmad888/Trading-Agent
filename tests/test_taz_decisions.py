@@ -202,7 +202,7 @@ def test_a_changed_threshold_is_re_asked(banded):
     state, tickets, adapters, tid, v = banded(**_loss(250))
     approve(tickets, tid, v, adapters)
     stricter = replace(adapters, limits=RiskLimits(daily_loss_usd=240))
-    with pytest.raises(TicketError, match="daily_loss threshold changed"):
+    with pytest.raises(TicketError, match="warning policy changed since this version was prepared: daily loss \\$240.00"):
         _consume(tickets, tid, v, stricter)
 
 
@@ -270,3 +270,71 @@ def test_ep_revalidation_measures_the_chase_from_the_frozen_range_high(tmp_path,
     result = sc.revalidate_signal(Fake({("LEAD", "M15"): m15(rows)}), log, event["id"], now(),
                                   symbol="LEAD", price=price, quote_at=now())
     assert ("price exceeds the existing chase limit" in result["reasons"]) is chased, result["reasons"]
+
+
+# ---- Astra's re-audit of 5e24e02 (P2): a relaxed threshold cannot clear a warning ----
+RELAXED = {  # warning -> (account at prepare, relaxed limits); synthetic, not recommendations
+    "daily_loss": (_loss(250), RiskLimits(daily_loss_usd=500)),
+    "weekly_loss": (dict(pnl_today=0, pnl_this_week=-450), RiskLimits(weekly_loss_usd=1000)),
+    "account_drawdown": (dict(equity=8_900, equity_high_water_mark=10_000), RiskLimits(kill_switch_drawdown_pct=0.20)),
+}
+IMPROVED = {"daily_loss": _loss(50), "weekly_loss": dict(pnl_today=0, pnl_this_week=-100),
+            "account_drawdown": dict(equity=9_500, equity_high_water_mark=10_000)}
+
+
+@pytest.mark.parametrize("code", sorted(RELAXED))
+@pytest.mark.parametrize("step", ["approve", "consume"])
+def test_relaxing_a_threshold_that_clears_the_warning_is_re_asked(banded, code, step):
+    account_changes, relaxed = RELAXED[code]
+    state, tickets, adapters, tid, v = banded(**account_changes)
+    assert [w["code"] for w in tickets.get(tid, v, now=NOW)["binding"]["warnings"]] == [code]
+    looser = replace(adapters, limits=relaxed)
+    if step == "consume":
+        approve(tickets, tid, v, adapters)
+        with pytest.raises(TicketError, match="warning policy changed"):
+            _consume(tickets, tid, v, looser)
+        assert tickets.get(tid, v, now=NOW)["state"] == "approved"
+    else:
+        with pytest.raises(TicketError, match="warning policy changed"):
+            approve(tickets, tid, v, looser)
+        assert tickets.get(tid, v, now=NOW)["state"] == "pending"
+
+
+@pytest.mark.parametrize("code", sorted(IMPROVED))
+def test_a_warning_cleared_by_real_improvement_still_consumes(banded, code):
+    state, tickets, adapters, tid, v = banded(**RELAXED[code][0])
+    approve(tickets, tid, v, adapters)
+    _snapshot(state, **IMPROVED[code])
+    assert _consume(tickets, tid, v, adapters)["order_submitted"] is False
+    assert tickets.history(tid)[-1]["payload"]["warning_values"] == {}
+
+
+def test_policy_change_refuses_even_a_ticket_without_warnings(banded):
+    """Engineering choice (fail closed): the whole account-warning policy is bound,
+    not only the thresholds of warnings that happened to be showing."""
+    state, tickets, adapters, tid, v = banded()
+    approve(tickets, tid, v, adapters)
+    with pytest.raises(TicketError, match="warning policy changed"):
+        _consume(tickets, tid, v, replace(adapters, limits=RiskLimits(daily_loss_usd=150)))
+
+
+def test_ticket_without_a_policy_snapshot_is_not_assumed_unchanged(banded, tmp_path):
+    """Migration: a ticket prepared before the snapshot existed cannot be approved."""
+    import json
+    import sqlite3
+    from contextlib import closing
+    from desk.tickets import _sha
+    state, tickets, adapters, tid, v = banded(**_loss(250))
+    with closing(sqlite3.connect(tickets.path)) as db, db:
+        stored = json.loads(db.execute("SELECT binding FROM tickets").fetchone()[0])
+        stored.pop("warning_policy")
+        db.execute("UPDATE tickets SET binding=?, binding_sha256=?",
+                   (json.dumps(stored, sort_keys=True, separators=(",", ":")), _sha(stored)))
+    with pytest.raises(TicketError, match="predates the warning-policy snapshot"):
+        approve(tickets, tid, v, adapters)
+
+
+def test_ticket_shows_the_warning_levels_it_was_checked_against(banded):
+    state, tickets, adapters, tid, v = banded(**_loss(250))
+    text = tickets.display(tid, v, now=NOW)
+    assert "Warning levels: daily loss $200.00, weekly loss $400.00, drawdown 10.00%" in text

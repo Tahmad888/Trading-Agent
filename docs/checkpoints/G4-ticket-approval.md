@@ -274,4 +274,17 @@ close G4/G5. Regressions are in `tests/test_reaudit_closure.py` (P1a, P1b) and
 Decisions 4 (free Massive plan, SPY/QQQ dividend reconciliation on the iMac) and 5
 (`SSL_CERT_FILE`, investigate first) need the iMac; read-only steps are in
 `research/ai-trading/g5/imac-commands.md`. Status: **fixed in the re-audit closure
-commit; awaiting Astra's independent check and iMac evidence for that commit.**
+commit (`5e24e02`); Astra checked it (next section).**
+
+## Fourth round: Astra's re-audit of 5e24e02 (2026-10-03)
+
+Astra closed P1a and P1b (her original probes: 11 passed, 1 deliberately deselected,
+on Python 3.12.14 and 3.14.6; 1130 passed on both) and reviewed decisions 1–3 with no
+defect in 1 or 3. She found one gap in decision 2.
+
+| # | Finding | Assessment | Resolution | Regression tests | Label |
+| --- | --- | --- | --- | --- | --- |
+| P2 | Relaxing a loss/drawdown threshold (e.g. daily $200 → $500) made the warning disappear, and the original ticket was approved or consumed without a new version. | Confirmed: all six of her cases fail on `5e24e02`. The cause is ambiguity: a warning missing from a later check can come from a real improvement or from a relaxed threshold, and the binding held thresholds only inside active warnings. Taz's decision says a threshold change re-asks. | The binding now carries `warning_policy` (the three thresholds, the 10% band and the measures). Any change re-asks, even on a ticket that showed no warning (fail closed; one extra version in that case). A ticket without the snapshot is refused, never assumed unchanged. The display shows the warning levels. | `test_taz_decisions::test_relaxing_a_threshold_that_clears_the_warning_is_re_asked[6]`, `::test_a_warning_cleared_by_real_improvement_still_consumes[3]`, `::test_policy_change_refuses_even_a_ticket_without_warnings`, `::test_ticket_without_a_policy_snapshot_is_not_assumed_unchanged`, `::test_ticket_shows_the_warning_levels_it_was_checked_against` | User policy (decision 2); engineering for the snapshot |
+
+Status: **fixed in the policy-snapshot commit; awaiting Astra's check and iMac evidence
+for that commit.**

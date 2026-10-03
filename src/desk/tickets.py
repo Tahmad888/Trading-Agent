@@ -324,8 +324,23 @@ def build_proposal(proposal_id: str, request: TicketRequest, terms: RiskTerms,
     return TradeProposal(worst_case_loss_usd=worst, **fields)
 
 
+def warning_policy(limits: RiskLimits) -> dict:
+    """The account-warning policy a ticket is checked against, bound with it.
+
+    Without it a warning missing from a later check is ambiguous: the account may
+    have improved, or the threshold may have been relaxed (Astra, re-audit of
+    5e24e02). Binding the thresholds, the band and the measures settles that.
+    """
+    return {"version": "account-warnings-v1",
+            "daily_loss_usd": limits.daily_loss_usd, "weekly_loss_usd": limits.weekly_loss_usd,
+            "drawdown_pct": limits.kill_switch_drawdown_pct, "band_of_threshold": WARNING_BAND,
+            "measures": "daily and weekly loss = max(0, -net P&L excluding cash flows); "
+                        "drawdown = 1 - equity / equity high-water mark"}
+
+
 def binding(ticket_id: str, version: int, request: TicketRequest, proposal: TradeProposal | None,
-            decision: RiskDecision | None, terms: RiskTerms | None, book: ContractBook | None) -> dict:
+            decision: RiskDecision | None, terms: RiskTerms | None, book: ContractBook | None,
+            limits: RiskLimits) -> dict:
     """Executable terms and evidence versions. Receipt timestamps are excluded."""
     d = decision
     legs = []
@@ -360,6 +375,7 @@ def binding(ticket_id: str, version: int, request: TicketRequest, proposal: Trad
                              "threshold": w.threshold} for w in (d.warnings if d else [])),
                            key=lambda w: (w["code"], w["value"])),
         "failed_checks": sorted(c.rule for c in (d.checks if d else []) if not c.passed),
+        "warning_policy": warning_policy(limits),
     }
 
 
@@ -385,7 +401,13 @@ WARNING_BAND = 0.10
 
 def binding_change(stored: dict, current: dict) -> str | None:
     """Why ``current`` no longer matches the bound ticket ``stored``, or None."""
-    if {k: v for k, v in stored.items() if k != "warnings"} != {k: v for k, v in current.items() if k != "warnings"}:
+    if "warning_policy" not in stored:
+        # Migration: never infer that an absent warning means an unchanged policy.
+        return "this ticket predates the warning-policy snapshot"
+    if stored["warning_policy"] != current.get("warning_policy"):
+        return "warning policy changed since this version was prepared: " + _policy_text(current.get("warning_policy"))
+    own = ("warnings", "warning_policy")
+    if {k: v for k, v in stored.items() if k not in own} != {k: v for k, v in current.items() if k not in own}:
         return "terms or evidence changed"
     before = {w["code"]: w for w in stored["warnings"]}
     after = {w["code"]: w for w in current["warnings"]}
@@ -406,6 +428,13 @@ def binding_change(stored: dict, current: dict) -> str | None:
     if any(code not in after and code not in BANDED_WARNINGS for code in before):
         return "warnings changed"
     return None
+
+
+def _policy_text(policy: dict | None) -> str:
+    if not policy:
+        return "unavailable"
+    return (f"daily loss {usd(policy['daily_loss_usd'])}, weekly loss {usd(policy['weekly_loss_usd'])}, "
+            f"drawdown {policy['drawdown_pct']:.2%}")
 
 
 def _checked_values(decision: RiskDecision) -> dict:
@@ -437,7 +466,7 @@ def recheck(ticket_id: str, version: int, request: TicketRequest, inputs: RiskIn
     try:
         revision, account = inputs.risk_state.load(request.account_id)
     except (RiskStateError, ValidationError, ValueError) as exc:
-        return Check(None, None, None, binding(ticket_id, version, request, None, None, None, None),
+        return Check(None, None, None, binding(ticket_id, version, request, None, None, None, None, inputs.limits),
                      (f"account snapshot unavailable ({type(exc).__name__})",), None)
     try:
         terms = RiskTerms.model_validate(inputs.terms_source.resolve(request.event_id, now).model_dump())
@@ -456,7 +485,7 @@ def recheck(ticket_id: str, version: int, request: TicketRequest, inputs: RiskIn
         problems.append("blocking checks failed: " + ", ".join(sorted(c.rule for c in decision.checks if not c.passed)))
     if now >= request.time_stop:
         problems.append("time stop has passed; no new entry")
-    bound = json.loads(_json(binding(ticket_id, version, request, proposal, decision, terms, book)))
+    bound = json.loads(_json(binding(ticket_id, version, request, proposal, decision, terms, book, inputs.limits)))
     return Check(proposal, decision, terms, bound, tuple(problems), book, revision, market)
 
 
@@ -469,7 +498,8 @@ def final_evaluation(ticket_id: str, version: int, request: TicketRequest, input
     decision = evaluate(check.proposal, account, inputs.limits, at, live=request.environment == "live",
                         contract_book=check.book, registry=inputs.registry, market=check.market,
                         terms_source=_TermsSnapshot(check.terms))
-    bound = json.loads(_json(binding(ticket_id, version, request, check.proposal, decision, check.terms, check.book)))
+    bound = json.loads(_json(binding(ticket_id, version, request, check.proposal, decision, check.terms, check.book,
+                               inputs.limits)))
     return decision, bound
 
 
@@ -1044,6 +1074,8 @@ def render(view: dict) -> str:
     if b["failed_checks"]:
         out.append("Blocking checks failed (no warning acknowledgement can override these): "
                    + ", ".join(b["failed_checks"]))
+    if b.get("warning_policy"):
+        out.append(f"Warning levels: {_policy_text(b['warning_policy'])} (a change to these needs a new version)")
     if b["warnings"]:
         out.append("Warnings (approval needs each acknowledgement code typed exactly):")
         for i, (w, token) in enumerate(zip(b["warnings"], view["acknowledgement_tokens"]), 1):

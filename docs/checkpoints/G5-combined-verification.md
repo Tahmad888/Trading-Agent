@@ -224,3 +224,21 @@ Details: `checkpoints/G4-ticket-approval.md` (third round) and `G5_ACCEPTANCE.md
 Not yet run on the iMac or on Python 3.14 for this commit. `git diff --check` passes.
 G5 acceptance stays **pending** Astra's independent check, iMac evidence for this
 exact commit, and the decision 4 and 5 iMac results.
+
+## Policy-snapshot fix (Astra's re-audit of 5e24e02, 2026-10-03)
+
+Astra closed both timing findings and found that relaxing a loss/drawdown threshold
+could clear an acknowledged warning without a new version (P2). The ticket binding now
+includes the account-warning policy; any change re-asks; tickets without the snapshot
+are refused. Details: `checkpoints/G4-ticket-approval.md` (fourth round).
+
+### Verification (cloud container, policy-snapshot commit)
+
+| Python | `python -m pytest -q -W error` |
+| --- | --- |
+| 3.12.3 | **1142 passed** |
+| 3.13.14 | **1142 passed** |
+
+Not yet run on the iMac or on Python 3.14 for this commit. G5 acceptance stays
+**pending** Astra's check, iMac evidence for this exact commit, and the Massive and
+`SSL_CERT_FILE` iMac results.
