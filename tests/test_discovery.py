@@ -289,14 +289,31 @@ def test_acceptance_scope_does_not_guess_other_security_categories():
 
 
 
-def test_partial_weekly_build_retains_old_list(tmp_path):
+def test_partial_weekly_build_publishes_valid_leaders_and_discloses_failures(tmp_path):
+    # G5a checkpoint 2 (Taz 2026-10-04): one failed candidate no longer vetoes the build.
     day=date(2026,10,2)
     log=sc.ScanLog(tmp_path)
     log.write_watchlist({"OLD":["leader scan"]})
     source=Fake(frames(day),lists={"MONTH_3":[{"symbol":"LEAD","price":150},
                                                         {"symbol":"MISSING","price":100}]})
     rec=sc.leader_scan_job(source,log,now(hour=16,minute=40,day=day))
-    assert rec.error and rec.discovery["watchlist_build"]["status"]=="PARTIAL"
+    status=rec.discovery["watchlist_build"]
+    assert not rec.error and status["status"]=="PARTIAL" and status["generation"]==1 and not status["retained"]
+    wl=json.loads((tmp_path/"watchlist.json").read_text())
+    assert "OLD" not in wl and wl["LEAD"]==["leader scan"]
+    build=json.loads((tmp_path/"watchlist-build.json").read_text())["build"]
+    assert build["outcomes"]["MISSING"]["outcome"]=="source_failure"
+    assert build["outcomes"]["LEAD"]["outcome"]=="selected" and build["population"]==["LEAD"]
+
+
+def test_incomplete_weekly_build_without_valid_leaders_retains_old_list(tmp_path):
+    day=date(2026,10,2)
+    log=sc.ScanLog(tmp_path)
+    log.write_watchlist({"OLD":["leader scan"]})
+    source=Fake(frames(day),lists={"MONTH_3":[{"symbol":"MISSING","price":100}]})
+    rec=sc.leader_scan_job(source,log,now(hour=16,minute=40,day=day))
+    status=rec.discovery["watchlist_build"]
+    assert rec.error and status["status"]=="INCOMPLETE" and status["retained"] and status["generation"]==0
     assert "OLD" in json.loads((tmp_path/"watchlist.json").read_text())
 
 

@@ -16,6 +16,7 @@ import sqlite3
 import pandas as pd
 
 from desk.calendar import clock, session
+from desk.data_basis import dependency_terms
 from desk.playbook.cards import CARDS
 from desk.playbook.triggers import Signal
 
@@ -52,6 +53,12 @@ def candidate_id(sig, day):
     # Rationale text may change without changing executable terms.
     terms = signal_payload(sig)
     terms.pop("saw")
+    # Volume qualification (G5a): only its dependency (used values, definitions,
+    # identity, rule, result) defines terms; receipts and snapshot digests do not.
+    # Signals without it keep their earlier identities.
+    volume = terms.pop("volume_evidence", None)
+    if volume is not None:
+        terms["volume_evidence"] = dependency_terms(volume)
     basis = terms.get("price_basis")
     if isinstance(basis,dict) and basis.get("method") == "webull-history-v1":
         # Re-fetching identical vendor history does not create new setup terms.

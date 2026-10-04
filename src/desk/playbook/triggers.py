@@ -18,13 +18,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from decimal import Decimal
 import math
 
 import numpy as np
 import pandas as pd
 
 from desk.bars import BarDataError
-from desk.data_basis import volume_basis, compatible_volume
+from desk.data_basis import compatible_volume, decision_window, volume_basis, volume_evidence
 from desk.indicators import anchored_vwap, ema, rs_line
 from desk.playbook.cards import CARDS, INDEX_ETFS, Card, Direction
 from desk.playbook.filters import GateResult, MarketSize, stage4_puts_allowed
@@ -41,6 +42,10 @@ class Context:
     today_open: float | None = None         # the episodic pivot's gap day
     early_volume: float | None = None       # first 30 minutes' volume on the gap day
     early_volume_basis: dict | None = None
+    # Alpaca SIP path (G5a checkpoint 2): the approved-card EP component and its evidence.
+    # When set, it alone decides the early-volume condition; there is no float re-comparison.
+    ep_volume: object | None = None
+    ep_volume_evidence: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +64,9 @@ class Signal:
 
     stop_basis: str = "fixed"
     adr_pct: float | None = None
+    # Used Alpaca volume qualification (values, definitions, identity, rule, result,
+    # dependency digest, audit receipts). None: no volume dependency or the Webull path.
+    volume_evidence: dict | None = None
 
     def __post_init__(self):
         if not self.setup_version and self.setup_id in CARDS:
@@ -173,18 +181,30 @@ def minervini_vcp(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     depths = [d for _, _, d in c]
     shrinking = all(b <= card.p("shrink") * a for a, b in zip(depths, depths[1:]))
     pivot, low, last_depth = c[-1]
-    volume_basis(f.iloc[-50:])
-    vol10 = f["volume"].iloc[-10:].mean()
-    vol50 = f["volume"].iloc[-50:].mean()
+    window = decision_window(f, 50)
+    evidence = None
+    if window.source == "alpaca":
+        # Exact: 10-day mean < dry_volume x 50-day mean, i.e. s10*50 < dry*s50*10.
+        s10, s50 = sum(window.values[-10:], Decimal(0)), sum(window.values, Decimal(0))
+        dry = s10 * 50 < Decimal(str(card.p("dry_volume"))) * s50 * 10
+        share = float(s10 * 5 / s50) if s50 else float("inf")
+        evidence = volume_evidence(f"{card.id}:dry_volume", card.fingerprint(),
+                                   {"sum10": str(s10), "sum50": str(s50), "met": dry},
+                                   [(window.decision, window.used())])
+    else:
+        vol10 = f["volume"].iloc[-10:].mean()
+        vol50 = f["volume"].iloc[-50:].mean()
+        dry, share = vol10 < card.p("dry_volume") * vol50, vol10 / vol50
     close = f["close"].iloc[-1]
     stop = low - TICK
-    if not (shrinking and last_depth <= card.p("last_max_depth") and vol10 < card.p("dry_volume") * vol50
+    if not (shrinking and last_depth <= card.p("last_max_depth") and dry
             and close < pivot and (pivot - stop) / pivot <= card.p("max_stop_pct")):
         return None
     return Signal(card.id, ctx.symbol, "long", f.index[-1], pivot, stop, None, {
         "contractions": " → ".join(_pct(d) for d in depths),
-        "volume": f"10-day average is {vol10 / vol50:.0%} of the 50-day",
-        "trigger": f"pivot {pivot:.2f}, no fill above {pivot * (1 + card.p('max_chase')):.2f}"})
+        "volume": f"10-day average is {share:.0%} of the 50-day",
+        "trigger": f"pivot {pivot:.2f}, no fill above {pivot * (1 + card.p('max_chase')):.2f}"},
+        volume_evidence=evidence)
 
 
 # 3. O'Neil cup-with-handle
@@ -212,12 +232,23 @@ def oneil_cup_with_handle(f: pd.DataFrame, card: Card, ctx: Context) -> Signal |
     handle_low = handle["low"].iloc[1:].min()
     handle_depth = 1 - handle_low / R
     rounded = 0.2 <= bottom_at / (len(cup) - 1) <= 0.8
-    volume_basis(f.iloc[min(r + 1, len(f) - 50):])
-    vol50 = f["volume"].iloc[-50:].mean()
+    window = decision_window(f, len(f) - min(r + 1, len(f) - 50))
+    evidence = None
+    if window.source == "alpaca":
+        k = len(f) - (r + 1)                      # handle bars after the right-side high
+        s50 = sum(window.values[-50:], Decimal(0))
+        sh = sum(window.values[-k:], Decimal(0)) if k else Decimal(0)
+        light = k > 0 and sh * 50 < s50 * k       # exact: handle mean < 50-day mean
+        evidence = volume_evidence(f"{card.id}:handle_volume", card.fingerprint(),
+                                   {"handle_sum": str(sh), "handle_bars": k, "sum50": str(s50), "met": light},
+                                   [(window.decision, window.used())])
+    else:
+        vol50 = f["volume"].iloc[-50:].mean()
+        light = handle["volume"].iloc[1:].mean() < vol50
     ok = (advance >= card.p("prior_advance") and card.p("cup_min_depth") <= depth <= card.p("cup_max_depth")
           and rounded and R >= card.p("right_side") * L and R <= L * 1.05
           and handle_depth <= card.p("handle_max_depth") and handle_low > bottom + (L - bottom) / 2
-          and handle["volume"].iloc[1:].mean() < vol50 and f["close"].iloc[-1] < R)
+          and light and f["close"].iloc[-1] < R)
     if not ok:
         return None
     pivot = R + (0.10 if R < 100 else R * 0.001)
@@ -225,7 +256,7 @@ def oneil_cup_with_handle(f: pd.DataFrame, card: Card, ctx: Context) -> Signal |
     return Signal(card.id, ctx.symbol, "long", f.index[-1], pivot, stop, pivot * 1.20, {
         "prior advance": f"up {_pct(advance)}", "cup": f"{_pct(depth)} deep over {len(cup) // 5} weeks",
         "handle": f"{_pct(handle_depth)} deep over {len(handle) - 1} days on light volume",
-        "trigger": f"handle high {pivot:.2f}; earnings gate checked separately"})
+        "trigger": f"handle high {pivot:.2f}; earnings gate checked separately"}, volume_evidence=evidence)
 
 
 # 4. Darvas box
@@ -264,20 +295,30 @@ def episodic_pivot(f: pd.DataFrame, card: Card, ctx: Context) -> Signal | None:
     hi, lo = base["high"].max(), base["low"].min()
     mid = (hi + lo) / 2
     sideways = (hi / lo - 1) <= card.p("sideways_range") and abs(last["close"] / mid - 1) <= card.p("near_middle")
-    compatible_volume(f.iloc[-50:], ctx.early_volume_basis)
-    vol50 = f["volume"].iloc[-50:].mean()
-    if len(f) < 50 or not np.isfinite(vol50) or vol50 <= 0:
-        raise BarDataError("EP requires a positive, complete 50-day volume baseline")
-    if ctx.early_volume is None or not np.isfinite(ctx.early_volume) or ctx.early_volume < 0:
-        raise BarDataError("EP early volume must be a finite nonnegative share count")
-    heavy = ctx.early_volume is not None and ctx.early_volume >= card.p("early_volume") * vol50
+    if ctx.ep_volume is not None:
+        # Alpaca SIP: the approved-card component (09:30+09:45 RTH over 50 prior native
+        # daily sessions, exact Decimal) is the only comparison; no float re-check.
+        component = ctx.ep_volume
+        if component.symbol != ctx.symbol or component.entry_session <= f.index[-1].tz_convert("America/New_York").date() \
+                or component.prior_sessions[-1] != f.index[-1].tz_convert("America/New_York").date():
+            raise BarDataError("EP volume component belongs to another ticker or session")
+        heavy, share = component.threshold_met, float(component.ratio)
+    else:
+        compatible_volume(f.iloc[-50:], ctx.early_volume_basis)
+        vol50 = f["volume"].iloc[-50:].mean()
+        if len(f) < 50 or not np.isfinite(vol50) or vol50 <= 0:
+            raise BarDataError("EP requires a positive, complete 50-day volume baseline")
+        if ctx.early_volume is None or not np.isfinite(ctx.early_volume) or ctx.early_volume < 0:
+            raise BarDataError("EP early volume must be a finite nonnegative share count")
+        heavy = ctx.early_volume is not None and ctx.early_volume >= card.p("early_volume") * vol50
+        share = ctx.early_volume / vol50
     if gap < card.p("min_gap") or not sideways or not heavy:
         return None
     return Signal(card.id, ctx.symbol, "long", f.index[-1], ctx.today_open, None, None, {
         "gap": f"up {_pct(gap)} at the open", "before": f"sideways {len(base)} days in a {_pct(hi / lo - 1)} range",
-        "early volume": f"{ctx.early_volume / vol50:.0%} of a normal day",
+        "early volume": f"{share:.0%} of a normal day",
         "trigger": "either completed 15-minute or 60-minute opening-range high on day one; earnings growth checked separately"},
-        stop_basis="session_low", adr_pct=float(last["adr_pct_20"]))
+        stop_basis="session_low", adr_pct=float(last["adr_pct_20"]), volume_evidence=ctx.ep_volume_evidence)
 
 
 def growth_group(card: Card, eps_growth: float | None, sales_growth: float | None) -> str | None:

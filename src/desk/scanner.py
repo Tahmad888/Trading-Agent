@@ -41,11 +41,14 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from desk.bars import BarDataError, require, validate
-from desk.calendar import trading_day, next_trading_day, session, clock
+from desk.calendar import trading_day, next_trading_day, session, clock, latest_closed_session
 from desk.bar_contract import (completed_daily, completed_intraday, provenance,
                                check_price_scale, developing_daily_from_m15)
 from desk.indicators import daily_features
-from desk.data_basis import price_basis, volume_basis, PriceHistoryChanged, DailyHistoryChanged
+from desk.data_basis import (price_basis, volume_basis, volume_evidence, alpaca_ep_inputs, PriceHistoryChanged,
+                             DailyHistoryChanged, VolumeUnavailable)
+from desk.alpaca_source import VOLUME_SETUPS, provider_of
+from desk.alpaca_volume import AlpacaVolumeError, ep_volume_component
 from desk.signal_state import SignalStore, SignalStateError, restore_signal
 from desk.security import securities
 from desk.symbols import canonical_symbol
@@ -163,8 +166,17 @@ def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, de
     rec = ScanRecord("close", now.astimezone(ET).isoformat(), None)
     symbols = sorted(set(watchlist) | {"SPY", "QQQ"})
     bars = fetch(source, symbols, "D", DAILY_BARS, rec.skipped)
+    provider = provider_of(source)
+    if provider:
+        # Separate Alpaca SIP volume for the watchlist's daily volume checks (VCP, cup).
+        # Today's native daily is not final at 16:10: those checks report
+        # DAILY_NOT_COMPLETED_AT_RECEIPT and are re-prepared at the next session.
+        provider.attach_daily({s: bars[s] for s in watchlist if s in bars}, now,
+                              through=latest_closed_session(now))
     now = decision_clock() if decision_clock else now
     rec.at = clock(now).isoformat()
+    if provider:
+        provider.settle(bars, now)
     for sym in symbols:
         if sym not in bars:
             rec.skipped.setdefault(sym, "no bars returned")
@@ -211,7 +223,17 @@ def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, de
     rec.armed = [_sig(s) for s in armed]
     rec.qualification = {f"{s.symbol}/{s.setup_id}": qualify(source, s, now) for s in armed}
     rec.discovery["prepared"] = sorted(s for s in watchlist if s in feats)
+    if provider:
+        rec.discovery["volume_pending"] = volume_pending(rec.skipped)
+        rec.discovery["alpaca_volume"] = {"requests": provider.requests_used, "batches": list(provider.batches)}
     return rec, armed
+
+
+def volume_pending(skipped: Mapping[str, str], code: str = "DAILY_NOT_COMPLETED_AT_RECEIPT") -> list[str]:
+    """Names whose volume-dependent setup could not run because its volume was not yet final."""
+    from desk.alpaca_source import VOLUME_SETUPS
+    return sorted({key.split("/")[0] for key, why in skipped.items()
+                   if "/" in key and key.split("/", 1)[1] in VOLUME_SETUPS and code in why})
 
 
 def _ep_entry_hit(sig: Signal, m15: pd.DataFrame, now: datetime) -> tuple[bool, float, str]:
@@ -333,6 +355,38 @@ def entry_observations(sig: Signal, bars: pd.DataFrame) -> list[dict]:
     return observations
 
 
+def volume_status(source, sig: Signal, now, *, refresh: bool, metadata: dict | None = None) -> tuple[str, str | None]:
+    """("OK" | "UNAVAILABLE" | "CHANGED", code) for a saved signal's volume qualification.
+
+    Alpaca evidence is re-checked through the run's provider (cache only unless
+    ``refresh``). A volume setup qualified without Alpaca evidence while Alpaca is the
+    configured source, or with Alpaca evidence when it is not, changed source.
+    Price-only setups have no volume dependency.
+    """
+    provider = provider_of(source)
+    if sig.volume_evidence is None:
+        if provider is not None and sig.setup_id in VOLUME_SETUPS:
+            return "CHANGED", "VOLUME_SOURCE_CHANGED"
+        return "OK", None
+    if provider is None:
+        return "CHANGED", "VOLUME_SOURCE_CHANGED"
+    return provider.gate(sig.volume_evidence, now, refresh=refresh, metadata=metadata)
+
+
+def check_volume(source, store: SignalStore, sig: Signal, now, *, refresh: bool = False,
+                 metadata: dict | None = None) -> None:
+    """Suspend on unavailable volume; retire and queue a rebuild on changed volume."""
+    state, code = volume_status(source, sig, now, refresh=refresh, metadata=metadata)
+    if state == "OK":
+        return
+    day = clock(now).date()
+    if state == "CHANGED":
+        store.invalidate_candidate(sig, day, now, "volume qualification changed: " + code, rebuild=True)
+    else:
+        store.suspend(sig, day, "volume unavailable: " + code)
+    raise VolumeUnavailable(code)
+
+
 def observe_signal(store: SignalStore, sig: Signal, frame: pd.DataFrame, now: datetime) -> list[dict]:
     day = clock(now).date()
     reference = clock(sig.as_of).date()
@@ -373,6 +427,7 @@ def intraday_scan(source: BarSource, armed: Sequence[Signal], now: datetime, *, 
             continue
         try:
             if store:
+                check_volume(source, store, sig, now)
                 events = observe_signal(store, sig, bars[sig.symbol], now)
                 rec.triggered.extend(_qualified_event(source, sig, e, now) for e in events)
                 continue
@@ -399,7 +454,16 @@ def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skippe
     names = movers(source, skipped) if candidates is None else list(dict.fromkeys(canonical_symbol(s) for s in candidates))
     daily = fetch(source, names, "D", DAILY_BARS, skipped)
     intraday = fetch(source, names, "M15", 40, skipped)
+    provider = provider_of(source)
+    if provider:
+        # Separate Alpaca SIP volume: 09:30+09:45 RTH over 50 prior native daily sessions.
+        # Free historical SIP needs a 15-minute-old end, so before 10:15 this is
+        # END_NOT_15_MINUTES_OLD (no request) and the name is retried at a later slot.
+        provider.attach_ep(daily, intraday, today, now)
     now = decision_clock() if decision_clock else now
+    if provider:
+        provider.settle(daily, now)
+        provider.settle(intraday, now)
     out = []
     for sym in names:
         if sym not in daily or sym not in intraday:
@@ -411,10 +475,14 @@ def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skippe
             check_price_scale(price_basis(d, now, symbol=sym).model_dump(mode="json"), m, now, symbol=sym)
             if len(m) < 2 or len(d) < minimum_history("5_qullamaggie_episodic_pivot"):
                 raise BarDataError(f"EP needs {minimum_history('5_qullamaggie_episodic_pivot')} completed daily bars and two completed M15 bars")
-            volume_basis(m.iloc[:2])
-            ctx = Context(sym, market, None, today_open=float(m["open"].iloc[0]),
-                          early_volume=float(m["volume"].iloc[:2].sum()),
-                          early_volume_basis=m.attrs.get("volume_basis"))
+            if provider:
+                ctx = Context(sym, market, None, today_open=float(m["open"].iloc[0]),
+                              **ep_volume_context(sym, d, m, today))
+            else:
+                volume_basis(m.iloc[:2])
+                ctx = Context(sym, market, None, today_open=float(m["open"].iloc[0]),
+                              early_volume=float(m["volume"].iloc[:2].sum()),
+                              early_volume_basis=m.attrs.get("volume_basis"))
             sig = episodic_pivot(daily_features(d), CARDS["5_qullamaggie_episodic_pivot"], ctx)
         except BarDataError as e:
             skipped[sym] = str(e)
@@ -425,26 +493,101 @@ def episodic_pivots(source: BarSource, market: MarketSize, now: datetime, skippe
     return out
 
 
+def ep_volume_context(symbol: str, daily: pd.DataFrame, m15: pd.DataFrame, entry: date) -> dict:
+    """The approved-card EP volume component on attached Alpaca SIP volume, plus evidence."""
+    from desk.alpaca_volume import prior_sessions
+    daily_obs, rth_obs, (d, m) = alpaca_ep_inputs(daily, m15, entry)
+    try:
+        component = ep_volume_component(entry, daily_obs, rth_obs)
+    except AlpacaVolumeError as exc:
+        raise VolumeUnavailable(exc.code) from None
+    if component.symbol != d.identity.alpaca_symbol:
+        raise VolumeUnavailable("IDENTITY_MISMATCH")
+    component = component.model_copy(update={"symbol": symbol})
+    by_day = {pd.Timestamp(t).tz_convert(ET).date(): v for t, v in daily_obs.bars}
+    evidence = volume_evidence(
+        "5_qullamaggie_episodic_pivot:early_volume", component.rule_version,
+        {"first30": str(component.first30_volume), "prior50_total": str(component.prior50_total),
+         "ratio": str(component.ratio), "threshold": str(component.threshold), "met": component.threshold_met},
+        [(d, [(day.isoformat(), by_day[day]) for day in prior_sessions(entry)]),
+         (m, list(component.first30_intervals))])
+    return {"ep_volume": component, "ep_volume_evidence": evidence}
+
+
 def leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> ScanRecord:
-    rec = _leader_scan_job(source, log, now, decision_clock=decision_clock)
-    status = ("PARTIAL" if rec.scanned else "FAILED") if rec.error else "EMPTY" if not rec.leaders else "READY"
-    log.build_status(datetime.fromisoformat(rec.at), status, rec.skipped, success=not rec.error)
-    rec.discovery["watchlist_build"] = log.watchlist_status(datetime.fromisoformat(rec.at))
+    """Fridays after the close: rank the universe and publish next week's watchlist.
+
+    Outcomes (G5a checkpoint 2): READY (complete, leaders), PARTIAL (some candidates
+    failed on their own data; the independently valid leaders publish with every
+    exclusion disclosed), EMPTY (complete, no leaders). FAILED (universe, ranking or
+    shared SPY benchmark) and INCOMPLETE (candidate failures and no valid leader)
+    publish nothing; the previous list stays in force with its own publication time.
+    """
+    rec, wl, report = _leader_scan_job(source, log, now, decision_clock=decision_clock)
+    at = datetime.fromisoformat(rec.at)
+    if report["status"] in ScanLog.PUBLISHED:
+        log.publish_watchlist(at, report["status"], wl, report)
+    else:
+        log.build_status(at, report["status"], report.get("reasons", {}), report=report)
+    rec.discovery["build"] = {k: v for k, v in report.items() if k not in ("outcomes", "liquidity_evidence")}
+    rec.discovery["watchlist_build"] = log.watchlist_status(at)
     return rec
 
 
-def _leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> ScanRecord:
-    """Fridays after the close: rank the universe and write next week's watchlist with Taz's picks."""
-    from desk.watchlist import build_watchlist, leader_scan, universe
+UNIVERSE_STAGE = {"no bars returned": "bars", "bar identity disagrees with security metadata": "bars"}
+
+
+def _leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *,
+                     decision_clock: Callable[[], datetime] | None = None):
+    from collections import Counter
+    from desk.alpaca_source import complete_through, provider_of
+    from desk.calendar import latest_closed_session
+    from desk.watchlist import UNIVERSE_LISTS, build_watchlist, leader_scan, universe
 
     rec = ScanRecord("leader", now.astimezone(ET).isoformat(), None)
-    names = universe(source, rec.skipped)
+    considered: list[str] = []
+    names = universe(source, rec.skipped, considered=considered)
+    list_failures = {k: v for k, v in rec.skipped.items() if k in {f"{a}:{b}" for a, b in UNIVERSE_LISTS}}
+    outcomes: dict[str, dict] = {}
+    for sym in considered:
+        if sym not in names:
+            why = rec.skipped.get(sym, "security metadata unavailable")
+            outcomes[sym] = ({"outcome": "criterion", "stage": "security_type", "reason": why}
+                             if why.startswith("unsupported security type") else
+                             {"outcome": "source_failure", "stage": "metadata", "reason": why})
     bars = fetch(source, sorted(set(names) | {"SPY"}), "D", DAILY_BARS, rec.skipped)
+    provider = provider_of(source)
+    through = complete_through(now) if provider else None
+    if provider and names:
+        # Liquidity reads native-daily SIP ending at the latest session final at this
+        # clock (Thursday at the Friday 16:40 build); the window is disclosed below.
+        provider.attach_daily({s: f for s, f in bars.items() if s != "SPY"}, now, through=through)
     now = decision_clock() if decision_clock else now
     rec.at = clock(now).isoformat()
-    if "SPY" not in bars or bars["SPY"].index[-1].tz_convert(ET).date() != now.astimezone(ET).date():
-        rec.error = "no SPY bars for today: last week's watchlist stays"
+    if provider:
+        provider.settle(bars, now)
+    report = {"attempted_at": rec.at, "latest_completed_session": latest_closed_session(now).isoformat(),
+              "universe_lists": [f"{a}:{b}" for a, b in UNIVERSE_LISTS], "candidates": len(considered),
+              "volume_source": "alpaca-sip-split:native-daily-v1" if provider else "webull-native-daily",
+              "volume_through": through.isoformat() if through else None,
+              "alpaca_requests": provider.requests_used if provider else 0,
+              "alpaca_batches": list(provider.batches) if provider else []}
+
+    def finish(status, reasons, leaders=(), population=(), evidence=None):
+        counts = Counter(f"{o['outcome']}:{o['stage']}" for o in outcomes.values())
+        report.update(status=status, reasons=reasons, outcomes=outcomes, stage_counts=dict(sorted(counts.items())),
+                      population=list(population), leaders=list(leaders),
+                      liquidity_evidence=evidence or {},
+                      alpaca_requests=provider.requests_used if provider else 0,
+                      alpaca_batches=list(provider.batches) if provider else [])
+        if status not in ScanLog.PUBLISHED:
+            rec.error = f"{status.lower()} watchlist build: previous list retained" + (
+                f" ({'; '.join(f'{k}: {v}' for k, v in list(reasons.items())[:3])})" if reasons else "")
         return rec
+
+    if list_failures:
+        finish("FAILED", list_failures)
+        return rec, None, report
     clean = {}
     for symbol, frame in bars.items():
         try:
@@ -453,23 +596,38 @@ def _leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *, decisi
             clean[symbol] = validated
         except BarDataError as exc:
             rec.skipped[symbol] = str(exc)
+            if symbol != "SPY":
+                outcomes[symbol] = {"outcome": "source_failure", "stage": "price_validation", "reason": str(exc)}
+    for symbol in names:
+        if symbol not in bars:
+            why = rec.skipped.get(symbol, "no bars returned")
+            outcomes[symbol] = {"outcome": "source_failure", "stage": UNIVERSE_STAGE.get(why, "bars"), "reason": why}
     if "SPY" not in clean:
+        # The shared benchmark: every Trend Template depends on it.
+        finish("FAILED", {"SPY": rec.skipped.get("SPY", "no SPY bars")})
         rec.error = "no valid completed SPY bars"
-        return rec
+        return rec, None, report
     scan_ = leader_scan({s: b for s, b in clean.items() if s != "SPY"}, clean["SPY"]["close"])
-    failures = {k: v for k, v in rec.skipped.items() if not v.startswith("unsupported security type")}
-    failures.update({k: v for k, v in scan_.skipped.items() if v.startswith("bad data:") and "under a year" not in v})
+    outcomes.update(scan_.outcomes)
+    if "SPY" in considered:
+        outcomes["SPY"] = {"outcome": "criterion", "stage": "benchmark", "reason": "the benchmark is never a leader"}
     rec.skipped.update(scan_.skipped)
     rec.scanned = scan_.ranked
-    if failures:
-        rec.error = "incomplete watchlist preparation: previous list retained"
-        return rec
+    leaders = [l.symbol for l in scan_.leaders]
+    failures = {s: o["reason"] for s, o in outcomes.items() if o["outcome"] == "source_failure"}
+    evidence = {s: (e if s in leaders else {"dependency_digest": e["dependency_digest"]})
+                for s, e in scan_.evidence.items()}
+    rec.leaders = [{"symbol": l.symbol, "score": l.score, **l.returns,
+                    **({"liquidity_digest": scan_.evidence[l.symbol]["dependency_digest"]}
+                       if l.symbol in scan_.evidence else {})} for l in scan_.leaders]
+    status = ("PARTIAL" if failures else "READY") if leaders else ("INCOMPLETE" if failures else "EMPTY")
+    finish(status, failures if status == "INCOMPLETE" else {}, rec.leaders, scan_.population, evidence)
+    report["excluded_source_failures"] = len(failures)
+    if status not in ScanLog.PUBLISHED:
+        return rec, None, report
     picks = log.picks()
-    wl = build_watchlist([l.symbol for l in scan_.leaders], added=picks.get("add", []),
-                         removed=picks.get("remove", []))
-    log.write_watchlist(wl)
-    rec.leaders = [{"symbol": l.symbol, "score": l.score, **l.returns} for l in scan_.leaders]
-    return rec
+    wl = build_watchlist(leaders, added=picks.get("add", []), removed=picks.get("remove", []))
+    return rec, wl, report
 
 
 def rsi2_estimate(source: BarSource, watchlist: Sequence[str], market: MarketSize, now: datetime,
@@ -554,26 +712,144 @@ class ScanLog:
     def write_watchlist(self, wl: Mapping[str, list[str]]) -> None:
         self.write_json("watchlist.json", wl)
 
-    def build_status(self, now, status, reasons, *, success=False) -> None:
-        old = self.watchlist_status(now)
+    # ---- weekly build publication (G5a checkpoint 2) ------------------------------
+    # ``watchlist-build.json`` is the commit point: generation, publication time, status,
+    # list and build report under one digest, written atomically. ``watchlist.json`` is
+    # derived from it and repaired on read; ``watchlist-status.json`` holds the latest
+    # attempt (which may have retained the published generation). No bundle yet: the
+    # legacy ``watchlist.json`` is generation 0, published at the legacy last success.
+    BUILD = "watchlist-build.json"
+    PUBLISHED = ("READY", "PARTIAL", "EMPTY")
+    COMPLETE = ("READY", "EMPTY")
+    STALE_AFTER = timedelta(days=7)
+
+    @staticmethod
+    def _digest(value) -> str:
+        import hashlib
+        return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+    def _bundle(self) -> dict | None:
+        """The committed publication, None if none exists; raises on a corrupt bundle."""
+        p = self.root / self.BUILD
+        if not p.exists():
+            return None
+        bundle = json.loads(p.read_text())
+        if not isinstance(bundle, dict) or bundle.get("status") not in self.PUBLISHED or \
+                not isinstance(bundle.get("generation"), int) or not isinstance(bundle.get("list"), dict) or \
+                self._digest({k: v for k, v in bundle.items() if k != "digest"}) != bundle.get("digest"):
+            raise ValueError("watchlist build bundle failed its digest check")
+        clock(bundle["published_at"])
+        return bundle
+
+    def _attempt(self) -> dict:
+        p = self.root / "watchlist-status.json"
+        if not p.exists():
+            return {}
+        state = json.loads(p.read_text())
+        if not isinstance(state, dict):
+            raise ValueError("invalid status")
+        return state
+
+    def published_watchlist(self) -> dict | None:
+        """The published list (repairing the derived ``watchlist.json``), or None."""
+        bundle = self._bundle()
+        p = self.root / "watchlist.json"
+        if bundle is None:
+            return json.loads(p.read_text()) if p.exists() else None
+        try:
+            derived = json.loads(p.read_text()) if p.exists() else None
+        except ValueError:
+            derived = None
+        if derived != bundle["list"]:
+            self.write_watchlist(bundle["list"])
+        return bundle["list"]
+
+    def publish_watchlist(self, now, status: str, wl: Mapping[str, list[str]], report: dict) -> dict:
+        if status not in self.PUBLISHED:
+            raise ValueError("only READY, PARTIAL or EMPTY builds publish")
+        try:
+            previous = self._bundle()
+        except (ValueError, TypeError, BarDataError):
+            previous = None                       # a corrupt bundle is replaced, never extended
+        generation = (previous["generation"] if previous else 0) + 1
+        last_complete = clock(now).isoformat() if status in self.COMPLETE else (
+            (previous or {}).get("last_complete_at") or self._legacy_success())
+        body = {"generation": generation, "published_at": clock(now).isoformat(), "status": status,
+                "last_complete_at": last_complete, "list": dict(wl),
+                "list_digest": self._digest(dict(wl)), "build": report}
+        body["digest"] = self._digest(body)
+        self.write_json(self.BUILD, body)       # commit point
+        self.write_watchlist(body["list"])
+        self._write_attempt(now, status, {}, report, generation)
+        return body
+
+    def _legacy_success(self):
+        try:
+            return self._attempt().get("last_success_at")
+        except (ValueError, TypeError, OSError):
+            return None
+
+    def _write_attempt(self, now, status, reasons, report, generation):
+        counts = (report or {}).get("stage_counts")
         self.write_json("watchlist-status.json", {
             "attempted_at": clock(now).isoformat(), "status": status, "reasons": reasons,
+            "published_generation": generation, "stage_counts": counts,
+            "last_success_at": None if status not in self.COMPLETE else clock(now).isoformat()})
+
+    def build_status(self, now, status, reasons, *, success=False, report=None) -> None:
+        """Record an attempt that did not publish (FAILED/INCOMPLETE); the list is retained.
+
+        ``success=True`` is the legacy pre-bundle form (a complete build with no bundle).
+        """
+        try:
+            bundle = self._bundle()
+        except (ValueError, TypeError, BarDataError):
+            bundle = None
+        old = {}
+        try:
+            old = self._attempt()
+        except (ValueError, TypeError, OSError):
+            pass
+        self.write_json("watchlist-status.json", {
+            "attempted_at": clock(now).isoformat(), "status": status, "reasons": reasons,
+            "published_generation": bundle["generation"] if bundle else 0,
+            "stage_counts": (report or {}).get("stage_counts"),
             "last_success_at": clock(now).isoformat() if success else old.get("last_success_at")})
 
     def watchlist_status(self, now) -> dict:
-        p = self.root / "watchlist-status.json"
-        if not p.exists():
-            return {"status": "UNKNOWN", "stale": True, "last_success_at": None}
+        """Latest attempt plus the published generation it left in force."""
         try:
-            state = json.loads(p.read_text())
-            if not isinstance(state, dict):
-                raise ValueError("invalid status")
-            stamp = state.get("last_success_at")
-            # Weekly freshness label; data still validates independently per scan.
-            state["stale"] = not stamp or not timedelta(0) <= clock(now) - clock(stamp) <= timedelta(days=7)
+            attempt = self._attempt()
+            bundle = self._bundle()
+        except (ValueError, TypeError, BarDataError, OSError):
+            return {"status": "INVALID", "stale": True, "last_success_at": None, "exists": False,
+                    "retained": False}
+        try:
+            if bundle is None:                    # legacy: watchlist.json is generation 0
+                exists = (self.root / "watchlist.json").exists()
+                published_at = attempt.get("last_success_at") if exists else None
+                generation, published_status, last_complete = (0 if exists else None), None, published_at
+            else:
+                exists, generation = True, bundle["generation"]
+                published_at, published_status = bundle["published_at"], bundle["status"]
+                last_complete = bundle.get("last_complete_at")
+            if not attempt or (bundle is not None and attempt.get("published_generation", 0) < generation):
+                # Crash after the commit point and before the attempt record: the bundle decides.
+                attempt = {"attempted_at": published_at, "status": published_status or "UNKNOWN", "reasons": {}}
+            age = clock(now) - clock(published_at) if published_at else None
+            state = {**attempt, "exists": exists, "generation": generation, "published_at": published_at,
+                     "published_status": published_status, "last_complete_at": last_complete,
+                     "last_success_at": last_complete,
+                     "retained": attempt.get("status") not in self.PUBLISHED and exists,
+                     "retained_age_hours": round(age.total_seconds() / 3600, 2) if age is not None else None,
+                     # Weekly freshness label; data still validates independently per scan.
+                     "stale": age is None or not timedelta(0) <= age <= self.STALE_AFTER}
+            if bundle is not None:
+                state["list_digest"] = bundle["list_digest"]
             return state
         except (ValueError, TypeError, BarDataError):
-            return {"status": "INVALID", "stale": True, "last_success_at": None}
+            return {"status": "INVALID", "stale": True, "last_success_at": None, "exists": False,
+                    "retained": False}
 
     def prepared_users(self, day, kind="daily") -> set[str]:
         p = self.root / f"user-prepared-{kind}-{day}.json"
@@ -581,6 +857,14 @@ class ScanLog:
 
     def mark_prepared_users(self, day, names, kind="daily"):
         self.write_json(f"user-prepared-{kind}-{day}.json", sorted(self.prepared_users(day, kind) | set(names)))
+
+    def pending(self, day, kind) -> set[str]:
+        """Names waiting for evidence that was not yet available (``volume`` or ``ep``)."""
+        p = self.root / f"pending-{kind}-{day}.json"
+        return set(json.loads(p.read_text())) if p.exists() else set()
+
+    def add_pending(self, day, kind, names) -> None:
+        self.write_json(f"pending-{kind}-{day}.json", sorted(self.pending(day, kind) | set(names)))
 
     def add_armed(self, day: date, market: MarketSize, sigs: Sequence[Signal]) -> None:
         self.load_armed(day)  # import a legacy candidate list once, if present
@@ -655,6 +939,8 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
             rec.discovery.update(sources=sources, source_errors=discovery_errors,
                                  status="PARTIAL" if discovery_errors else "READY")
             log.save_armed(next_trading_day(slot.date()), rec)
+            if rec.discovery.get("volume_pending"):
+                log.add_pending(next_trading_day(slot.date()), "volume", rec.discovery["volume_pending"])
         else:
             market, armed = log.load_armed(slot.date())
             armed = [s for s in armed if s.symbol not in removed]
@@ -669,8 +955,25 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
                     log.add_armed(slot.date(), market, user_new)
                     log.mark_prepared_users(slot.date(), preparation.discovery.get("prepared", []))
                     armed += user_new
+            # Volume setups whose Alpaca native daily was not final at the close scan run
+            # here on the same completed session (same price terms); only those setups arm.
+            volume_new: list[Signal] = []
+            vpending = sorted(log.pending(slot.date(), "volume") - log.prepared_users(slot.date(), "volume"))
+            if vpending and provider_of(source):
+                vprep, detected = close_scan(source, vpending, now, decision_clock=decision_clock, preparing=True)
+                if not vprep.error:
+                    market = market or MarketSize(vprep.market)
+                    volume_new = [s for s in detected if s.setup_id in VOLUME_SETUPS]
+                    log.add_armed(slot.date(), MarketSize(vprep.market), volume_new)
+                    retry = set(volume_pending(vprep.skipped, "volume unavailable:"))
+                    log.mark_prepared_users(slot.date(), set(vprep.discovery.get("prepared", [])) - retry, "volume")
+                    armed += volume_new
+                rec_volume = {"requested": vpending, "error": vprep.error, "armed": [_sig(s) for s in volume_new],
+                              "skipped": {k: v for k, v in vprep.skipped.items() if k.split("/")[0] in vpending}}
+            else:
+                rec_volume = None
             new: list[Signal] = []
-            ep_pending = users - log.prepared_users(slot.date(), "ep")
+            ep_pending = (users | log.pending(slot.date(), "ep")) - log.prepared_users(slot.date(), "ep")
             ep_due = (slot.time() == EP_SCAN or (ep_pending and slot.time() > EP_SCAN)) and market is not None
             if ep_due:
                 skipped: dict[str, str] = {}
@@ -679,6 +982,10 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
                 new = episodic_pivots(source, market, now, skipped, decision_clock=decision_clock, candidates=candidates)
                 log.add_armed(slot.date(), market, new)
                 log.mark_prepared_users(slot.date(), ep_pending - set(skipped), "ep")
+                # Alpaca's 15-minute historical delay: retry those names at the next slot.
+                delayed = {s for s, why in skipped.items() if "END_NOT_15_MINUTES_OLD" in why}
+                if delayed:
+                    log.add_pending(slot.date(), "ep", delayed)
                 armed = [*armed, *new]
             rec = intraday_scan(source, armed, now, decision_clock=decision_clock, store=log.signals)
             from desk.revision_rebuild import rebuild_pending
@@ -689,6 +996,8 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
             if ep_due:
                 rec.skipped.update(skipped)
                 rec.discovery["ep_candidates"] = {"symbols": candidates, "errors": skipped}
+            if rec_volume:
+                rec.discovery["volume_preparation"] = rec_volume
             if preparation:
                 rec.discovery["user_preparation"] = {"requested": pending, "error": preparation.error,
                     "prepared": preparation.discovery.get("prepared", []), "skipped": preparation.skipped}
@@ -696,7 +1005,7 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
             if slot == closed - timedelta(minutes=15) and market is not None:
                 new = rsi2_estimate(source, watchlist, market, now, rec.skipped,
                                     decision_clock=decision_clock, store=log.signals, triggered=rec.triggered)
-            rec.armed = [_sig(s) for s in [*user_new, *new, *rebuilt]]
+            rec.armed = [_sig(s) for s in [*user_new, *volume_new, *new, *rebuilt]]
     except Exception as e:                            # any failure is logged as a failed scan, never silent
         log.signals.suspend_all("scan failed; fresh validation required")
         kind = "leader" if slot == leader_slot else "close" if slot == close_slot else "intraday"
@@ -758,10 +1067,16 @@ def revalidate_signal(source: BarSource, log: ScanLog, event_id: str, now: datet
         reasons.append("fresh bars unavailable")
     else:
         try:
-            observe_signal(log.signals, candidate, bars[sig.symbol], checked)
-        except (BarDataError, KeyError, SignalStateError) as exc:
-            log.signals.suspend(candidate, clock(checked).date(), str(exc))
-            reasons.append("fresh bar/action validation failed")
+            check_volume(source, log.signals, candidate, checked, refresh=True,
+                         metadata={sig.symbol: bars[sig.symbol].attrs.get("security_metadata")})
+        except VolumeUnavailable as exc:
+            reasons.append(f"volume qualification not current ({exc.code})")
+        else:
+            try:
+                observe_signal(log.signals, candidate, bars[sig.symbol], checked)
+            except (BarDataError, KeyError, SignalStateError) as exc:
+                log.signals.suspend(candidate, clock(checked).date(), str(exc))
+                reasons.append("fresh bar/action validation failed")
     event = log.signals.get(event_id, checked)
     if not event["eligible"]:
         reasons.append("event is failed, closed, expired, suspended or not current")
@@ -816,10 +1131,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         source = NoKeys()
     else:
         from desk.earnings import scanner_source
+        from desk.alpaca_source import configured_volume
         source = scanner_source(source, os.environ, refresh_source=raw_source)
+        # Opt-in Alpaca SIP volume (DESK_ALPACA_VOLUME_CACHE); unset leaves Webull volume.
+        # Any later ticket/approval adapter must compose its source the same way.
+        source = configured_volume(source, os.environ)
+    log = ScanLog(Path(args.data_dir))
     wl_path = Path(args.watchlist)
+    if wl_path.resolve() == (log.root / "watchlist.json").resolve():
+        try:
+            log.published_watchlist()            # repair the derived list from the committed build
+        except (ValueError, TypeError, BarDataError):
+            pass                                  # an invalid bundle shows in the build status
     watchlist = json.loads(wl_path.read_text()) if wl_path.exists() else ["SPY", "QQQ", "IWM"]
-    rec = run(source, watchlist, ScanLog(Path(args.data_dir)), datetime.now(timezone.utc),
+    rec = run(source, watchlist, log, datetime.now(timezone.utc),
               decision_clock=lambda: datetime.now(timezone.utc))
     if rec is None:
         print("no scan due")

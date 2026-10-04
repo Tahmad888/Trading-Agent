@@ -97,7 +97,16 @@ class EventRiskSource:
         with self.log.signals.held_event(event_id) as view:
             def status(at):
                 event = view(at)
-                return EventStatus(bool(event["eligible"]), event["terms_digest"])
+                eligible = bool(event["eligible"])
+                if eligible:
+                    # G5a: saved volume qualification must still be current in the
+                    # integrated cache (local read; no request) at the final write.
+                    from desk.scanner import volume_status
+                    from desk.signal_state import restore_signal
+                    state, _ = volume_status(self.source, restore_signal(event["candidate_signal"]), at,
+                                             refresh=False)
+                    eligible = state == "OK"
+                return EventStatus(eligible, event["terms_digest"])
             yield status
 
     def resolve(self, event_id, now):

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal
 import math
 
 import pandas as pd
@@ -21,7 +22,7 @@ import pandas as pd
 from desk.bars import BarDataError
 from desk.security import securities
 from desk.symbols import canonical_symbol
-from desk.data_basis import volume_basis
+from desk.data_basis import VolumeUnavailable, decision_window, volume_evidence
 from desk.indicators import daily_features
 from desk.playbook.filters import trend_template
 
@@ -48,14 +49,6 @@ class Leader:
     returns: dict[str, float]
 
 
-@dataclass
-class LeaderScan:
-    leaders: list[Leader]
-    ranked: int                  # names with usable bars that passed price and volume
-    skipped: dict[str, str] = field(default_factory=dict)   # symbol -> why (bad data, too cheap, thin)
-    failed_template: int = 0
-
-
 def _strength(close: pd.Series) -> dict[str, float]:
     out = {k: close.iloc[-1] / close.iloc[-1 - n] - 1 for k, n in STRENGTH_BARS.items()}
     out["rs12m"] = sum(w * (close.iloc[-1] / close.iloc[-1 - n] - 1)
@@ -63,42 +56,99 @@ def _strength(close: pd.Series) -> dict[str, float]:
     return out
 
 
+LIQUIDITY_RULE = f"discovery-liquidity:mean{VOLUME_AVG_BARS}>={MIN_AVG_VOLUME}:v1"
+# Terminal outcome of every universe candidate (G5a checkpoint 2). "criterion": a written
+# discovery rule excluded it; "source_failure": its own data could not be evaluated;
+# "limit": ranked but not reached before the list was full; "selected": a leader.
+OUTCOMES = ("selected", "criterion", "source_failure", "limit")
+
+
+@dataclass
+class LeaderScan:
+    leaders: list[Leader]
+    ranked: int                  # names with usable bars that passed price and volume
+    skipped: dict[str, str] = field(default_factory=dict)   # symbol -> why (bad data, too cheap, thin)
+    failed_template: int = 0
+    outcomes: dict[str, dict] = field(default_factory=dict)  # symbol -> {"outcome", "stage", "reason"}
+    population: list[str] = field(default_factory=list)     # the ranked population, best first
+    evidence: dict[str, dict] = field(default_factory=dict)  # symbol -> Alpaca liquidity evidence
+
+
+def _liquid(df: pd.DataFrame) -> tuple[bool, dict | None]:
+    """Mean daily volume over the window at least ``MIN_AVG_VOLUME``.
+
+    Alpaca SIP attached: exact Decimal over the latest final native-daily sessions
+    (``total >= MIN_AVG_VOLUME * VOLUME_AVG_BARS``), with persisted evidence. Otherwise
+    the unchanged Webull path.
+    """
+    window = decision_window(df, VOLUME_AVG_BARS, final_only=True)
+    if window.source == "webull":
+        return not bool(df["volume"].iloc[-VOLUME_AVG_BARS:].mean() < MIN_AVG_VOLUME), None
+    total = sum(window.values, Decimal(0))
+    met = total >= Decimal(MIN_AVG_VOLUME) * VOLUME_AVG_BARS
+    return met, volume_evidence("discovery:liquidity", LIQUIDITY_RULE,
+                                {"total": str(total), "sessions": VOLUME_AVG_BARS, "met": met},
+                                [(window.decision, window.used())])
+
+
 def leader_scan(bars: Mapping[str, pd.DataFrame], spy_close: pd.Series,
                 limit: int = MAX_LEADERS) -> LeaderScan:
-    """Rank a universe's daily bars by strength and keep the top names that pass the Trend Template."""
-    rows, skipped = {}, {}
+    """Rank a universe's daily bars by strength and keep the top names that pass the Trend Template.
+
+    Every candidate ends with one recorded outcome. A name whose own data fails is
+    excluded from the disclosed ranking population; the rank math is unchanged.
+    """
+    rows, skipped, outcomes, evidence = {}, {}, {}, {}
+
+    def out(sym, outcome, stage, reason):
+        outcomes[sym] = {"outcome": outcome, "stage": stage, "reason": reason}
+
     for sym, df in bars.items():
         try:
             if len(df) < 260:
-                raise BarDataError("under a year of bars")
+                skipped[sym] = "bad data: under a year of bars"
+                out(sym, "criterion", "history", "under a year of bars")
+                continue
             if df["close"].iloc[-1] <= MIN_PRICE:
                 skipped[sym] = f"price under ${MIN_PRICE:.0f}"
+                out(sym, "criterion", "price", skipped[sym])
                 continue
-            volume_basis(df.iloc[-VOLUME_AVG_BARS:])
-            if df["volume"].iloc[-VOLUME_AVG_BARS:].mean() < MIN_AVG_VOLUME:
+            liquid, used = _liquid(df)
+            if used is not None:
+                evidence[sym] = used
+            if not liquid:
                 skipped[sym] = "under 1M shares a day"
+                out(sym, "criterion", "liquidity", skipped[sym])
                 continue
             rows[sym] = _strength(df["close"])
+        except VolumeUnavailable as e:
+            skipped[sym] = str(e)
+            out(sym, "source_failure", "liquidity", e.code)
         except (BarDataError, KeyError, IndexError) as e:
             skipped[sym] = f"bad data: {e}"
+            out(sym, "source_failure", "ranking_input", str(e))
     if not rows:
-        return LeaderScan([], 0, skipped)
+        return LeaderScan([], 0, skipped, outcomes=outcomes, evidence=evidence)
     table = pd.DataFrame(rows).T
     score = (table.rank(pct=True).mean(axis=1) * 100).sort_values(ascending=False)
     leaders, failed = [], 0
     for sym in score.index:
         if len(leaders) >= limit:
-            break
+            out(sym, "limit", "max_leaders", f"ranked after the {limit}-name list was full")
+            continue
         try:
             gate = trend_template(daily_features(bars[sym]), spy_close)
         except BarDataError as e:
             skipped[sym] = f"bad data: {e}"
+            out(sym, "source_failure", "trend_template", str(e))
             continue
         if not gate.passed:
             failed += 1
+            out(sym, "criterion", "trend_template", "failed the Trend Template")
             continue
         leaders.append(Leader(sym, round(float(score[sym]), 1), table.loc[sym].round(4).to_dict()))
-    return LeaderScan(leaders, len(rows), skipped, failed)
+        out(sym, "selected", "leader", "selected")
+    return LeaderScan(leaders, len(rows), skipped, failed, outcomes, list(score.index), evidence)
 
 
 def build_watchlist(leaders: Iterable[str], movers: Iterable[str] = (), added: Iterable[str] = (),
@@ -149,10 +199,16 @@ def _rankings(source, lists, skipped: dict[str, str]) -> list[dict]:
     return rows
 
 
-def universe(source, skipped: dict[str, str]) -> list[str]:
-    """Friday candidate universe: top lists over $10 with supported security metadata."""
+def universe(source, skipped: dict[str, str], *, considered: list[str] | None = None) -> list[str]:
+    """Friday candidate universe: top lists over $10 with supported security metadata.
+
+    ``considered`` receives every listed name over $10 before the metadata check, so a
+    build can give each one a recorded outcome.
+    """
     rows = _rankings(source, UNIVERSE_LISTS, skipped)
     names = sorted({canonical_symbol(r["symbol"]) for r in rows if _price(r) > MIN_PRICE})
+    if considered is not None:
+        considered.extend(names)
     return sorted(securities(source, names, skipped))
 
 

@@ -504,7 +504,9 @@ def test_daily_start_must_cover_the_first_required_session():
         alpaca_probe.windows(ENTRY, date(2026, 7, 24), ("SPY",), "split")
 
 
-def test_producer_is_not_wired_into_any_consumer():
+def test_producer_reaches_consumers_only_through_the_integration_layer():
+    # Checkpoint 2: decision consumers read Alpaca volume through data_basis (typed
+    # decision volume) and alpaca_source (provider/gate); the scanner wires them.
     root = Path(__file__).resolve().parents[1] / "src" / "desk"
-    users = [p.name for p in root.rglob("*.py") if "alpaca_volume" in p.read_text()]
-    assert users == ["alpaca_probe.py"]
+    users = sorted(p.name for p in root.rglob("*.py") if "alpaca_volume" in p.read_text())
+    assert users == ["alpaca_probe.py", "alpaca_source.py", "data_basis.py", "scanner.py"]

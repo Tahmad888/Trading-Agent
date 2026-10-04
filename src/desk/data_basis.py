@@ -3,16 +3,22 @@
 Only trusted data producers may attest coverage/definitions. A matching user-made
 label is not proof. Unknown data remains readable but cannot qualify a decision.
 """
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+import hashlib
+import json
 import math
 from typing import Annotated, Literal
 
 import pandas as pd
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from desk.alpaca_assets import IdentityRecord
+from desk.alpaca_volume import (BarRequest, VolumeCache, VolumeObservation, definition_id as alpaca_definition,
+                                prior_sessions, share_basis_id as alpaca_share_basis)
 from desk.bars import BarDataError
-from desk.calendar import ET, clock
+from desk.calendar import ET, clock, sessions
 
 Text = Annotated[str, Field(min_length=1)]
 
@@ -263,3 +269,229 @@ def compatible_volume(daily: pd.DataFrame, early: dict | None):
             and baseline.definition_id == "webull:native:D:provider-reported"
             and observed.definition_id == "webull:minute:RTH:provider-reported"):
         raise BarDataError("Daily and intraday volume definitions lack an accepted comparison policy")
+
+
+# ---------------------------------------------------------------------------
+# Alpaca SIP decision volume (G5a checkpoint 2). A separate, typed input attached
+# as ``attrs["decision_volume"]``; the Webull ``volume`` column, ``volume_basis``
+# and price evidence are never rewritten. With it attached, it is the only volume
+# source for the decision consumers (no Webull, IEX or native fallback inside one
+# comparison). Without it, the unchanged Webull path above applies.
+# ---------------------------------------------------------------------------
+ALPACA_DAILY_POLICY = "alpaca-sip-split:native-daily-v1"
+ALPACA_RTH_POLICY = "alpaca-sip-split:rth-m15-v1"
+ALPACA_CHANNEL_POLICY = {"native-daily": ALPACA_DAILY_POLICY, "rth-m15": ALPACA_RTH_POLICY}
+
+
+class VolumeUnavailable(BarDataError):
+    """A volume-dependent check cannot run; ``code`` says why. Other checks continue."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__("volume unavailable: " + code)
+
+
+class AlpacaDecisionVolume(BaseModel):
+    """One ticker's Alpaca SIP volume for one channel and request window, or why not."""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    policy: Literal["alpaca-sip-split:native-daily-v1", "alpaca-sip-split:rth-m15-v1"]
+    status: Literal["AVAILABLE", "UNAVAILABLE"]
+    reason: Text | None = None
+    desk_symbol: Text
+    channel: Literal["native-daily", "rth-m15"]
+    complete_through: date | None = None      # daily: latest session final at receipt
+    identity: IdentityRecord | None = None
+    request: dict | None = None               # timeframe/start/end/adjustment/feed for this ticker
+    observation: VolumeObservation | None = None
+
+    @model_validator(mode="after")
+    def consistent(self):
+        if ALPACA_CHANNEL_POLICY[self.channel] != self.policy:
+            raise ValueError("Decision-volume policy does not match its channel")
+        if self.status == "UNAVAILABLE":
+            if not self.reason or self.observation is not None:
+                raise ValueError("Unavailable volume needs a reason and no observation")
+            return self
+        obs, record = self.observation, self.identity
+        if obs is None or record is None or self.request is None or self.reason is not None:
+            raise ValueError("Available volume needs identity, request and observation")
+        if (obs.feed, obs.adjustment, obs.channel) != ("sip", "split", self.channel) or \
+                obs.definition_id != alpaca_definition("split", self.channel) or \
+                obs.share_basis_id != alpaca_share_basis("split"):
+            raise ValueError("Decision volume must be split-adjusted SIP on its own channel")
+        if (obs.provider_identity, obs.mapping_provenance, obs.requested_symbol) != (
+                record.alpaca_asset_id, record.namespace, record.alpaca_symbol) or record.desk_symbol != self.desk_symbol:
+            raise ValueError("Volume observation and identity mapping disagree")
+        if self.channel == "native-daily" and self.complete_through is None:
+            raise ValueError("Daily decision volume needs its completion session")
+        return self
+
+    def bar_request(self) -> BarRequest:
+        return BarRequest(symbols=(self.identity.alpaca_symbol,), **self.request)
+
+    def request_key(self) -> str:
+        return VolumeCache.key(self.bar_request(), self.identity.alpaca_symbol, self.identity.namespace)
+
+
+def attached_decision(df: pd.DataFrame) -> AlpacaDecisionVolume | None:
+    raw = df.attrs.get("decision_volume")
+    if raw is None:
+        return None
+    try:
+        return raw if isinstance(raw, AlpacaDecisionVolume) else AlpacaDecisionVolume.model_validate(raw)
+    except ValidationError:
+        raise VolumeUnavailable("MALFORMED_DECISION_VOLUME") from None
+
+
+def _webull_instrument(df: pd.DataFrame) -> str | None:
+    identity = df.attrs.get("provider_identity") or {}
+    meta = df.attrs.get("security_metadata") or {}
+    return identity.get("instrument_id") or meta.get("instrument_id")
+
+
+def _usable(df: pd.DataFrame, decision: AlpacaDecisionVolume, channel: str) -> AlpacaDecisionVolume:
+    if decision.channel != channel:
+        raise VolumeUnavailable("WRONG_CHANNEL")
+    if decision.status != "AVAILABLE":
+        raise VolumeUnavailable(decision.reason)
+    if _webull_instrument(df) != decision.identity.webull_instrument_id:
+        raise VolumeUnavailable("WEBULL_IDENTITY_MISMATCH")
+    return decision
+
+
+@dataclass(frozen=True)
+class VolumeWindow:
+    """The volumes one comparison uses, all from one source and definition.
+
+    ``source == "alpaca"``: exact ``Decimal`` share counts joined by NY session date.
+    ``source == "webull"``: the unchanged Webull path (floats from the frame).
+    """
+    source: Literal["alpaca", "webull"]
+    sessions: tuple[date, ...]
+    values: tuple
+    decision: AlpacaDecisionVolume | None = None
+
+    def used(self, start: int = 0) -> list[tuple[str, Decimal]]:
+        return [(d.isoformat(), v) for d, v in zip(self.sessions[start:], self.values[start:])]
+
+
+def decision_window(df: pd.DataFrame, n: int, *, final_only: bool = False) -> VolumeWindow:
+    """The last ``n`` sessions of ``df`` (or, with ``final_only``, ending at the latest
+    session whose Alpaca native daily is final). Missing or unfinished sessions raise
+    ``VolumeUnavailable`` with a specific code; nothing is zero- or forward-filled."""
+    decision = attached_decision(df)
+    if decision is None:
+        window = df.iloc[-n:]
+        volume_basis(window)
+        return VolumeWindow("webull", tuple(window.index.tz_convert(ET).date), tuple(window["volume"]))
+    decision = _usable(df, decision, "native-daily")
+    if df.empty or not isinstance(df.index, pd.DatetimeIndex) or df.index.tz is None:
+        raise VolumeUnavailable("UNDATED_PRICE_HISTORY")
+    dates = list(df.index.tz_convert(ET).date)
+    if final_only:
+        dates = [d for d in dates if d <= decision.complete_through]
+    window = dates[-n:]
+    if len(window) < n:
+        raise VolumeUnavailable("SHORT_WINDOW")
+    if window != sessions(window[0], window[-1]):
+        raise VolumeUnavailable("MISALIGNED_SESSIONS")
+    if window[-1] > decision.complete_through:
+        raise VolumeUnavailable("DAILY_NOT_COMPLETED_AT_RECEIPT")
+    after = decision.identity.valid_after_session
+    if after is not None and window[0] <= after:
+        raise VolumeUnavailable("UNSUPPORTED_HISTORICAL_MAPPING")
+    by_day = {pd.Timestamp(t).tz_convert(ET).date(): v for t, v in decision.observation.bars}
+    if any(d not in by_day for d in window):
+        raise VolumeUnavailable("MISSING_DAILY_SESSIONS")
+    return VolumeWindow("alpaca", tuple(window), tuple(by_day[d] for d in window), decision)
+
+
+def decision_rel_volume(df: pd.DataFrame, length: int) -> pd.Series | None:
+    """Daily relative volume from attached Alpaca volume, or None (unchanged Webull path).
+
+    Same denominator semantics as the Webull feature: the bar's volume over the mean of
+    the ``length`` sessions ending with that bar. Computed in Decimal and converted to
+    float once per point; no trigger or filter consumes it (display/diagnostic only).
+    Points without a full, final, same-identity window are NaN.
+    """
+    try:
+        decision = attached_decision(df)
+    except VolumeUnavailable:
+        return pd.Series(float("nan"), index=df.index, name="rel_volume")
+    if decision is None:
+        return None
+    out = pd.Series(float("nan"), index=df.index, name="rel_volume")
+    try:
+        decision = _usable(df, decision, "native-daily")
+    except VolumeUnavailable:
+        return out
+    by_day = {pd.Timestamp(t).tz_convert(ET).date(): v for t, v in decision.observation.bars}
+    dates = list(df.index.tz_convert(ET).date)
+    after = decision.identity.valid_after_session
+    for i in range(length - 1, len(dates)):
+        window = dates[i - length + 1:i + 1]
+        if (window[-1] > decision.complete_through or (after is not None and window[0] <= after)
+                or any(d not in by_day for d in window) or window != sessions(window[0], window[-1])):
+            continue
+        total = sum((by_day[d] for d in window), Decimal(0))
+        if total > 0:
+            out.iloc[i] = float(by_day[window[-1]] * length / total)
+    return out
+
+
+def alpaca_ep_inputs(daily: pd.DataFrame, m15: pd.DataFrame, entry: date):
+    """(daily observation, RTH observation, decisions) for the EP component, or raise."""
+    d, m = attached_decision(daily), attached_decision(m15)
+    if d is None or m is None:
+        raise VolumeUnavailable("EP_VOLUME_NOT_ATTACHED")
+    d, m = _usable(daily, d, "native-daily"), _usable(m15, m, "rth-m15")
+    if d.identity != m.identity:
+        raise VolumeUnavailable("IDENTITY_MISMATCH")
+    prior = prior_sessions(entry)
+    if d.identity.valid_after_session is not None and prior[0] <= d.identity.valid_after_session:
+        raise VolumeUnavailable("UNSUPPORTED_HISTORICAL_MAPPING")
+    # The Webull instrument's own price history must cover the volume window.
+    if not set(prior) <= set(daily.index.tz_convert(ET).date):
+        raise VolumeUnavailable("WEBULL_HISTORY_DOES_NOT_COVER_WINDOW")
+    return d.observation, m.observation, (d, m)
+
+
+def _vhash(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def volume_evidence(consumer: str, rule_version: str, result: dict,
+                    parts: list[tuple[AlpacaDecisionVolume, list[tuple[str, Decimal]]]]) -> dict:
+    """Persisted qualification evidence. ``dependency_digest`` covers exactly the used
+    values, definitions, identity mapping, rule and result; ``audit`` keeps receipts,
+    request keys and snapshot digests (never part of candidate identity)."""
+    identities = {p.identity.namespace for p, _ in parts}
+    if len(identities) != 1:
+        raise VolumeUnavailable("IDENTITY_MISMATCH")
+    inputs, audit = [], []
+    for decision, used in parts:
+        obs = decision.observation
+        inputs.append({"policy": decision.policy, "channel": obs.channel, "feed": obs.feed,
+                       "adjustment": obs.adjustment, "definition_id": obs.definition_id,
+                       "share_basis_id": obs.share_basis_id, "values": [[k, str(v)] for k, v in used]})
+        audit.append({"request": decision.request, "request_key": decision.request_key(),
+                      "snapshot_digest": obs.content_digest, "page_digests": list(obs.page_digests),
+                      "first_sent_at": obs.first_sent_at.isoformat(), "received_at": obs.received_at.isoformat(),
+                      "complete_through": decision.complete_through.isoformat() if decision.complete_through else None})
+    record = parts[0][0].identity
+    dependency = {"source": "alpaca", "consumer": consumer, "identity": record.dependency(),
+                  "rule_version": rule_version, "result": result, "inputs": inputs}
+    return {**dependency, "dependency_digest": _vhash(dependency),
+            "audit": {"inputs": audit, "identity_receipt": record.received_at.isoformat(),
+                      "asset_list_digest": record.asset_list_digest,
+                      "webull": {"symbol": record.webull_symbol, "name": record.webull_name,
+                                 "exchange": record.webull_exchange},
+                      "alpaca": {"name": record.alpaca_name, "exchange": record.alpaca_exchange,
+                                 "status": record.alpaca_status}}}
+
+
+def dependency_terms(evidence: dict | None) -> dict | None:
+    """The part of persisted volume evidence that defines trade terms."""
+    if evidence is None:
+        return None
+    return {k: v for k, v in evidence.items() if k != "audit"}

@@ -25,7 +25,7 @@ import pandas as pd
 import talib
 
 from desk.bars import BarDataError
-from desk.data_basis import volume_basis
+from desk.data_basis import decision_rel_volume, volume_basis
 
 EASTERN = "America/New_York"
 
@@ -190,6 +190,11 @@ def daily_features(df: pd.DataFrame, s: Settings = Settings()) -> pd.DataFrame:
         # Math-only inputs can still produce price indicators. Unknown or mixed
         # volume must not masquerade as a usable relative-volume observation.
         out["rel_volume"] = np.nan
+    alpaca = decision_rel_volume(df, s.volume_avg_length)
+    if alpaca is not None:
+        # G5a: attached Alpaca SIP volume replaces Webull's in this feature only;
+        # same denominator semantics, NaN where its window is not proven.
+        out["rel_volume"] = alpaca
     if df.attrs.get("developing_as_of"):
         developing = pd.Timestamp(df.attrs["developing_as_of"]).tz_convert(EASTERN).date()
         out.loc[out.index.tz_convert(EASTERN).date >= developing, "rel_volume"] = np.nan

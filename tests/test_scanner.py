@@ -169,7 +169,10 @@ def test_friday_leader_scan_writes_the_watchlist(tmp_path):
     lists = {"MONTH_3": [{"symbol": "LEAD", "price": "148"}, {"symbol": "PENNY", "price": "2"}],
              "TURNOVER": [{"symbol": "SPY", "price": "400"}, {"symbol": "BRK.B", "price": "480"}]}
     stale = sc.run(Fake(frames(), lists=lists), [], log, datetime(2026, 10, 2, 16, 41, tzinfo=ET))
-    assert "no SPY bars for today" in stale.error        # Tuesday's bars on a Friday: nothing written
+    # Tuesday's bars on a Friday: SPY misses the latest completed session; nothing written.
+    assert stale.error == "no valid completed SPY bars"
+    assert "expected completed session 2026-10-02" in stale.discovery["build"]["reasons"]["SPY"]
+    assert not (tmp_path / "watchlist.json").exists() and stale.discovery["watchlist_build"]["exists"] is False
     rec = sc.run(Fake({**frames(date(2026, 10, 2)), ("BRK.B", "D"): daily(np.full(len(UP), 100.0), end=date(2026, 10, 2))}, lists=lists), [], log, datetime(2026, 10, 2, 16, 42, tzinfo=ET))
     assert rec.kind == "leader" and not rec.error, rec.error
     assert [l["symbol"] for l in rec.leaders] == ["LEAD"]

@@ -1,6 +1,8 @@
 """Opt-in, read-only Alpaca historical SIP volume evidence (G5 checkpoint 1).
 
-Producer only: no scanner, watchlist, trigger or ticket code imports this module.
+Producer and cache. Checkpoint 2 consumers reach it only through
+``desk.alpaca_source`` (opt-in configuration); identities come from
+``desk.alpaca_assets``.
 Request contract: https://docs.alpaca.markets/us/reference/stockbars (Sourced):
 explicit ``feed=sip``; ``split`` adjusts price and volume for splits, ``raw`` applies
 none; pagination until ``next_page_token`` is null; ``limit`` counts across symbols.
@@ -52,7 +54,7 @@ SAFE_HEADERS = ("date", "content-type", "x-request-id", "x-ratelimit-limit",
 STOP_CODES = frozenset({"AUTH_OR_ENTITLEMENT_FAILURE", "RATE_LIMITED"})
 HISTORICAL_DELAY = timedelta(minutes=15)  # Sourced: market-data FAQ, unsubscribed SIP
 MAPPING = ("alpaca-symbol-as-requested; asof not sent (provider default symbol mapping); "
-           "no independent provider identity resolved")
+           "no independent provider identity resolved")  # probe/legacy namespace only
 CHANNELS = {"1Day": "native-daily", "15Min": "rth-m15"}
 STEP = {"1Day": timedelta(days=1), "15Min": timedelta(minutes=15)}
 SYMBOL = re.compile(r"[A-Z][A-Z0-9.]{0,9}")
@@ -351,22 +353,31 @@ class VolumeCache:
             ''')
 
     @staticmethod
-    def key(req: BarRequest, symbol: str) -> str:
-        return json.dumps([req.feed, req.adjustment, symbol, req.timeframe, _utc(req.start), _utc(req.end)])
+    def key(req: BarRequest, symbol: str, namespace: str | None = None) -> str:
+        # A resolved identity mapping is its own namespace; a changed mapping never
+        # rewrites an earlier namespace's pin or history. No namespace: legacy/probe key.
+        parts = [req.feed, req.adjustment, symbol, req.timeframe, _utc(req.start), _utc(req.end)]
+        return json.dumps(parts + ([namespace] if namespace else []))
+
+    @staticmethod
+    def namespace(obs: VolumeObservation) -> str | None:
+        return None if obs.mapping_provenance == MAPPING else obs.mapping_provenance
 
     def pin(self, obs: VolumeObservation, at: datetime):
         identity = json.dumps(list(obs.identity))
+        space = self.namespace(obs)
+        symbol = obs.requested_symbol if space is None else obs.requested_symbol + "|" + space
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            old = db.execute("SELECT identity FROM identities WHERE symbol=?", (obs.requested_symbol,)).fetchone()
+            old = db.execute("SELECT identity FROM identities WHERE symbol=?", (symbol,)).fetchone()
             if old and old[0] != identity:
                 raise AlpacaVolumeError("IDENTITY_CHANGED")
-            db.execute("INSERT OR IGNORE INTO identities VALUES (?,?,?)",
-                       (obs.requested_symbol, identity, clock(at).isoformat()))
+            db.execute("INSERT OR IGNORE INTO identities VALUES (?,?,?)", (symbol, identity, clock(at).isoformat()))
 
     def record(self, req: BarRequest, obs: VolumeObservation) -> dict:
         self.pin(obs, obs.received_at)
-        key, at = self.key(req, obs.requested_symbol), clock(obs.received_at).isoformat()
+        key = self.key(req, obs.requested_symbol, self.namespace(obs))
+        at = clock(obs.received_at).isoformat()
         payload = obs.model_dump_json()
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -394,10 +405,10 @@ class VolumeCache:
                        (obs.content_digest, at, old[2] + 1, key))
             return {"status": "REVISED", "revision": old[2] + 1, "changed_bars": changed}
 
-    def record_failure(self, req: BarRequest, symbol: str, code: str, at: datetime):
+    def record_failure(self, req: BarRequest, symbol: str, code: str, at: datetime, namespace: str | None = None):
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("INSERT INTO events(key,symbol,at,state,code,digest) VALUES (?,?,?,'FAILED',?,NULL)",
-                       (self.key(req, symbol), symbol, clock(at).isoformat(), code))
+                       (self.key(req, symbol, namespace), symbol, clock(at).isoformat(), code))
 
     def record_stop(self, code: str, at: datetime):
         """A provider stop makes every earlier success ineligible until refreshed."""
@@ -405,9 +416,10 @@ class VolumeCache:
             db.execute("INSERT INTO events(key,symbol,at,state,code,digest) VALUES (NULL,NULL,?,'STOP',?,NULL)",
                        (clock(at).isoformat(), code))
 
-    def eligible(self, req: BarRequest, symbol: str) -> tuple[VolumeObservation | None, str | None]:
+    def eligible(self, req: BarRequest, symbol: str,
+                 namespace: str | None = None) -> tuple[VolumeObservation | None, str | None]:
         """(snapshot, None) when reusable now; otherwise (None, the reason)."""
-        key = self.key(req, symbol)
+        key = self.key(req, symbol, namespace)
         with closing(sqlite3.connect(self.path)) as db:
             latest = db.execute("SELECT sequence,state,code,digest FROM events WHERE key=? "
                                 "ORDER BY sequence DESC LIMIT 1", (key,)).fetchone()
@@ -425,13 +437,13 @@ class VolumeCache:
             return None, "CACHE_STATE_INCONSISTENT"
         return VolumeObservation.model_validate_json(row[0]), None
 
-    def current(self, req: BarRequest, symbol: str) -> VolumeObservation | None:
-        return self.eligible(req, symbol)[0]
+    def current(self, req: BarRequest, symbol: str, namespace: str | None = None) -> VolumeObservation | None:
+        return self.eligible(req, symbol, namespace)[0]
 
-    def revisions(self, req: BarRequest, symbol: str) -> list[dict]:
+    def revisions(self, req: BarRequest, symbol: str, namespace: str | None = None) -> list[dict]:
         with closing(sqlite3.connect(self.path)) as db:
             rows = db.execute("SELECT at,old_digest,new_digest,changed FROM revisions WHERE key=? ORDER BY sequence",
-                              (self.key(req, symbol),)).fetchall()
+                              (self.key(req, symbol, namespace),)).fetchall()
         return [{"at": a, "old": o, "new": n, "changed_bars": json.loads(c)} for a, o, n, c in rows]
 
 
@@ -459,21 +471,29 @@ class AlpacaVolumeClient:
             raise AlpacaVolumeError("INVALID_RECEIPT_CLOCK")
         return now
 
-    def _unavailable(self, req, code, pages=(), raw=(), issues=()):
+    def _unavailable(self, req, code, pages=(), raw=(), issues=(), spaces=None):
         failures = {s: code for s in req.symbols}
         if self.cache is not None:
             at = self._now()
             if code in STOP_CODES:
                 self.cache.record_stop(code, at)
             for s in req.symbols:
-                self.cache.record_failure(req, s, code, at)
+                self.cache.record_failure(req, s, code, at, (spaces or {}).get(s))
         return BatchResult(req, "UNAVAILABLE", {}, failures, code, tuple(issues), tuple(pages), tuple(raw))
 
-    def _reuse(self, req: BarRequest) -> BatchResult:
+    @staticmethod
+    def _spaces(req: BarRequest, identities) -> dict | None:
+        if identities is None:
+            return None
+        if set(identities) != set(req.symbols) or any(r.alpaca_symbol != s for s, r in identities.items()):
+            raise AlpacaVolumeError("IDENTITY_REQUEST_MISMATCH")
+        return {s: r.namespace for s, r in identities.items()}
+
+    def _reuse(self, req: BarRequest, spaces=None) -> BatchResult:
         """Cache only: never sends a request. Each ticker is eligible or carries its reason."""
         observations, failures = {}, {}
         for symbol in req.symbols:
-            obs, reason = self.cache.eligible(req, symbol)
+            obs, reason = self.cache.eligible(req, symbol, (spaces or {}).get(symbol))
             if obs is None:
                 failures[symbol] = reason
             else:
@@ -482,17 +502,61 @@ class AlpacaVolumeClient:
         return BatchResult(req, status, observations, failures, None if observations else "NO_ELIGIBLE_CACHE",
                            from_cache=True, cache_status={s: {"status": "REUSED"} for s in observations})
 
-    def fetch(self, req: BarRequest, *, reuse: bool = False) -> BatchResult:
+    def fetch_assets(self):
+        """One read-only GET of the paper host's active US-equity asset list.
+
+        Same budget, stop, TLS, redirect and redaction rules as the bar route. Returns
+        an ``AssetList``; raises ``AssetError`` with a fixed code otherwise.
+        """
+        from desk.alpaca_assets import ASSET_HOST, ASSET_PARAMS, ASSET_ROUTE, AssetError, parse_assets
+        if self.stopped:
+            raise AssetError("RUN_STOPPED_AFTER_" + self.stopped)
+        try:
+            self._budget.take()
+        except AlpacaVolumeError:
+            raise AssetError("REQUEST_BUDGET_EXHAUSTED") from None
+        url = parse.urlunsplit(("https", ASSET_HOST, ASSET_ROUTE, parse.urlencode(ASSET_PARAMS), ""))
+        sent = self._now()
+        outgoing = request.Request(url, headers={
+            "APCA-API-KEY-ID": self._key_id, "APCA-API-SECRET-KEY": self._secret,
+            "Accept": "application/json", "User-Agent": "trading-desk/0.1"})
+        try:
+            reply = self._transport(outgoing, self._timeout)
+        except (error.URLError, TimeoutError, OSError):
+            self.asset_receipt = {"sent_at": sent.isoformat(), "http_status": None}
+            raise AssetError("TRANSPORT_FAILURE") from None
+        received = self._now()
+        body = reply.body if reply.status == 200 else b""
+        unsafe = self._key_id.encode() in body or self._secret.encode() in body
+        self.asset_receipt = {"route": "https://" + ASSET_HOST + ASSET_ROUTE, "params": dict(ASSET_PARAMS),
+                              "sent_at": sent.isoformat(), "received_at": received.isoformat(),
+                              "http_status": reply.status, "headers": dict(reply.headers), "bytes": len(body),
+                              "sha256": hashlib.sha256(body).hexdigest() if body and not unsafe else None}
+        if reply.status != 200:
+            code = _http_code(reply.status)
+            if code in STOP_CODES:
+                self.stopped = code
+                if self.cache is not None:
+                    self.cache.record_stop(code, received)
+            raise AssetError(code)
+        if unsafe:
+            raise AssetError("UNSAFE_RESPONSE")
+        return parse_assets(body, received)
+
+    def fetch(self, req: BarRequest, *, reuse: bool = False, identities=None) -> BatchResult:
+        """``identities`` (Alpaca symbol -> pinned ``IdentityRecord``) puts each ticker in
+        its mapping's cache namespace and records the Alpaca asset ID as its identity."""
+        spaces = self._spaces(req, identities)
         # An active run stop outranks every path, the cached one included.
         if self.stopped:
-            return self._unavailable(req, "RUN_STOPPED_AFTER_" + self.stopped)
+            return self._unavailable(req, "RUN_STOPPED_AFTER_" + self.stopped, spaces=spaces)
         if reuse:
             if self.cache is None:
                 raise AlpacaVolumeError("NO_CACHE_CONFIGURED")
-            return self._reuse(req)
+            return self._reuse(req, spaces)
         sent = self._now()
         if clock(req.end) > clock(sent) - HISTORICAL_DELAY:
-            return self._unavailable(req, "END_NOT_15_MINUTES_OLD")
+            return self._unavailable(req, "END_NOT_15_MINUTES_OLD", spaces=spaces)
         rows: dict[str, list] = {}
         pages, raw, digests, issues, tokens, token = [], [], [], [], set(), None
         while True:
@@ -501,7 +565,7 @@ class AlpacaVolumeClient:
             except AlpacaVolumeError:
                 # A remaining page is incomplete evidence, never a truncated success.
                 return self._unavailable(req, "INCOMPLETE_PAGINATION" if pages else "REQUEST_BUDGET_EXHAUSTED",
-                                         pages, raw, issues)
+                                         pages, raw, issues, spaces=spaces)
             page_sent = self._now()
             outgoing = request.Request(req.url(token), headers={
                 "APCA-API-KEY-ID": self._key_id, "APCA-API-SECRET-KEY": self._secret,
@@ -510,7 +574,7 @@ class AlpacaVolumeClient:
                 reply = self._transport(outgoing, self._timeout)
             except (error.URLError, TimeoutError, OSError):
                 pages.append({"page": len(pages) + 1, "sent_at": page_sent.isoformat(), "http_status": None})
-                return self._unavailable(req, "TRANSPORT_FAILURE", pages, raw, issues)
+                return self._unavailable(req, "TRANSPORT_FAILURE", pages, raw, issues, spaces)
             received = self._now()
             body = reply.body if reply.status == 200 else b""
             unsafe = self._key_id.encode() in body or self._secret.encode() in body
@@ -523,22 +587,22 @@ class AlpacaVolumeClient:
                 code = _http_code(reply.status)
                 if code in STOP_CODES:
                     self.stopped = code
-                return self._unavailable(req, code, pages, raw, issues)
+                return self._unavailable(req, code, pages, raw, issues, spaces)
             if unsafe:
-                return self._unavailable(req, "UNSAFE_RESPONSE", pages, raw, issues)
+                return self._unavailable(req, "UNSAFE_RESPONSE", pages, raw, issues, spaces)
             raw.append(body)
             digests.append(receipt["sha256"])
             try:
                 envelope = json.loads(body, parse_float=Decimal)
             except (ValueError, TypeError):
-                return self._unavailable(req, "INVALID_JSON", pages, raw, issues)
+                return self._unavailable(req, "INVALID_JSON", pages, raw, issues, spaces)
             bars = envelope.get("bars") if isinstance(envelope, dict) else None
             following = envelope.get("next_page_token") if isinstance(envelope, dict) else None
             if not isinstance(envelope, dict) or not isinstance(bars, (dict, type(None))) or (
                     following is not None and (not isinstance(following, str) or not following)):
-                return self._unavailable(req, "INVALID_ENVELOPE", pages, raw, issues)
+                return self._unavailable(req, "INVALID_ENVELOPE", pages, raw, issues, spaces)
             if envelope.get("currency", "USD") != "USD":
-                return self._unavailable(req, "CURRENCY_MISMATCH", pages, raw, issues)
+                return self._unavailable(req, "CURRENCY_MISMATCH", pages, raw, issues, spaces)
             receipt["next_page_token_present"] = following is not None
             for symbol, symbol_rows in (bars or {}).items():
                 if symbol not in req.symbols:
@@ -548,7 +612,7 @@ class AlpacaVolumeClient:
             if following is None:
                 break
             if following in tokens:
-                return self._unavailable(req, "PAGINATION_LOOP", pages, raw, issues)
+                return self._unavailable(req, "PAGINATION_LOOP", pages, raw, issues, spaces)
             tokens.add(following)
             token = following
         observations, failures, cache_status = {}, {}, {}
@@ -558,8 +622,10 @@ class AlpacaVolumeClient:
                 if any(not isinstance(p, list) for p in parts):
                     raise AlpacaVolumeError("MALFORMED_BAR")
                 bars = _symbol_bars([r for p in parts for r in p], req)
-                values = dict(requested_symbol=symbol, returned_symbol=symbol, provider_identity=None,
-                              mapping_provenance=MAPPING, feed=req.feed, adjustment=req.adjustment,
+                record = (identities or {}).get(symbol)
+                values = dict(requested_symbol=symbol, returned_symbol=symbol,
+                              provider_identity=record.alpaca_asset_id if record else None,
+                              mapping_provenance=record.namespace if record else MAPPING, feed=req.feed, adjustment=req.adjustment,
                               timeframe=req.timeframe, channel=req.channel,
                               definition_id=definition_id(req.adjustment, req.channel),
                               share_basis_id=share_basis_id(req.adjustment), requested_start=req.start,
@@ -572,7 +638,7 @@ class AlpacaVolumeClient:
             except AlpacaVolumeError as exc:
                 failures[symbol] = exc.code
                 if self.cache is not None:
-                    self.cache.record_failure(req, symbol, exc.code, received)
+                    self.cache.record_failure(req, symbol, exc.code, received, (spaces or {}).get(symbol))
         status = "COMPLETE" if not failures else "PARTIAL" if observations else "UNAVAILABLE"
         return BatchResult(req, status, observations, failures, None, tuple(sorted(set(issues))),
                            tuple(pages), tuple(raw), False, cache_status)
