@@ -196,3 +196,97 @@ costs the names whose old rows are malformed.
   series ties agree exactly. No tolerance is added to any decision.
 - A contiguous scoped series with no row before the window and fewer rows than requested
   is treated as a genuinely short history, as the full path already does.
+
+## Results (after code; Claude, 2026-10-04)
+
+Code commit `9e43eeb` (parent `ba78ba0`); this results section and the acceptance rows
+follow in the next commit. **Pending Astra's audit.** G5 is not complete; Step 09 and any
+activation are not started.
+
+### What changed
+
+`src/desk/history_scope.py` (new), `bars.py` (row diagnostics, `BarRowError`),
+`webull.py` (`bars_scoped`, pre-parse classification, per-ticker partial errors),
+`vendor_basis.py` (`discovery_bars`, scoped store columns and tables, `_daily_scoped`,
+named full-history diagnostics), `data_basis.py` (`webull-discovery-v1`, discovery refused
+by `compatible_prices`), `signal_state.py` (cannot arm), `indicators.py`
+(`discovery_features`; `daily_features` refuses scoped frames), `playbook/triggers.py`
+(`scan` refuses scoped frames), `watchlist.py` (Trend Template on discovery features),
+`scanner.py` (`fetch_scoped`, `history_scope` report on published and retained builds).
+Tests: `tests/test_scoped_history.py`, `tests/webull_sim.py`.
+
+Two details beyond the before-code plan: the full-history gap message now names the
+missing sessions (`MISSING_OR_STALE_DAILY_HISTORY: missing <dates>`; the rejection is
+unchanged), and `watchlist-status.json` now carries `history_scope` so a FAILED or
+INCOMPLETE build keeps its scope report too.
+
+### Tests (Checked)
+
+| Command | Python | Result |
+| --- | --- | --- |
+| `python -m pytest -q -W error` | 3.12.3 | 1385 passed in 141 s |
+| `python -m pytest -q -W error` | 3.13.14 | 1385 passed in 143 s |
+| targeted: `test_scoped_history test_vendor_basis test_partial_discovery test_discovery test_webull test_volume_audit_cp2 test_volume_audit_r1r2 test_g5_integration test_volume_consumers test_volume_lifecycle` | 3.12.3 and 3.13.14 | 268 passed on each |
+| `git diff --check` | — | clean |
+
+1385 = the 1353 accepted at `ba78ba0` + 32 new. Run with `-p no:cacheprovider` and a
+scratch `--basetemp`.
+
+Section 9 map (`tests/test_scoped_history.py`): 1 `test_full_and_scoped_discovery_agree…`;
+2 `test_old_defect_before_the_required_start…`; 3 `test_required_session_defect…[first,
+interior, last]`; 4 `test_unwaivable_defects…` (10 variants), `test_duplicate_outside_the_scope…`,
+`test_stale_receipt…`; 5 `test_missing_session_or_suspension…`; 6 `test_short_history…`,
+`test_a_capped_reply…`, `test_exact_260_window…`, `test_half_day_build…`,
+`test_friday_prices_end_friday…`; 7 `test_required_spy_defect…`; 8
+`test_excess_old_rows…`; 9 `test_discovery_and_full_history_evidence_never_substitute…`;
+10 `test_revised_overlap…`, `test_discovery_evidence_cannot_arm…`,
+`test_missing_raw_anchor_minutes…`; 11 `test_bounded_request_count_and_range…`,
+`test_shared_batch_failure…`, `test_unsupported_adapter…` plus the CP2 suites above.
+
+Mutation checks (each guard removed, scoped suite run, file restored); all 10 were caught:
+classification keeps out-of-scope rows (8+ failures); ambiguous label accepted; gap
+accepted as short history; discovery writes the full `current` pointer; `compatible_prices`
+accepts discovery; `daily_features` accepts scoped frames; scope may be shortened; raw
+anchor check off; truncation treated as short; Trend Template on raw closes instead of
+discovery features.
+
+### Before / after reproductions
+
+- Fixture (case 2): one 2023-06-05 open-above-high row on a 1100-row ticker. Before
+  (`ba78ba0` behavior, still the full path): rejected as a row error; after: the full path
+  says `DAILY_ROW_INVALID: high/low don't contain open and close at session 2023-06-05
+  (…, field high)` and still rejects; the discovery path stores it as
+  `EXCLUDED_OUTSIDE_SCOPE` and ranks the ticker.
+- Live (Webull sandbox, read-only, `research/ai-trading/g5a-cp3-scoped-history-2026-10-04/REPORT.md`):
+  of the 48 earlier daily-history failures, 29 had defects only before the window and 19
+  inside it. The code and an independent row re-read agreed on all 48. After-preview of the
+  whole Friday build: PARTIAL, 227 ranked (was 213), 48 leaders (was 45; added HAFN, GH,
+  KEYS), 59 bar failures (was 82), same 54 Webull and 3 Alpaca requests, daily `count` 265
+  instead of 1000.
+
+### Cache separation (Checked, fixtures and the live scratch stores)
+
+| Store item | Full-history path | Discovery path |
+| --- | --- | --- |
+| `observations` | `scope` NULL or `full-history` | `scope` = `discovery-history-v1`, `scope_digest` |
+| current pointer | `current` (only writer) | `scoped_current` (host, symbol, scope) |
+| `latest(…)` default | full-history only | `latest(…, scope)` |
+| `REVISED` on a common session | recorded | recorded; `latest_revision()` reads every scope |
+| price evidence method | `webull-history-v1` | `webull-discovery-v1` (cannot arm, feed setups or revalidate) |
+| `history_defects` | `REJECTED_REQUIRED_DATA` | `EXCLUDED_OUTSIDE_SCOPE` or `REJECTED_REQUIRED_DATA` |
+
+Live: after both runs `current` held 0 rows; the 48 names kept `UNAVAILABLE` full-history
+observations beside 23 discovery `CONSISTENT` rows.
+
+### Remaining acceptance (not done here)
+
+- Astra's audit of this checkpoint; G4/G5 acceptance stays pending.
+- iMac: pull, strict suite, and one read-only scoped build there (commands to be added to
+  `research/ai-trading/g5/imac-commands.md` after the audit).
+- A scheduled Friday 16:40 build (Thursday liquidity end) and a regular-session check have
+  not run; the live run was Sunday for the Friday cutoff.
+- No out-of-scope row was received live (Webull honoured `start_time`); the excess-row path
+  is fixture-only.
+- Ten names carry an in-window high/low defect in 2026-04-24..30 (Assumption: provider-wide).
+  They stay rejected; correcting them needs reviewed price evidence.
+- Massive dividend evidence and `SSL_CERT_FILE` still wait on the iMac (unchanged).

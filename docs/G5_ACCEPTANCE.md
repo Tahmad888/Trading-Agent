@@ -123,6 +123,23 @@ Astra's audit**. Details, consumer matrix and section-10 test map:
 | [CP2 re-audit R1] An identity outcome that cannot be persisted never leaves an older pin eligible: attempt committed before any request (no request if it cannot be); outcome and closure in one transaction; open attempt unavailable across restart; this run withholds at once; stale list cannot clear newer open/failed attempts | `IdentityStore.register_attempt`/`resolve`/`current`, `AlpacaVolumeProvider._fetch_assets`/`identities`/`gate` | [S] `test_volume_audit_r1r2` R1 (16 cases, real write locks); Astra's probe with updated expectations (R1 registration and completion variants); mutation checks (open-attempt rule, run flag, pre-registration, stale rule) each fail tests | **Failed re-audit at `0d8838c`**; Pass (implementer), pending Astra | An open attempt withholds every identity-dependent input until a later successful refresh (fail closed by design) |
 | [CP2 re-audit R2] The final volume/identity reservation follows the stored event's Alpaca dependency; price-only events never wait on an unrelated volume writer | `alpaca_source.needs_volume_guard`, `SignalStore.held_event` view `persisted`, `EventRiskSource.held_event` | [S] `test_volume_audit_r1r2` R2 (18 cases: price-only prepare/approve/consume with the file locked, both journal modes; VCP still refuses; tampered, mismatched, legacy and source-changed rows); F2 race tests unchanged; mutation checks (always/never guard) fail tests | **Failed re-audit at `0d8838c`**; Pass (implementer), pending Astra | — |
 
+## G5a checkpoint 3 — scoped discovery history (2026-10-04)
+
+Taz's prompt (22:29Z, relayed). Implemented by Claude at `9e43eeb` (parent `ba78ba0`,
+which Astra accepted for CP2); **pending Astra's audit**. Details, dependency inventory and
+section-9 test map: `checkpoints/G5a-cp3-scoped-history.md`.
+
+| Requirement | Code path | Test or host artifact | Result | Remaining limitation |
+| --- | --- | --- | --- | --- |
+| [CP3] Only the Friday leader build is scoped; every other consumer keeps 1000 strict rows | `scanner._leader_scan_job`, `fetch_scoped`; `DAILY_BARS` unchanged | [S] dependency inventory; `test_unsupported_adapter…`; [P] preview D count 265, M15 40 | Pass (implementer) | — |
+| [CP3] Typed scope (consumer, policy, instrument, timeframe, cutoff, required start/end); cannot be shortened | `history_scope.HistoryScope`, `ScopeWindow` | [S] `test_friday_prices_end_friday…`; mutation (validator off) caught | Pass (implementer) | — |
+| [CP3] Pre-parse classification; unreadable/ambiguous time, identity, shape, delay, receipt never waived; unsupported adapter uses the strict path | `classify_daily`, `WebullData.bars_scoped` | [S] 10 unwaivable variants, stale receipt, excess rows; mutations caught | Pass (implementer) | Excess-row path fixture-only (Webull honoured `start_time` live) |
+| [CP3] Finite discovery features only; scoped frames refused by `daily_features` and `triggers.scan` | `indicators.discovery_features` | [S] full vs scoped equality incl. flat tie; mutations caught | Pass (implementer) | SMA floating-point Assumption (1.9e-14) |
+| [CP3] Strict required window: gap ≠ short history; truncated and incomplete named; raw M15 anchor kept | `vendor_basis._daily_scoped`, `discovery_bars` | [S] missing/suspension/head/short/truncated/anchor tests; [P] 9 live `MISSING_REQUIRED_SESSIONS`, 6 anchor | Pass (implementer) | — |
+| [CP3] Full-history diagnostics keep row, session, field and reason; defects stored sanitized and bounded | `bars.BarRowError`, `VendorHistoryStore.record_defects` | [S] case 2; [P] 21 live `DAILY_ROW_INVALID … at session <date>` (was `DAILY_PROVIDER_UNAVAILABLE`), 27 named gaps | Pass (implementer) | — |
+| [CP3] Discovery evidence never overwrites, clears or revalidates full history; revisions stay visible; `compatible_prices` rule kept | `scoped_current`, `latest(scope)`, `latest_revision`, `webull-discovery-v1` | [S] interleave/restart, revision, cannot-arm tests; [P] live `current` 0 rows | Pass (implementer) | — |
+| [CP3] Old-defect names recover; in-window defects still reject | build path | [P] 48 earlier failures: 29 outside-only, 19 inside, 0 mismatches; preview 227 ranked / 48 leaders / 59 bar failures (was 213 / 45 / 82) | Pass (implementer) | Cloud sandbox, Sunday run; not iMac or a scheduled build |
+
 ## Prompt line index
 
 G4 prompt (Taz, 2026-10-02 01:51Z):
@@ -275,6 +292,10 @@ Question 2 is open and 6 still needs the two host runs. The original wording fol
   saved 365-name artifacts (no network) and one bounded discovery build through
   production components (3 Alpaca calls, sandbox Webull, scratch data). Not an iMac
   check, not a scheduled build and not a live EP or entitlement check.
+- **[P] G5a checkpoint 3 classification and after-preview (cloud, 2026-10-04, `9e43eeb`):**
+  `research/ai-trading/g5a-cp3-scoped-history-2026-10-04/REPORT.md`. 10 Webull requests for
+  the 48 earlier daily-history failures, then one bounded discovery build (54 Webull, 3
+  Alpaca), scratch data. Not an iMac check, not a scheduled build, not a regular session.
 - **[H] Actual iMac integration (for `6d21ddf`), as reported in DeepSeek's audit of
   2026-10-02 (the implementer has not seen the raw transcript):** HEAD `6d21ddf`, tree
   clean, env file mode 0600; strict suite 997 passed on Python 3.14.7 (`.venv`) and on
