@@ -31,9 +31,11 @@ Alpaca SIP volume producer and probe, `docs/ALPACA_VOLUME.md`,
 `DESK_ALPACA_VOLUME_CACHE`. Astra's audit of `b5dab2c` found F1 (identity health not
 persisted) and F2 (final guard did not hold the volume/identity store), repaired in
 `0d8838c`. Her re-audit found R1 (an unpersistable identity outcome left an old pin
-eligible) and R2 (price-only tickets waited on the volume guard); both are repaired
-(durable refresh attempts; guard only for Alpaca-dependent events) and pending her re-audit. Checkpoint 3 (scoped history
-validation) has not started. Historical access does not prove real-time entitlement.
+eligible) and R2 (price-only tickets waited on the volume guard); both repaired in `ba78ba0`,
+which Astra accepted for CP2. Checkpoint 3 (scoped discovery history; Friday build only
+asks for its 260 sessions, `src/desk/history_scope.py`, `docs/checkpoints/G5a-cp3-scoped-history.md`)
+is implemented and pending Astra's audit; every other consumer keeps 1000 strict rows.
+Historical access does not prove real-time entitlement.
 
 Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify and
 checkpoint each numbered step before advancing under Taz's current authorization.
@@ -146,6 +148,7 @@ https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg
 - `src/desk/risk.py`: the risk engine, with limits from blueprint section 10: user-selected dollar risk per ticket, including estimated costs, with no grade-dollar mapping or hard $100 ceiling, user-overridable dollar-loss warnings (not halts), the blocking manual stop, quote-age and trading-status checks. No caps on trade or position counts.
 - `src/desk/alpaca_volume.py`, `src/desk/alpaca_probe.py`: G5a opt-in Alpaca SIP volume evidence and its bounded probe; `alpaca_assets.py` (identity pins and identity health) and `alpaca_source.py` (consumers' provider and the final guard) wire it in (prices stay Webull).
 - `src/desk/bars.py`: parses and checks price bars; bad, short or stale bars raise `BarDataError` (no trade).
+- `src/desk/history_scope.py`: G5a CP3 typed discovery scope (260 sessions, cannot be shortened) and pre-parse row classification; only the Friday leader build uses it.
 - `src/desk/indicators.py`: the feature pack on TA-Lib 0.8.1, matched to TradingView; `tests/tv_reference.py` holds the Pine formulas it's tested against.
 - `src/desk/screen_check.py`: prints a ticker's latest daily values to compare with Taz's screen.
 - `tests/`: run with `pip install -e .[dev]` then `pytest`.

@@ -88,8 +88,13 @@ class AnchorAdjustment(Evidence):
 
 
 class VendorPriceBasis(Evidence):
-    """Observed vendor consistency, explicitly NOT complete corporate-action coverage."""
-    method: Literal["webull-history-v1"]
+    """Observed vendor consistency, explicitly NOT complete corporate-action coverage.
+
+    ``webull-discovery-v1`` (G5a checkpoint 3) is the same check over a discovery
+    scope's required sessions only. It serves the weekly leader build and nothing else:
+    it can never arm, revalidate or replace full-history (``webull-history-v1``) evidence.
+    """
+    method: Literal["webull-history-v1", "webull-discovery-v1"]
     host: Literal["api.sandbox.webull.com", "api.webull.com"]
     symbol: Text
     security_id: Text
@@ -132,10 +137,12 @@ class VendorPriceBasis(Evidence):
 
 
 PriceEvidence = PriceBasis | VendorPriceBasis
+VENDOR_METHODS = ("webull-history-v1", "webull-discovery-v1")
+DISCOVERY_METHOD = "webull-discovery-v1"
 
 def _price(raw, now) -> PriceEvidence:
     try:
-        basis = (VendorPriceBasis if isinstance(raw, dict) and raw.get("method") == "webull-history-v1"
+        basis = (VendorPriceBasis if isinstance(raw, dict) and raw.get("method") in VENDOR_METHODS
                  else PriceBasis).model_validate(raw)
     except ValidationError as exc:
         raise BarDataError("Unknown/incomplete corporate-action price basis; rebuild with verified coverage") from exc
@@ -192,6 +199,9 @@ def compatible_prices(previous: dict | None, current: pd.DataFrame, now, *, symb
             raise BarDataError("Missing original history overlap; cannot revalidate signal")
         if any(row[1:] != latest[row[0]] for row in old.daily_history):
             raise DailyHistoryChanged("Daily OHLCV used to arm this signal was revised; rebuild signal")
+        if DISCOVERY_METHOD in (old.method, new.method):
+            # Withhold, never invalidate: discovery evidence is not signal evidence.
+            raise BarDataError("Discovery-scoped price evidence cannot arm or revalidate a signal")
         return new
 
     def events(basis):

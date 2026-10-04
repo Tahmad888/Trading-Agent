@@ -157,8 +157,26 @@ def weighted_12m_return(close: pd.Series) -> pd.Series:
     return (0.4 * roc[63] + 0.2 * roc[126] + 0.2 * roc[189] + 0.2 * roc[252]).rename("rs_weighted_12m")
 
 
+def discovery_features(df: pd.DataFrame, s: Settings = Settings()) -> pd.DataFrame:
+    """Only what the leader build's Trend Template reads (G5a checkpoint 3).
+
+    Close, SMA50/150/200 and the 252-session high/low, with the feature pack's own
+    definitions and settings. Nothing recursive is computed, so a scoped discovery
+    window never yields a NaN-padded frame for general setup evaluation.
+    """
+    c = df["close"]
+    out = pd.concat([df, sma(c, 50), sma(c, 150), sma(c, 200),
+                     df["high"].rolling(s.year_bars).max().rename("high_52w"),
+                     df["low"].rolling(s.year_bars).min().rename("low_52w")], axis=1)
+    out.attrs = dict(df.attrs)
+    return out
+
+
 def daily_features(df: pd.DataFrame, s: Settings = Settings()) -> pd.DataFrame:
     """Every indicator the feature pack uses, one column each, for daily bars."""
+    if df.attrs.get("history_scope"):
+        # Recursive indicators (EMA, Wilder RSI/ATR/ADX) need their full warm-up.
+        raise BarDataError("Discovery-scoped history cannot feed setup evaluation")
     c = df["close"]
     parts = [
         *(sma(c, n) for n in s.sma_lengths),

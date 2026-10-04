@@ -49,6 +49,9 @@ def _time(value):
 def candidate_id(sig, day):
     if sig.setup_id not in CARDS or sig.direction not in CARDS[sig.setup_id].directions:
         raise SignalStateError("Unknown setup or unsupported direction")
+    if isinstance(sig.price_basis, dict) and sig.price_basis.get("method") == "webull-discovery-v1":
+        # G5a checkpoint 3: discovery-scoped history is not setup evidence.
+        raise SignalStateError("Discovery-scoped price evidence cannot arm a signal")
     clock(sig.as_of)
     # Rationale text may change without changing executable terms.
     terms = signal_payload(sig)

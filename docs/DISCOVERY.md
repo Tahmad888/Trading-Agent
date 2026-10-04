@@ -35,6 +35,20 @@ baseline; RSI(2) needs 200; template-dependent setups need at least 252. Other
 setup windows and selected historical indicator values must also be complete.
 Missing history for one setup is reported without blocking unrelated setups.
 
+The Friday leader build is the one exception (G5a checkpoint 3,
+`checkpoints/G5a-cp3-scoped-history.md`). Its reads are finite, so it asks Webull only
+for the 260 completed sessions it uses (plus 5 earlier sessions that prove a missing
+first session is a gap, not a young listing), under the typed scope in
+`src/desk/history_scope.py`. A malformed row before that window is recorded as
+`EXCLUDED_OUTSIDE_SCOPE` and no longer stops the ticker's ranking; a defect, gap or
+stale end inside the window still rejects that ticker, and a bad required SPY row still
+fails the build. Discovery evidence is labelled `webull-discovery-v1`: it cannot arm,
+feed setups or revalidate a signal, and it never replaces full-history evidence. Every
+setup, the market filter, entries and revalidation keep the strict 1,000-row request,
+and the same old row still rejects them, now with its session, field and reason. An
+adapter without scoped requests falls back to the unchanged full path and the build
+report says so (`history_scope.path`).
+
 `scan-log.jsonl` discovery fields report source labels, per-source failures and user
 preparation. `watchlist-status.json` records the latest weekly attempt and last
 successful refresh. READY and EMPTY are successful builds; EMPTY keeps core/user

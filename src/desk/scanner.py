@@ -125,6 +125,52 @@ def fetch(source: BarSource, symbols: Sequence[str], timespan: str, count: int,
     return out
 
 
+def fetch_scoped(source, symbols: Sequence[str], skipped: dict[str, str], *,
+                 liquidity_through: date | None = None) -> tuple[dict[str, pd.DataFrame], dict]:
+    """Discovery daily bars on the explicit discovery scope (G5a checkpoint 3).
+
+    Batches of 20 per category, one bounded request each. A failed batch is never
+    retried ticker by ticker. ``ScopeUnsupported`` propagates before any request so
+    the caller can use the unchanged full-history path and say so.
+    """
+    from desk.history_scope import ScopeUnsupported
+    scoped = getattr(source, "discovery_bars", None)
+    if scoped is None:
+        raise ScopeUnsupported("DISCOVERY_SCOPE_UNSUPPORTED: no scoped adapter")
+    symbols = list(dict.fromkeys(canonical_symbol(s) for s in symbols))
+    out: dict[str, pd.DataFrame] = {}
+    reports: dict[str, dict] = {}
+    metadata = securities(source, symbols, skipped)
+    for cat in ("US_ETF", "US_STOCK"):
+        names = [s for s in symbols if s in metadata and metadata[s].bar_category == cat]
+        for i in range(0, len(names), 20):
+            batch = names[i:i + 20]
+            try:
+                out.update(scoped(batch, category=cat, liquidity_through=liquidity_through))
+            except ScopeUnsupported:
+                raise
+            except BarDataError as e:
+                for s in batch:
+                    skipped[s] = f"{e} (shared by the batch)"
+                continue
+            skipped.update({s: r for s, r in getattr(source, "last_errors", {}).items() if s in batch})
+            reports.update({s: r for s, r in getattr(source, "last_scope_report", {}).items() if s in batch})
+    for symbol in list(out):
+        if symbol not in metadata:
+            out.pop(symbol)
+            continue
+        observed = out[symbol].attrs.get("provider_identity")
+        if observed != {"symbol": symbol, "instrument_id": metadata[symbol].instrument_id}:
+            out.pop(symbol)
+            skipped[symbol] = "bar identity disagrees with security metadata"
+            continue
+        out[symbol].attrs["security_metadata"] = metadata[symbol].model_dump(mode="json")
+    for symbol in symbols:
+        if symbol not in out:
+            skipped.setdefault(symbol, "no bars returned")
+    return out, reports
+
+
 @dataclass
 class ScanRecord:
     kind: str                     # "close" or "intraday"
@@ -555,9 +601,26 @@ def _leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *,
             outcomes[sym] = ({"outcome": "criterion", "stage": "security_type", "reason": why}
                              if why.startswith("unsupported security type") else
                              {"outcome": "source_failure", "stage": "metadata", "reason": why})
-    bars = fetch(source, sorted(set(names) | {"SPY"}), "D", DAILY_BARS, rec.skipped)
     provider = provider_of(source)
     through = complete_through(now) if provider else None
+    # G5a checkpoint 3: discovery reads a proven finite window (history_scope.py), so it
+    # asks for that scope only; every other consumer keeps DAILY_BARS. An adapter that
+    # cannot bound history uses the unchanged strict path, and the report says so.
+    from desk.history_scope import DISCOVERY_POLICY, DISCOVERY_SESSIONS, ScopeUnsupported, ScopeWindow
+    wanted = sorted(set(names) | {"SPY"})
+    try:
+        bars, scope_reports = fetch_scoped(source, wanted, rec.skipped, liquidity_through=through)
+        window = ScopeWindow.discovery(now, through)
+        history = {"path": "scoped", "policy": DISCOVERY_POLICY, "sessions": DISCOVERY_SESSIONS,
+                   "cutoff_session": window.required_end.isoformat(),
+                   "liquidity_through": through.isoformat() if through else None, "requested": window.request(),
+                   "purpose": "discovery only; not setup qualification or trade approval",
+                   "excluded_outside_scope": {s: r for s, r in sorted(scope_reports.items())
+                                              if r.get("excluded_defect_count")}}
+    except ScopeUnsupported as exc:
+        bars = fetch(source, wanted, "D", DAILY_BARS, rec.skipped)
+        history = {"path": "full-history", "policy": "full-history", "requested": {"count": DAILY_BARS},
+                   "reason": str(exc)}
     if provider and names:
         # Liquidity reads native-daily SIP ending at the latest session final at this
         # clock (Thursday at the Friday 16:40 build); the window is disclosed below.
@@ -571,7 +634,8 @@ def _leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *,
               "volume_source": "alpaca-sip-split:native-daily-v1" if provider else "webull-native-daily",
               "volume_through": through.isoformat() if through else None,
               "alpaca_requests": provider.requests_used if provider else 0,
-              "alpaca_batches": list(provider.batches) if provider else []}
+              "alpaca_batches": list(provider.batches) if provider else [],
+              "history_scope": history}
 
     def finish(status, reasons, leaders=(), population=(), evidence=None):
         counts = Counter(f"{o['outcome']}:{o['stage']}" for o in outcomes.values())
@@ -794,6 +858,7 @@ class ScanLog:
         self.write_json("watchlist-status.json", {
             "attempted_at": clock(now).isoformat(), "status": status, "reasons": reasons,
             "published_generation": generation, "stage_counts": counts,
+            "history_scope": (report or {}).get("history_scope"),
             "last_success_at": None if status not in self.COMPLETE else clock(now).isoformat()})
 
     def build_status(self, now, status, reasons, *, success=False, report=None) -> None:
@@ -814,6 +879,7 @@ class ScanLog:
             "attempted_at": clock(now).isoformat(), "status": status, "reasons": reasons,
             "published_generation": bundle["generation"] if bundle else 0,
             "stage_counts": (report or {}).get("stage_counts"),
+            "history_scope": (report or {}).get("history_scope"),
             "last_success_at": clock(now).isoformat() if success else old.get("last_success_at")})
 
     def watchlist_status(self, now) -> dict:

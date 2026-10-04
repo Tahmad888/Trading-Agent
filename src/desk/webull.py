@@ -40,6 +40,7 @@ import pandas as pd
 from desk.bars import BarDataError, bars_from_webull
 from desk.bar_contract import BarProvenance
 from desk.data_basis import VolumeBasis
+from desk.history_scope import ScopeWindow, classify_daily
 from desk.symbols import canonical_symbol, webull_symbol, WEBULL_IDENTITIES
 
 HOST = "api.webull.com"
@@ -197,7 +198,8 @@ class WebullData:
     def bars(self, symbols: Sequence[str], *, category: str, timespan: str, count: int = 1000,
              sessions: str | None = None, max_delay_minutes: int = 0,
              start_time: int | None = None, end_time: int | None = None,
-             real_time_required: bool = True, _allow_partial: bool = False) -> dict[str, pd.DataFrame]:
+             real_time_required: bool = True, _allow_partial: bool = False,
+             _scope: ScopeWindow | None = None) -> dict[str, pd.DataFrame]:
         """Bars for up to 20 symbols, oldest first.
 
         A symbol missing from the reply, or data delayed more than
@@ -252,8 +254,9 @@ class WebullData:
             raise WebullError("unexpected bars reply")
         out = {}
         bad = set()
+        self.last_partial_errors = {}
         for item in reply:
-            candidate_symbol = None
+            candidate_symbol = scope_report = None
             try:
                 if _allow_partial:
                     if not isinstance(item, Mapping) or not isinstance(item.get("symbol"), str):
@@ -287,6 +290,11 @@ class WebullData:
                     if minute_bars and any(not isinstance(row.get("trading_session"), str) or
                                            row["trading_session"] not in selected for row in rows):
                         raise WebullError("missing or unexpected intraday trading_session")
+                    if _scope is not None:
+                        # Classified by session before any OHLCV parsing (G5a checkpoint 3).
+                        rows, scope_report = classify_daily(rows, _scope, timestamp_unit=self._bar_timestamp_unit)
+                        if not rows:
+                            raise WebullError(f"no bars for {symbol} in the required scope")
                     df = bars_from_webull(rows, timestamp_unit=self._bar_timestamp_unit)
                     if "start_time" in bounds:
                         df = df[df.index >= bounds["start_time"]].copy()
@@ -322,18 +330,42 @@ class WebullData:
                         if profile else {"source": "Webull OpenAPI", "timeframe": timespan, "delay_minutes": delay,
                                          "timestamp_semantics": "unknown"})
                     df.attrs["received_at"] = self._clock().isoformat()
+                    if scope_report is not None:
+                        df.attrs["scope_report"] = {**scope_report, "window": _scope.model_dump(mode="json")}
                     out[symbol] = df
-            except (BarDataError, ValueError, TypeError):
+            except (BarDataError, ValueError, TypeError) as exc:
                 if not _allow_partial:
                     raise
                 if candidate_symbol not in symbols:
                     raise WebullError("Unattributable bar identity") from None
+                # Kept per ticker, so a wrapper can name the offending row instead of
+                # "unavailable". A later failure for the same ticker keeps the first.
+                self.last_partial_errors.setdefault(candidate_symbol, {
+                    "reason": str(exc), "defect": getattr(exc, "defect", None),
+                    "scope_report": scope_report})
                 bad.add(candidate_symbol)
                 out.pop(candidate_symbol, None)
         missing = [s for s in symbols if s not in out]
         if missing and not _allow_partial:
             raise WebullError(f"no bars for {missing}")
         return out
+
+    def bars_scoped(self, symbols, *, category: str, window: ScopeWindow, **kwargs):
+        """One bounded daily request for an explicit history scope (G5a checkpoint 3).
+
+        Asks the provider for the scope's sessions only (``start_time``/``end_time``
+        and ``count``; the forming bar is excluded). Rows the provider still returns
+        outside the required interval are classified by their timestamps before any
+        OHLCV parsing; their defects are reported, not waived silently. Identity,
+        delay, duplicate-symbol and shape checks are unchanged. Partial per ticker.
+        """
+        if not isinstance(window, ScopeWindow):
+            raise WebullError("A validated history scope is required")
+        if kwargs:
+            raise WebullError("A scoped request takes its bounds from the scope only")
+        return self.bars(symbols, category=category, timespan="D", count=window.count,
+                         start_time=window.start_ms(), end_time=window.end_ms(),
+                         _allow_partial=True, _scope=window)
 
     def bars_partial(self, symbols, **kwargs):
         """One request, valid symbols only; row failures cannot poison peers.

@@ -4,7 +4,9 @@ Trader-day step: **watch** (volume evidence for the watchlist and the EP volume 
 Status: checkpoint 1 (producer, probe) audited and closed by Astra on `df99472`.
 Checkpoint 2 (consumers, identity, partial discovery) is implemented and **pending
 Astra's audit**; it is opt-in (`DESK_ALPACA_VOLUME_CACHE`) and no iMac setting or runner
-enables it. Checkpoint 3 (scoped history validation) has not started.
+enables it. Checkpoint 3 (scoped discovery history, `checkpoints/G5a-cp3-scoped-history.md`)
+is implemented and pending Astra's audit; it changes the Webull daily request of the
+Friday build only, not the Alpaca volume path.
 
 Code: `src/desk/alpaca_volume.py` (client, evidence, cache, calculation) and
 `src/desk/alpaca_probe.py` (bounded acceptance probe). Tests:

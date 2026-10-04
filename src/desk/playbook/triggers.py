@@ -489,6 +489,8 @@ def minimum_history(setup_id: str) -> int:
 
 def scan(features: pd.DataFrame, ctx: Context, *, skipped: dict[str, str] | None = None) -> list[Signal]:
     """Every setup armed on this ticker's last daily bar."""
+    if features.attrs.get("history_scope"):
+        raise BarDataError("Discovery-scoped history cannot feed setup evaluation")
     out = []
     for setup_id, check in CHECKS.items():
         try:

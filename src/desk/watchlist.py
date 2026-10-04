@@ -23,7 +23,7 @@ from desk.bars import BarDataError
 from desk.security import securities
 from desk.symbols import canonical_symbol
 from desk.data_basis import VolumeUnavailable, decision_window, volume_evidence
-from desk.indicators import daily_features
+from desk.indicators import discovery_features
 from desk.playbook.filters import trend_template
 
 ALWAYS = ("SPY", "QQQ", "IWM")
@@ -137,7 +137,7 @@ def leader_scan(bars: Mapping[str, pd.DataFrame], spy_close: pd.Series,
             out(sym, "limit", "max_leaders", f"ranked after the {limit}-name list was full")
             continue
         try:
-            gate = trend_template(daily_features(bars[sym]), spy_close)
+            gate = trend_template(discovery_features(bars[sym]), spy_close)
         except BarDataError as e:
             skipped[sym] = f"bad data: {e}"
             out(sym, "source_failure", "trend_template", str(e))
