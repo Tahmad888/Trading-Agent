@@ -329,3 +329,122 @@ exact injection points are not replayed. No provider was called for the repair. 
 acceptance limits listed above (live EP RTH, real-time entitlement, BRK.B live, iMac,
 scheduled build, Checkpoint 3, SPY 2026-09-18, Massive and `SSL_CERT_FILE`) are
 unchanged. G5 and Step 09 are **not** complete.
+
+## Re-audit repair R1/R2 — contract written before code (2026-10-04)
+
+Astra's re-audit of `0d8838c` (Taz's prompt and her probe saved verbatim:
+`/mnt/project-files/research/ai-trading/g5/audits/g5a-cp2-repair-reaudit-R1R2-prompt-2026-10-04-verbatim.md`)
+keeps the F1/F2 repairs and finds two uncovered cases. Her separate report file and
+probe JSON did not arrive; her probe script did, and at `0d8838c` it reproduces both
+(Checked: R1 same-instance and restart gates `OK`, saved VCP triggered; R2 price-only
+consume refused with the unrelated writer held, in both journal modes).
+
+**R1 — identity refresh attempts are durable before any request.**
+- New table `identity_attempts(attempt INTEGER PRIMARY KEY AUTOINCREMENT, symbols TEXT
+  (JSON list of desk symbols the attempt resolves), registered_at TEXT, completed_at
+  TEXT, outcome TEXT)`; `identity_health` gains a nullable `attempt` column (the
+  attempt whose asset list produced the row; NULL for rows written before this change
+  and for direct `resolve` calls without an attempt).
+- Order of one refresh: (1) register the attempt in its own short `BEGIN IMMEDIATE`
+  transaction and commit; if that fails, **no request is sent** and the run's
+  identities are `IDENTITY_STORE_UNAVAILABLE`. (2) Release every lock, then send the
+  asset-list request (no lock is held over HTTP). (3) Record the outcome and close the
+  attempt in **one** transaction: a failed request appends source FAILED and closes the
+  attempt `SOURCE_FAILED:<code>`; a list is resolved and its per-ticker OK/FAILED rows,
+  source OK and the attempt's `RESOLVED` closure commit together. A request never sent
+  (budget, stop, final guard) closes it `NOT_SENT:<code>` and records no health.
+- If step 3 cannot commit (busy, crash, exception), the attempt stays open. An open
+  attempt is an unknown shared-source outcome: every identity-dependent input stays
+  `IDENTITY_REFRESH_UNRESOLVED` in every process until a ticker's OK row comes from a
+  **later** attempt. Price-only paths never read identity health.
+- Same instance: any identity persistence failure sets the provider's
+  `_unrecorded` code for the rest of that run; the cache-only gate returns it before
+  reading the store. Restart relies only on the durable open attempt, not on this flag.
+- Eligibility (`current`, one read) adds one rule to F1's: no open attempt numbered
+  above the attempt of the ticker's latest OK row (legacy NULL counts as 0).
+- Ordering: a list from attempt *k* is stale once any attempt numbered above *k* is
+  registered (open or closed); it writes no OK or mapping and closes *k* as `STALE`
+  (`IDENTITY_STALE_ASSET_LIST`). F1's receipt-time rule against newer FAILED rows stays.
+  So an old in-memory list or a late completion cannot clear a newer open or failed
+  attempt, and cannot pin an older identity over a newer one.
+- Recovery: a later attempt that resolves the unchanged identity confirms the same
+  version (no new terms or candidate; obsolete approvals stay spent or revoked). A
+  changed identity keeps the version n+1 / namespace / CHANGED / requalify path.
+- 401/403/429 keep the cache STOP; the final guard still sends nothing and registers
+  nothing (pre-checks for network block, stop and exhausted budget come before
+  registration).
+- Migration: additive (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ADD COLUMN attempt`
+  when absent). Nothing is deleted; mapping and snapshot history are unchanged.
+
+**R2 — the volume guard follows the event's persisted dependencies.**
+- Under the signal-store lock, `SignalStore.held_event`'s view exposes the persisted
+  candidate row (`candidates.setup_id`, candidate payload, event terms). The volume
+  writer reservation is required when a provider is configured and any of: the
+  persisted setup is a volume setup (`VOLUME_SETUPS`), the candidate or event terms
+  carry a `volume_evidence` key with any non-null value, or the row cannot be read
+  consistently (payload setup differs from the column, unparsable payload). Nothing
+  from the ticket request decides it.
+- Not required: a configured price-only setup whose persisted candidate and terms carry
+  no volume evidence. Its `status` still runs `volume_status` (which returns OK without
+  touching the provider) and keeps the signal lock, account/manual stop, freshness,
+  acknowledgement binding and single-use consumption.
+- Required guards keep ticket → signal → volume/identity → account, held through the
+  ticket COMMIT, acquired before the final clock; failure refuses unspent. No guard is
+  taken lazily after the account lock and no provider call happens under final locks.
+- A volume setup saved without evidence, evidence with Alpaca unconfigured, or malformed
+  evidence keep their CHANGED/UNAVAILABLE refusals.
+
+**Regression cases.** R1: attempt registration blocked by a real writer lock (zero
+requests); 500 and resolution failure with completion blocked by a real lock (same
+instance and restart unavailable, signal not triggered); healthy list whose
+confirmation cannot commit; crash after registration and after the response; stale
+list after a newer open or failed attempt; later unchanged recovery without new terms
+and without reviving a consumed ticket; changed mapping requalifies; healthy ticker
+isolated; 401/403/429 STOP; zero-network final guard. R2: price-only prepare, approve
+and consume with an unrelated writer holding the file (both journal modes); the
+volume-dependent equivalent refuses on acquisition failure and still serializes racing
+writers after COMMIT; volume setup without evidence, malformed evidence and evidence
+with the provider removed still refuse.
+
+## Re-audit repair R1/R2 — results (2026-10-04)
+
+Implemented as contracted above; no provider call, no Checkpoint 3, no Step 09 work.
+Tests: `tests/test_volume_audit_r1r2.py` (34 cases; real SQLite write locks from
+independent connections, busy waits shortened to 0.05 s by patching only the wait
+constants). Astra's probe ran unchanged against the repair and fails at its R1
+assertion, as intended: that assertion encoded the defect. A copy with only its
+expectations updated, plus two added variants (lock after registration; an
+Alpaca-dependent R2 control), passes on Python 3.12.3 and 3.13.14. With the real 5 s
+store timeout, her original registration-blocked scenario now sends **0** asset
+requests.
+
+| Finding (prompt line) | Implementation | Regression |
+| --- | --- | --- |
+| R1 inv. 1: this run withholds at once | `_unrecorded` set on any identity persistence failure; cache gate returns it first | `test_r1_a_lock_preventing_registration_sends_nothing_and_withholds_this_run`; `..._outcome_that_cannot_be_committed...` (same-instance gate) |
+| R1 test: lock prevents registration → no request | `_fetch_assets` registers before `fetch_assets`; failure returns without sending | same test: request count unchanged, the queued 500 never consumed, no attempt row; a new process reads the earlier confirmation (nothing was observed) |
+| R1 inv. 2 / test: 500, resolution failure or healthy list whose outcome cannot commit stays unavailable after restart | outcome + closure in one transaction; open attempt → `IDENTITY_REFRESH_UNRESOLVED` | `test_r1_an_outcome_that_cannot_be_committed_stays_unavailable_after_restart[asset_500, not_found, healthy_list]` (request sent once, attempt open, restart unavailable, signal not triggered, zero requests in cache checks) |
+| R1 test: crash between registration, response and completion | open attempt is durable | `test_r1_a_crash_..._leaves_it_unresolved[after_registration, after_response]` (restart gate and final fence refuse, zero requests, approval unspent) |
+| R1 inv. 5 / test: stale list after a newer attempt or failure | fetch-numbered staleness; closure `STALE`, no OK/mapping | `test_r1_a_stale_list_cannot_clear_a_newer_open_or_failed_attempt`; `test_r1_a_stale_list_cannot_pin_an_older_identity_over_a_newer_one` |
+| R1 inv. 3, 5 / test: later unchanged recovery, no invented terms, no revival | later attempt confirms the same pin (`last_confirmed_at` only) | `test_r1_later_unchanged_recovery_keeps_terms_and_never_revives_a_spent_approval` (history length 1, same terms digest and candidate id, consumes once, then "already consumed") |
+| R1 inv. 6: changed mapping requalifies | unchanged path | `test_r1_a_changed_identity_after_an_unresolved_attempt_still_requalifies` |
+| R1 inv. 4: scope | per-ticker rows vs shared open attempt; price-only never reads identity | `test_r1_an_open_attempt_spares_recorded_healthy_tickers_scope_and_price_only_setups` |
+| R1: 401/403/429 STOP, zero-network final guard | pre-checks before registration | `test_r1_stop_replies_close_the_attempt_and_keep_the_stop[401/403/429]`; `test_r1_the_final_guard_and_a_spent_budget_register_nothing_and_send_nothing` |
+| R1 migration | `CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ADD COLUMN attempt` | `test_r1_migration_adds_the_attempt_column_and_keeps_legacy_rows` |
+| R2 req. 1–3: decide from the persisted row under the signal lock | `SignalStore.held_event` view `.persisted()`; `needs_volume_guard` | `test_r2_the_dependency_rule_reads_only_the_stored_row_and_fails_toward_the_guard` (11 rows: price-only with/without null evidence, evidence on candidate or terms, VCP/EP without evidence, setup mismatch, unknown setup, bad JSON, missing payload, missing column) |
+| R2: price-only prepare, approve, consume with an unrelated writer holding the file | no reservation for price-only rows | `test_r2_price_only_prepare_approve_and_consume_while_an_unrelated_writer_holds_the_file[delete, wal]` (also manual stop refuses unspent, single use) |
+| R2 req. 4: dependent events still refuse on acquisition failure and serialize racing writers | reservation unchanged for them | `test_r2_a_volume_dependent_event_still_refuses_when_the_reservation_is_busy[delete, wal]`; the F2 race tests in `test_volume_audit_cp2` (STOP, per-key FAILED, mapping, identity health × both modes) pass unchanged |
+| R2: malformed dependency evidence and source changes | guard taken; `volume_status` decides | `test_r2_a_price_only_row_with_dependency_evidence_or_inconsistency_takes_the_guard[evidence_added, setup_mismatch]`; `test_r2_source_changes_and_legacy_volume_rows_still_refuse` |
+
+**Mutation checks (Checked, reverted after; 71 tests of both audit files):** dropping the
+open-attempt rule fails 8; dropping the run flag fails 4; registering after the request
+fails 8; dropping the fetch-stale rule fails 2; always taking the guard fails 4; never
+taking it fails 23.
+
+**Strict suite.** `python -m pytest -q -W error`: 1353 passed on Python 3.12.3 (125.4 s)
+and 1353 passed on Python 3.13.14 (123.0 s), Claude cloud container (1319 + 34).
+`git diff --check` clean.
+
+**Remaining limits.** Fixture-only; Astra's separate report and her JSON results did not
+arrive. By design, an open attempt (from a crash or a busy store) withholds every
+identity-dependent input until the next successful refresh. The provider acceptance
+limits above are unchanged. G5 and Step 09 are **not** complete.

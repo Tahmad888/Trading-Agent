@@ -5,7 +5,7 @@ only denies stop-budget sizing. Selected exposure remains reviewable.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from fractions import Fraction
 from typing import Annotated, Callable, ContextManager, Literal, NamedTuple, Protocol
@@ -100,11 +100,16 @@ class EventRiskSource:
         STOP, failure, revision, mapping change or identity-health failure either
         committed before and is seen by ``status`` or lands after the ticket commit.
         Order: ticket -> signal -> volume/identity -> account (taken last by tickets).
+        The reservation is taken only when the stored event depends on Alpaca evidence
+        (re-audit R2): decided under the signal lock from the persisted candidate, before
+        the account lock and the final clock. Price-only events still run ``status``.
         """
-        from desk.alpaca_source import provider_of
+        from desk.alpaca_source import needs_volume_guard, provider_of
         provider = provider_of(self.source)
-        with self.log.signals.held_event(event_id) as view, \
-                (provider.held() if provider is not None else nullcontext()):
+        with self.log.signals.held_event(event_id) as view, ExitStack() as guards:
+            if provider is not None and needs_volume_guard(view.persisted()):
+                guards.enter_context(provider.held())
+
             def status(at):
                 event = view(at)
                 eligible = bool(event["eligible"])

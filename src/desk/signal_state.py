@@ -332,6 +332,17 @@ class SignalStore:
             def view(at):
                 self._expire(db, at)
                 return self._view(db, event_id, at)
+
+            def persisted():
+                """The stored candidate row and event terms, read under this lock with no
+                clock (re-audit R2: which evidence the event depends on)."""
+                row = db.execute("SELECT c.setup_id, c.payload, e.signal_terms FROM events e "
+                                 "JOIN candidates c ON c.id=e.candidate_id WHERE e.id=?", (event_id,)).fetchone()
+                if row is None:
+                    raise SignalStateError("Unknown signal event")
+                return {"setup_id": row["setup_id"], "candidate_signal": row["payload"],
+                        "signal_terms": row["signal_terms"]}
+            view.persisted = persisted
             yield view
 
     def events(self, now):

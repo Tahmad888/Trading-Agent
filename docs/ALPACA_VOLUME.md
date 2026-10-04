@@ -170,6 +170,18 @@ takes the version/namespace/requalification path. A ticker failure affects that 
 a source failure withholds every identity-dependent volume input; price-only setups are
 not consulted. A store read or write error fails closed.
 
+**Refresh attempts (re-audit R1).** Before an asset-list request is sent, the attempt is
+committed to `identity_attempts` in its own short transaction; if that fails, nothing is
+sent and the run's identities are `IDENTITY_STORE_UNAVAILABLE`. No lock is held over the
+request. The outcome (source FAILED, or the resolution's OK/FAILED rows and source OK)
+and the attempt's closure commit together. If they cannot (busy store, crash), the
+attempt stays open: every identity-dependent input reads `IDENTITY_REFRESH_UNRESOLVED`
+in every process until a ticker's OK comes from a later attempt, and the run that failed
+withholds eligibility at once. A later resolution of the same in-memory list registers
+its own `RESOLVE` attempt first. A list is stale once a newer fetch is registered, so it
+can neither clear a newer open or failed attempt nor pin an older identity. Requests the
+run would not send (final guard, stop, spent budget) register nothing.
+
 **Final guard and lock order (audit F2).** `AlpacaVolumeProvider.held()` takes
 `BEGIN IMMEDIATE` on the volume/identity file (sorted unique paths, 5 s busy timeout)
 and blocks the provider's network until release. `EventRiskSource.held_event` holds the
@@ -180,11 +192,18 @@ order everywhere: ticket (EXCLUSIVE) → signal (IMMEDIATE) → volume/identity 
 never wait on another store. A disqualifier committed before the guard is read and
 refused; a writer arriving later waits and commits after the ticket. Acquisition failure,
 an exception or rollback refuses without spending the approval and releases every
-guard. With a run stop active, the cache-only reuse path is read-only.
+guard. With a run stop active, the cache-only reuse path is read-only. The reservation
+is taken only when the stored event depends on Alpaca evidence (re-audit R2): decided
+under the signal lock from the persisted candidate row (setup column, candidate payload,
+event terms), never from the ticket request. A volume setup, any non-null
+`volume_evidence`, or an unreadable or inconsistent row takes it; a price-only event
+with no evidence does not, and still runs `volume_status` and every other final check.
 
 **Migration.** Additive: the `identity_health` table and index are created on open. Older
 pins remain history and are ineligible until a fresh successful resolution; the previous
-code ignores the table.
+code ignores the table. Re-audit R1 adds `identity_attempts` and a nullable
+`identity_health.attempt` column (`ALTER TABLE` when absent); rows written before it
+keep their meaning (attempt counted as 0).
 
 **Configuration.** `DESK_ALPACA_VOLUME_CACHE` (path; unset = unchanged Webull path) and
 `DESK_ALPACA_VOLUME_BUDGET` (HTTP requests per run, pages and the asset list included).
@@ -203,7 +222,7 @@ bundle (`watchlist-build.json`: generation, list, digest, report); FAILED (unive
 or SPY benchmark) and INCOMPLETE (source failures, no leaders) keep the previous list.
 
 **Checked results.** 1282 strict tests on Python 3.12 and 3.13 at `b5dab2c`; 1319 after
-the F1/F2 repair (fixtures only). One
+the F1/F2 repair; 1353 after the R1/R2 repair (fixtures only). One
 bounded live preview at `14aeb35` (cloud, sandbox Webull, 3 of 6 Alpaca calls): PARTIAL,
 283/283 identities and volume windows complete, 45 leaders from a ranked population of
 213, 96 disclosed source failures. Evidence:
@@ -217,8 +236,10 @@ Unset `DESK_ALPACA_VOLUME_CACHE`: every consumer takes the unchanged Webull path
 volume basis is currently unaccepted, so volume-dependent checks stay unavailable).
 With Alpaca configured, any provider fault makes only the affected ticker's volume
 unavailable; price-only checks are unaffected. If the final guard cannot take the volume/identity
-reservation (another writer holds it past 5 s), the approval or consumption is refused
-unspent and can be retried. Massive (G3a) remains the other planned
+reservation (another writer holds it past 5 s), a volume-dependent approval or
+consumption is refused unspent and can be retried; price-only tickets do not wait on it.
+An open identity attempt left by a crash or busy store clears with the next successful
+refresh (any scan or ticket recheck that fetches a new list). Massive (G3a) remains the other planned
 volume path.
 
 ## Rollback

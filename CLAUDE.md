@@ -29,8 +29,10 @@ Alpaca SIP volume producer and probe, `docs/ALPACA_VOLUME.md`,
 (identity, volume consumers, signal/ticket gates, PARTIAL discovery publication;
 `docs/checkpoints/G5a-cp2-volume-consumers.md`) is implemented, opt-in via
 `DESK_ALPACA_VOLUME_CACHE`. Astra's audit of `b5dab2c` found F1 (identity health not
-persisted) and F2 (final guard did not hold the volume/identity store); both are repaired
-(persisted identity health, `BEGIN IMMEDIATE` held to ticket commit) and pending her re-audit. Checkpoint 3 (scoped history
+persisted) and F2 (final guard did not hold the volume/identity store), repaired in
+`0d8838c`. Her re-audit found R1 (an unpersistable identity outcome left an old pin
+eligible) and R2 (price-only tickets waited on the volume guard); both are repaired
+(durable refresh attempts; guard only for Alpaca-dependent events) and pending her re-audit. Checkpoint 3 (scoped history
 validation) has not started. Historical access does not prove real-time entitlement.
 
 Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify and

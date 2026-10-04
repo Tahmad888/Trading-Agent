@@ -110,7 +110,13 @@ class AlpacaVolumeProvider:
             raise BarDataError("Alpaca volume provider needs a client with a cache and an identity store")
         self.client, self.store, self.issue = client, store, issue
         self._assets = None
+        self._attempt: int | None = None          # the registered fetch attempt behind _assets
+        self._open: int | None = None             # that fetch, until its first resolution commits
         self._asset_error: str | None = None
+        # An identity outcome this run could not persist (re-audit R1): the cache-only
+        # gate withholds eligibility for the rest of the run. Restart relies on the
+        # durable open attempt instead.
+        self._unrecorded: str | None = None
         self.batches: list[dict] = []     # sanitized request reports for scan records
 
     @classmethod
@@ -132,31 +138,66 @@ class AlpacaVolumeProvider:
             except (ValidationError, TypeError):
                 meta[symbol] = None
         if self._assets is None and self._asset_error is None:
-            try:
-                self._assets = self.client.fetch_assets()
-            except AssetError as exc:
-                self._asset_error = exc.code
-                if not exc.code.startswith(NO_REQUEST_SENT):
-                    # An attempted asset-list request failed: persisted, so a later
-                    # process cannot read an old pin as current (audit F1).
-                    try:
-                        self.store.record_source_failure(exc.code, self.client._now())
-                    except (sqlite3.Error, AlpacaVolumeError):
-                        self._asset_error = "IDENTITY_STORE_UNAVAILABLE"
+            self._fetch_assets(sorted(frames))
             self.batches.append({"kind": "assets", "receipt": getattr(self.client, "asset_receipt", None),
                                  "error": self._asset_error,
                                  "assets": len(self._assets.assets) if self._assets else 0})
         if self._asset_error:
             return {s: "IDENTITY_UNAVAILABLE:" + self._asset_error for s in frames}
+        # The fetch attempt covers the list's first resolution; every later resolution
+        # of the same list registers its own attempt first (re-audit R1).
+        attempt, self._open = self._open, None
         try:
-            return self.store.resolve(meta, self._assets, decision_session)
-        except (sqlite3.Error, ValidationError):
+            if attempt is None:
+                attempt = self.store.register_attempt(sorted(frames), self.client._now(),
+                                                      list_attempt=self._attempt)
+            return self.store.resolve(meta, self._assets, decision_session, attempt, list_attempt=self._attempt)
+        except (sqlite3.Error, ValidationError, AlpacaVolumeError):
+            # The outcome is not recorded: a registered attempt stays open (durable) and
+            # this run withholds eligibility (in-process); the FAILED rows are best effort.
+            self._unrecorded = "IDENTITY_STORE_UNAVAILABLE"
             out = {s: "IDENTITY_STORE_UNAVAILABLE" for s in frames}
             try:
-                self.store.record_failures(out, self.client._now())
+                self.store.record_failures(out, self.client._now(), attempt=attempt)
             except (sqlite3.Error, AlpacaVolumeError):
-                pass   # the store is unreachable; the gate's own read fails closed too
+                pass
             return out
+
+    def _fetch_assets(self, symbols) -> None:
+        """Register the attempt, send the request, record the outcome (re-audit R1).
+
+        No lock is held over the request. Requests that would not be sent (final guard,
+        stopped run, spent budget) register nothing. If the attempt cannot be committed,
+        nothing is sent; if its outcome cannot be committed, the attempt stays open.
+        """
+        client = self.client
+        if client.network_blocked:
+            self._asset_error = NETWORK_FORBIDDEN
+            return
+        if client.stopped:
+            self._asset_error = "RUN_STOPPED_AFTER_" + client.stopped
+            return
+        if client._budget.used >= client._budget.limit:
+            self._asset_error = "REQUEST_BUDGET_EXHAUSTED"
+            return
+        try:
+            self._attempt = self._open = self.store.register_attempt(symbols, client._now())
+        except (sqlite3.Error, AlpacaVolumeError):
+            self._asset_error = self._unrecorded = "IDENTITY_STORE_UNAVAILABLE"
+            return
+        try:
+            self._assets = client.fetch_assets()
+        except AssetError as exc:
+            self._asset_error = exc.code
+            try:
+                if exc.code.startswith(NO_REQUEST_SENT):
+                    self.store.close_attempt(self._attempt, "NOT_SENT:" + exc.code, client._now())
+                else:
+                    # Persisted with the attempt's closure, so a later process cannot
+                    # read an old pin as current (audit F1).
+                    self.store.record_source_failure(exc.code, client._now(), attempt=self._attempt)
+            except (sqlite3.Error, AlpacaVolumeError):
+                self._asset_error = self._unrecorded = "IDENTITY_STORE_UNAVAILABLE"
 
     @contextmanager
     def held(self):
@@ -278,8 +319,12 @@ class AlpacaVolumeProvider:
                 frame = pd.DataFrame()
                 frame.attrs["security_metadata"] = (metadata or {}).get(desk)
                 current = self.identities({desk: frame}, latest_closed_session(now))[desk]
+            elif self._unrecorded:
+                # This run could not persist an identity outcome (re-audit R1).
+                return "UNAVAILABLE", self._unrecorded
             else:
-                # Persisted identity health, not just the last pin (audit F1); no request.
+                # Persisted identity health and open attempts, not just the last pin
+                # (audit F1, re-audit R1); no request.
                 current = self.store.current(desk)
             if not isinstance(current, IdentityRecord):
                 return "UNAVAILABLE", current
@@ -336,3 +381,29 @@ def configured_volume(source, env, *, clock_fn=lambda: datetime.now(timezone.utc
 
 def provider_of(source) -> AlpacaVolumeProvider | None:
     return getattr(source, "decision_volume", None)
+
+
+def needs_volume_guard(persisted: dict) -> bool:
+    """Whether a stored event depends on Alpaca evidence (re-audit R2).
+
+    ``persisted`` is the signal store's own row (candidate setup column, candidate
+    payload, event terms), read under the signal lock; nothing from a ticket request.
+    Only a price-only setup whose candidate and terms both carry no volume evidence
+    may skip the volume/identity reservation. Anything unreadable or inconsistent keeps
+    it (and ``volume_status`` then decides).
+    """
+    import json
+    try:
+        setup = persisted["setup_id"]
+        if setup in VOLUME_SETUPS or setup not in CARDS:
+            return True
+        for text in (persisted["candidate_signal"], persisted["signal_terms"]):
+            if text is None:
+                continue
+            payload = json.loads(text)
+            if not isinstance(payload, dict) or payload.get("setup_id") != setup \
+                    or payload.get("volume_evidence") is not None:
+                return True
+        return persisted["candidate_signal"] is None
+    except (KeyError, TypeError, ValueError):
+        return True

@@ -17,6 +17,11 @@ Identity health (audit F1): ``mappings`` is version history; ``identity_health``
 the append-only, sequence-ordered record of every resolution outcome and every failed
 asset-list request. Current eligibility needs a successful outcome for the latest
 pinned version that no later failure supersedes; an old pin alone never qualifies.
+
+Refresh attempts (re-audit R1): ``identity_attempts`` is committed before the asset-list
+request is sent and closed in the same transaction as the outcome. An attempt that is
+still open (its outcome could not be committed, or the process stopped) withholds every
+identity-dependent input until a ticker's OK comes from a later attempt.
 """
 from __future__ import annotations
 
@@ -153,6 +158,10 @@ def alpaca_symbol(desk_symbol: str) -> str:
 
 
 SOURCE_SCOPE = "source:alpaca-assets"
+# Busy wait for identity writes (attempt registration, outcomes); a store that stays
+# busy longer fails closed: no request before registration, an open attempt after.
+STORE_TIMEOUT_SECONDS = 5.0
+REFRESH_UNRESOLVED = "IDENTITY_REFRESH_UNRESOLVED"
 
 
 def _utc_text(at: datetime) -> str:
@@ -173,7 +182,7 @@ class IdentityStore:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with closing(sqlite3.connect(self.path, timeout=STORE_TIMEOUT_SECONDS)) as db, db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS asset_lists(digest TEXT PRIMARY KEY, received_at TEXT NOT NULL,
                     count INTEGER NOT NULL);
@@ -185,25 +194,70 @@ class IdentityStore:
                     scope TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('OK','FAILED')), reason TEXT,
                     version INTEGER, mapping_digest TEXT, asset_list_digest TEXT, received_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS identity_health_scope ON identity_health(scope, sequence);
+                CREATE TABLE IF NOT EXISTS identity_attempts(attempt INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL CHECK(kind IN ('FETCH','RESOLVE')), list_attempt INTEGER,
+                    symbols TEXT NOT NULL, registered_at TEXT NOT NULL, completed_at TEXT, outcome TEXT);
             ''')
+            # Additive migration (re-audit R1): the attempt that produced each health row.
+            if "attempt" not in {r[1] for r in db.execute("PRAGMA table_info(identity_health)")}:
+                db.execute("ALTER TABLE identity_health ADD COLUMN attempt INTEGER")
+
+    def _connect(self):
+        return closing(sqlite3.connect(self.path, timeout=STORE_TIMEOUT_SECONDS))
 
     @staticmethod
-    def _health(db, scope, state, reason, at, record=None, digest=None):
+    def _health(db, scope, state, reason, at, record=None, digest=None, attempt=None):
         db.execute("INSERT INTO identity_health(scope,state,reason,version,mapping_digest,asset_list_digest,"
-                   "received_at) VALUES (?,?,?,?,?,?,?)",
+                   "received_at,attempt) VALUES (?,?,?,?,?,?,?,?)",
                    (scope, state, reason, record.version if record else None,
-                    record.mapping_digest if record else None, digest, _utc_text(at)))
+                    record.mapping_digest if record else None, digest, _utc_text(at), attempt))
 
-    def record_source_failure(self, code: str, at: datetime) -> None:
-        """A failed asset-list request: every identity-dependent input waits for re-resolution."""
-        with closing(sqlite3.connect(self.path)) as db, db:
-            self._health(db, SOURCE_SCOPE, "FAILED", code, at)
+    @staticmethod
+    def _close(db, attempt, outcome, at):
+        if attempt is not None:
+            db.execute("UPDATE identity_attempts SET completed_at=?, outcome=? WHERE attempt=? AND completed_at IS NULL",
+                       (_utc_text(at), outcome, attempt))
 
-    def record_failures(self, failures: dict[str, str], at: datetime) -> None:
-        """Best effort when resolution itself could not run (e.g. the store was busy)."""
-        with closing(sqlite3.connect(self.path)) as db, db:
+    def register_attempt(self, symbols, at: datetime, *, list_attempt: int | None = None) -> int:
+        """Commit an attempt before its work starts (re-audit R1).
+
+        ``FETCH`` (no ``list_attempt``): before an asset-list request is sent; the first
+        resolution of that list closes it. ``RESOLVE``: a later resolution of the same
+        in-memory list (``list_attempt`` = the fetch). Raises ``sqlite3.Error`` when it
+        cannot be committed: the caller sends nothing and resolves nothing.
+        """
+        with self._connect() as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            cur = db.execute("INSERT INTO identity_attempts(kind,list_attempt,symbols,registered_at) VALUES (?,?,?,?)",
+                             ("FETCH" if list_attempt is None else "RESOLVE", list_attempt,
+                              json.dumps(sorted(symbols)), _utc_text(at)))
+            return cur.lastrowid
+
+    def close_attempt(self, attempt: int, outcome: str, at: datetime) -> None:
+        """Close an attempt whose request was never sent (no health is observed)."""
+        with self._connect() as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            self._close(db, attempt, outcome, at)
+
+    def record_source_failure(self, code: str, at: datetime, attempt: int | None = None) -> None:
+        """A failed asset-list request: every identity-dependent input waits for re-resolution.
+
+        The FAILED row and the attempt's closure commit together; if they cannot, the
+        attempt stays open and still withholds eligibility.
+        """
+        with self._connect() as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            self._health(db, SOURCE_SCOPE, "FAILED", code, at, attempt=attempt)
+            self._close(db, attempt, "SOURCE_FAILED:" + code, at)
+
+    def record_failures(self, failures: dict[str, str], at: datetime, attempt: int | None = None) -> None:
+        """Best effort when resolution itself could not run (e.g. the store was busy).
+
+        The attempt is left open on purpose: its outcome was not recorded.
+        """
+        with self._connect() as db, db:
             for desk, code in sorted(failures.items()):
-                self._health(db, symbol_scope(desk), "FAILED", code, at)
+                self._health(db, symbol_scope(desk), "FAILED", code, at, attempt=attempt)
 
     def current(self, desk_symbol: str) -> "IdentityRecord | str":
         """The latest pin if it is currently eligible, else the reason (one read, no request).
@@ -211,13 +265,15 @@ class IdentityStore:
         Eligible only when the symbol's latest health event is OK for exactly the latest
         mapping version, and no shared asset-source failure was recorded after that OK.
         """
-        with closing(sqlite3.connect(self.path)) as db:
+        with self._connect() as db:
             mapping = db.execute("SELECT record FROM mappings WHERE desk_symbol=? ORDER BY version DESC LIMIT 1",
                                  (desk_symbol,)).fetchone()
-            event = db.execute("SELECT sequence,state,reason,version,mapping_digest FROM identity_health "
+            event = db.execute("SELECT sequence,state,reason,version,mapping_digest,attempt FROM identity_health "
                                "WHERE scope=? ORDER BY sequence DESC LIMIT 1", (symbol_scope(desk_symbol),)).fetchone()
             source = db.execute("SELECT sequence,reason FROM identity_health WHERE scope=? AND state='FAILED' "
                                 "ORDER BY sequence DESC LIMIT 1", (SOURCE_SCOPE,)).fetchone()
+            unresolved = db.execute("SELECT MAX(attempt) FROM identity_attempts WHERE completed_at IS NULL"
+                                    ).fetchone()[0]
         if event is not None and event[1] == "FAILED":
             return event[2]
         if mapping is None:
@@ -229,6 +285,9 @@ class IdentityStore:
             return "IDENTITY_HEALTH_INCONSISTENT"
         if source is not None and source[0] > event[0]:
             return "IDENTITY_SOURCE_FAILED:" + source[1]
+        # An open refresh attempt newer than this OK: its outcome is unknown (re-audit R1).
+        if unresolved is not None and unresolved > (event[5] or 0):
+            return REFRESH_UNRESOLVED
         return record
 
     def latest(self, desk_symbol: str) -> IdentityRecord | None:
@@ -243,11 +302,16 @@ class IdentityStore:
                               (desk_symbol,)).fetchall()
         return [IdentityRecord.model_validate_json(r[0]) for r in rows]
 
-    def resolve(self, metadata: dict, assets: AssetList, session: date) -> dict[str, IdentityRecord | str]:
+    def resolve(self, metadata: dict, assets: AssetList, session: date,
+                attempt: int | None = None, *, list_attempt: int | None = None) -> dict[str, IdentityRecord | str]:
         """desk symbol -> pinned record, or the reason its volume is unavailable.
 
         ``metadata`` maps desk symbol -> Webull ``SecurityMetadata``; ``session`` is the
         decision's latest completed session (a changed identity is valid only after it).
+        ``attempt`` is the registered attempt this resolution records (its outcome rows
+        and its closure commit together); ``list_attempt`` is the fetch attempt that
+        received ``assets`` (defaults to ``attempt``). A newer registered fetch makes
+        the list stale.
         """
         by_symbol: dict[str, list[AlpacaAsset]] = {}
         by_id: dict[str, int] = {}
@@ -280,8 +344,16 @@ class IdentityStore:
         for desk, (asset, _, _) in chosen.items():
             claims.setdefault(asset.id, []).append(desk)
         received = clock(assets.received_at)
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with self._connect() as db, db:
             db.execute("BEGIN IMMEDIATE")
+            fetched = list_attempt if list_attempt is not None else attempt
+            newer = fetched is not None and (db.execute(
+                "SELECT MAX(attempt) FROM identity_attempts WHERE kind='FETCH'").fetchone()[0] or 0) > fetched
+            if newer:
+                # A later fetch exists (open or closed): this list may not record
+                # anything over it; the attempt itself is closed as stale.
+                self._close(db, attempt, "STALE", received)
+                return {desk: "IDENTITY_STALE_ASSET_LIST" for desk in metadata}
             db.execute("INSERT OR IGNORE INTO asset_lists VALUES (?,?,?)",
                        (assets.digest, received.isoformat(), len(assets.assets)))
             # Newest recorded failure per scope: a list not received after it is stale
@@ -293,11 +365,12 @@ class IdentityStore:
                 return any(newest.get(s) is not None and newest[s] >= _utc_text(received)
                            for s in (SOURCE_SCOPE, symbol_scope(desk)))
             for desk, code in out.items():
-                self._health(db, symbol_scope(desk), "FAILED", code, received, digest=assets.digest)
+                self._health(db, symbol_scope(desk), "FAILED", code, received, digest=assets.digest, attempt=attempt)
             for desk, (asset, method, meta) in sorted(chosen.items()):
                 if len(claims[asset.id]) > 1:
                     out[desk] = "ASSET_CONFLICT"
-                    self._health(db, symbol_scope(desk), "FAILED", out[desk], received, digest=assets.digest)
+                    self._health(db, symbol_scope(desk), "FAILED", out[desk], received, digest=assets.digest,
+                                 attempt=attempt)
                     continue
                 if stale(desk):
                     out[desk] = "IDENTITY_STALE_ASSET_LIST"   # no write: the newer failure stands
@@ -318,7 +391,8 @@ class IdentityStore:
                     (asset.id, desk)).fetchone()
                 if other is not None:
                     out[desk] = "ASSET_REUSED_BY_ANOTHER_SYMBOL"
-                    self._health(db, symbol_scope(desk), "FAILED", out[desk], received, digest=assets.digest)
+                    self._health(db, symbol_scope(desk), "FAILED", out[desk], received, digest=assets.digest,
+                                 attempt=attempt)
                     continue
                 at = received.isoformat()
                 if latest is not None and latest[1] == digest:
@@ -331,8 +405,9 @@ class IdentityStore:
                                             valid_after_session=None if latest is None else session)
                     db.execute("INSERT INTO mappings VALUES (?,?,?,?,?,?,?)",
                                (desk, version, asset.id, digest, record.model_dump_json(), at, at))
-                self._health(db, symbol_scope(desk), "OK", None, received, record, assets.digest)
+                self._health(db, symbol_scope(desk), "OK", None, received, record, assets.digest, attempt)
                 out[desk] = record
             if not newest.get(SOURCE_SCOPE) or newest[SOURCE_SCOPE] < _utc_text(received):
-                self._health(db, SOURCE_SCOPE, "OK", None, received, digest=assets.digest)
+                self._health(db, SOURCE_SCOPE, "OK", None, received, digest=assets.digest, attempt=attempt)
+            self._close(db, attempt, "RESOLVED", received)
         return out
