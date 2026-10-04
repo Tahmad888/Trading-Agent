@@ -202,3 +202,130 @@ Astra's audit of this checkpoint; live EP RTH evidence at 10:15 ET on a session 
 the iMac run; Checkpoint 3 (scoped history validation); the Webull/Alpaca SPY
 2026-09-18 disagreement (no vendor declared correct); G5's Massive dividend evidence
 and `SSL_CERT_FILE` items. G5 and Step 09 are **not** complete.
+
+## Audit repair F1/F2 — contract written before code (2026-10-04)
+
+Astra's audit of `b5dab2c` (verbatim with Taz's repair prompt:
+`/mnt/project-files/research/ai-trading/g5/audits/g5a-checkpoint2-audit-and-repair-prompt-2026-10-04-verbatim.md`)
+did not sign off. Her probe script and JSON were not attached to the relayed message, so
+the interleavings are rebuilt from the audit text. Baseline: `b5dab2c`, clean tree, no
+newer upstream commit (checked before editing).
+
+**F1 — persisted identity health (`alpaca_assets.IdentityStore`).**
+- New append-only table `identity_health(sequence, scope, state OK|FAILED, reason,
+  version, mapping_digest, asset_list_digest, received_at)` in the same volume/identity
+  file. `mappings` stays the version history; health is current eligibility. Nothing is
+  deleted.
+- Scopes: `symbol:<desk symbol>` for a ticker's resolution outcome; one shared source
+  scope `source:alpaca-assets` for the asset-list request.
+- Every resolution attempt writes an outcome in the same transaction as any mapping
+  write: OK (with the pinned version and digest) or FAILED (`ASSET_NOT_FOUND`,
+  `ASSET_AMBIGUOUS`, `ASSET_UNSUPPORTED`, `ASSET_CONFLICT`,
+  `ASSET_REUSED_BY_ANOTHER_SYMBOL`, `WEBULL_IDENTITY_MISSING`,
+  `WEBULL_ALIAS_ID_MISMATCH`, `CLASS_SHARE_ALIAS_REQUIRED`). A failed asset-list request
+  that was actually attempted (HTTP, transport, invalid list, unsafe reply, 401/403/429)
+  writes a source FAILED; 401/403/429 also keep the existing cache STOP. Budget
+  exhaustion and an already-stopped run send no request and record nothing new (the
+  STOP is already persisted). If the identity store itself cannot be written, the run's
+  identities are unavailable; a saved signal checked in that run is suspended in the
+  signal store, and the cache-only gate's own read fails closed.
+- Current eligibility (`IdentityStore.current`, one read): the latest mapping, the latest
+  symbol-scope event, and the latest source FAILED. Eligible only when the symbol's
+  latest event is OK for exactly the latest mapping version and digest, and no source
+  FAILED has a higher sequence than that OK. No symbol event at all (a mapping written by
+  `b5dab2c`) is `IDENTITY_HEALTH_NOT_RECORDED`: legacy pins never gain eligibility until a
+  fresh successful resolution records OK.
+- Recovery order: only a successful resolution against a fetched list recovers, by
+  appending OK after the failure. A list whose receipt is not newer than an already
+  recorded failure for that symbol or the source (a stale in-memory list) writes no OK
+  and returns `IDENTITY_STALE_ASSET_LIST`. FAILED is always appended (fail closed). A
+  changed identity keeps the new-version/namespace path and the gate still returns
+  CHANGED, so the signal is retired and rebuilt; consumed or revoked tickets and retired
+  events are never revived.
+- The cache-only gate reads `current` and sends no request. Ticker failures affect that
+  ticker; a source failure affects every identity-dependent volume input until each
+  ticker is re-resolved; price-only setups are not consulted.
+
+**F2 — volume/identity store held through ticket commit.**
+- `AlpacaVolumeProvider.held()` opens the volume/identity SQLite file and takes
+  `BEGIN IMMEDIATE` (the single writer reservation, in rollback-journal and WAL modes),
+  then forbids every network path of that provider until release (a request or an
+  identity refresh inside the guard returns `NETWORK_FORBIDDEN_IN_FINAL_GUARD`).
+- `EventRiskSource.held_event` takes the signal-store lock, then `held()`, and its
+  `status(at)` runs the cache-only gate while both are held. The ticket's `_final_tx`
+  holds both through the ticket COMMIT, so a STOP, FAILED event, revision, mapping
+  revision or identity-health write either committed before (and is observed) or
+  waits and lands after the ticket commit. Reads made after the reservation see the last
+  committed state, which no other connection can change until release.
+- Lock order (one order everywhere): ticket store (EXCLUSIVE) → signal store
+  (IMMEDIATE) → volume/identity store (IMMEDIATE) → account store (IMMEDIATE, last). No
+  other path holds a volume transaction while waiting for a signal or account lock:
+  volume/identity writers are short single-file transactions; signal and account writers
+  never touch the volume file. All waits happen before the final clock sample.
+- The cache-only reuse path becomes read-only: with an active run stop it returns the
+  stop code without appending FAILED rows (the STOP is already persisted), so a gate
+  inside the guard never needs the writer lock it holds.
+- Acquisition failure (busy timeout) raises `sqlite3.Error`; approve/consume already
+  refuse "Final check unavailable … nothing was approved/consumed", roll back, and
+  release every guard.
+
+**Migration.** Additive table only. Old caches open unchanged; their pins are history and
+are ineligible until refreshed. The previous code ignores the new table.
+
+**Regression cases.** Section 10.6/10.7 production-pipeline cases for ASSET_NOT_FOUND,
+ASSET_AMBIGUOUS, inactive ASSET_UNSUPPORTED and asset-list 500 (no trigger, no
+prepare/approve/consume, final fence rejects; repeated with a fresh provider and zero
+requests); ticker failure next to a healthy ticker; asset 401/403/429 keeping STOP;
+recovery and changed mapping; stale instance vs newer failure vs later recovery; legacy
+migration. F2: disqualifying state committed before the guard on approve and consume
+(STOP, per-key FAILED, revised snapshot, mapping change, identity-health failure);
+competing writers in another connection and another process during the gap, in
+rollback-journal and WAL modes, with a read-only-guard control that must let the writer
+through; healthy unchanged refresh, unrelated revision, rollback, lock timeout,
+concurrent consumption, manual stop and zero network inside the guard.
+
+## Audit repair F1/F2 — results (2026-10-04)
+
+Implemented as contracted above; no provider call, no Checkpoint 3, no Step 09 work.
+Tests: `tests/test_volume_audit_cp2.py` (37 cases, production pipeline: `Desk` fixture,
+`scanner.fetch`, `TicketStore.prepare/approve/consume`, `risk_terms` fence).
+
+| Finding (audit line) | Implementation | Regression |
+| --- | --- | --- |
+| F1 health must persist, ordered, apart from mapping history | `identity_health` table; `IdentityStore._health`, `record_source_failure`, `record_failures` | every F1 test reads the rows back |
+| F1 every attempt records an outcome (not found, ambiguous, inactive, unsupported, conflict, missing metadata, failed list, store unavailable) | `resolve` appends FAILED for each pre-transaction failure, conflict and reuse; `identities` records attempted asset-list failures; store errors return `IDENTITY_STORE_UNAVAILABLE` | `..._suspends_a_saved_signal_before_trigger[not_found/ambiguous/inactive/asset_list_500]`, `..._missing_webull_metadata_and_store_failure_are_recorded` |
+| F1 cache-only gates inspect health, zero requests; same instance and after restart | `gate` → `IdentityStore.current` | `..._suspends_a_saved_signal_before_trigger[4 kinds]` (same instance and a new provider, no trigger, zero requests); `..._closes_the_cached_final_fence_and_the_ticket[4 kinds]` (after a restart with reopened stores: fence rejects with zero requests, prepare yields a blocked ticket, approve and consume refused, approval unspent) |
+| F1 isolation: ticker vs shared source | symbol scope vs `source:alpaca-assets` | `..._a_ticker_failure_leaves_a_healthy_ticker_usable`; `..._asset_list_stop_keeps_the_persisted_stop_and_records_source_health[401/403/429]` |
+| F1 recovery only from a later successful list; unchanged pin recovers without new terms; change requalifies | append OK after FAILED; digest-equal pin confirmed; changed digest → version n+1 → CHANGED | `..._recovery_confirms_the_unchanged_pin_without_new_terms_and_a_change_requalifies` |
+| F1 stale in-memory list cannot overwrite a newer failure | receipt-time check against newest FAILED per scope → `IDENTITY_STALE_ASSET_LIST`, no write | `..._stale_in_memory_list_cannot_overwrite_a_newer_failure` (stale instance t1, failure t2, stale write refused, later list t3 recovers) |
+| F1 legacy pins / migration | additive table; no symbol event → `IDENTITY_HEALTH_NOT_RECORDED` | `..._legacy_pins_without_health_are_ineligible_until_refreshed` (table dropped, reopened, ineligible, then a refresh records OK) |
+| F2 guard holds the volume/identity store to the ticket COMMIT, cross-process | `AlpacaVolumeProvider.held` (`BEGIN IMMEDIATE`), `EventRiskSource.held_event` | `test_f2_a_writer_racing_the_gap_serializes_after_the_ticket_commit[{delete,wal} × {stop,key_failed,mapping,identity_health}]` |
+| F2 disqualifier committed before the guard is observed and refused (approve and consume) | final `status(at)` reads after the reservation | `test_f2_{approve,consume}_refuses_a_disqualifier_committed_before_the_guard[stop,key_failed,revised,mapping,identity_health]` |
+| F2 a WAL read snapshot is insufficient | control replaces `held` with a WAL read transaction | `test_f2_control_a_wal_read_snapshot_guard_lets_the_writer_in` (writer commits inside the gap) |
+| F2 no network inside the guard | client `network_blocked`; refresh gate returns `NETWORK_FORBIDDEN_IN_FINAL_GUARD` | `test_f2_no_request_inside_the_guard_and_refresh_is_refused_there` (request count equal on entry and exit; `fetch_assets` raises) |
+| F2 failure refuses unspent and releases; concurrency; manual stop; unrelated revision | existing refusal path; `finally` rolls back every guard | `test_f2_unrelated_revision_rollback_lock_timeout_concurrency_and_manual_stop` |
+
+**Interleavings (Checked, fixtures).** In the race test, the writer thread starts inside
+the final transaction after `final_problem` has read the fence and before COMMIT:
+- after a bounded 0.5 s join it is still waiting;
+- a fresh reader still sees `OK` (last committed state);
+- a separate Python process running `BEGIN IMMEDIATE` with `timeout=0` prints `locked`;
+- once the ticket commits, the writer commits and its own next read of the ticket shows
+  `consumed`, so it serialized after the ticket COMMIT;
+- the change is then visible (the cached gate is no longer OK).
+
+This holds in rollback-journal and WAL modes for STOP, per-key FAILED, mapping change and
+identity-health FAILED. With the reservation swapped for a WAL read snapshot, the STOP
+commits inside the gap (the control). Mutation checks (reverted after): making `held()`
+a no-op fails 10 F2 tests; making `current()` return the latest pin fails 20 tests;
+disabling the stale-list check fails the ordering test.
+
+**Strict suite.** `python -m pytest -q -W error`: 1319 passed on Python 3.12.3 (112.6 s)
+and 1319 passed on Python 3.13.14 (114.1 s), Claude cloud container. `git diff --check`
+clean.
+
+**Remaining limits.** Fixture-only: Astra's own probe files were not attached, so her
+exact injection points are not replayed. No provider was called for the repair. The
+acceptance limits listed above (live EP RTH, real-time entitlement, BRK.B live, iMac,
+scheduled build, Checkpoint 3, SPY 2026-09-18, Massive and `SSL_CERT_FILE`) are
+unchanged. G5 and Step 09 are **not** complete.

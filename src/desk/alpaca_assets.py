@@ -12,11 +12,16 @@ the volume window (Assumption: not independent proof).
 
 Plan B: an unresolved, ambiguous, conflicting, reused or changed identity makes
 that ticker's volume UNAVAILABLE with the reason kept; price checks continue.
+
+Identity health (audit F1): ``mappings`` is version history; ``identity_health`` is
+the append-only, sequence-ordered record of every resolution outcome and every failed
+asset-list request. Current eligibility needs a successful outcome for the latest
+pinned version that no later failure supersedes; an old pin alone never qualifies.
 """
 from __future__ import annotations
 
 from contextlib import closing
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -147,8 +152,23 @@ def alpaca_symbol(desk_symbol: str) -> str:
     raise AssetError("CLASS_SHARE_ALIAS_REQUIRED")
 
 
+SOURCE_SCOPE = "source:alpaca-assets"
+
+
+def _utc_text(at: datetime) -> str:
+    # One fixed offset so receipt times order correctly as text across DST changes.
+    return clock(at).astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def symbol_scope(desk_symbol: str) -> str:
+    return "symbol:" + desk_symbol
+
+
 class IdentityStore:
-    """Versioned pins in the volume cache file. Old versions are kept as history."""
+    """Versioned pins in the volume cache file. Old versions are kept as history.
+
+    Eligibility comes from ``identity_health`` ordered by sequence (see ``current``).
+    """
 
     def __init__(self, path):
         self.path = Path(path)
@@ -161,7 +181,55 @@ class IdentityStore:
                     alpaca_asset_id TEXT NOT NULL, mapping_digest TEXT NOT NULL, record TEXT NOT NULL,
                     pinned_at TEXT NOT NULL, last_confirmed_at TEXT NOT NULL,
                     PRIMARY KEY(desk_symbol, version));
+                CREATE TABLE IF NOT EXISTS identity_health(sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('OK','FAILED')), reason TEXT,
+                    version INTEGER, mapping_digest TEXT, asset_list_digest TEXT, received_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS identity_health_scope ON identity_health(scope, sequence);
             ''')
+
+    @staticmethod
+    def _health(db, scope, state, reason, at, record=None, digest=None):
+        db.execute("INSERT INTO identity_health(scope,state,reason,version,mapping_digest,asset_list_digest,"
+                   "received_at) VALUES (?,?,?,?,?,?,?)",
+                   (scope, state, reason, record.version if record else None,
+                    record.mapping_digest if record else None, digest, _utc_text(at)))
+
+    def record_source_failure(self, code: str, at: datetime) -> None:
+        """A failed asset-list request: every identity-dependent input waits for re-resolution."""
+        with closing(sqlite3.connect(self.path)) as db, db:
+            self._health(db, SOURCE_SCOPE, "FAILED", code, at)
+
+    def record_failures(self, failures: dict[str, str], at: datetime) -> None:
+        """Best effort when resolution itself could not run (e.g. the store was busy)."""
+        with closing(sqlite3.connect(self.path)) as db, db:
+            for desk, code in sorted(failures.items()):
+                self._health(db, symbol_scope(desk), "FAILED", code, at)
+
+    def current(self, desk_symbol: str) -> "IdentityRecord | str":
+        """The latest pin if it is currently eligible, else the reason (one read, no request).
+
+        Eligible only when the symbol's latest health event is OK for exactly the latest
+        mapping version, and no shared asset-source failure was recorded after that OK.
+        """
+        with closing(sqlite3.connect(self.path)) as db:
+            mapping = db.execute("SELECT record FROM mappings WHERE desk_symbol=? ORDER BY version DESC LIMIT 1",
+                                 (desk_symbol,)).fetchone()
+            event = db.execute("SELECT sequence,state,reason,version,mapping_digest FROM identity_health "
+                               "WHERE scope=? ORDER BY sequence DESC LIMIT 1", (symbol_scope(desk_symbol),)).fetchone()
+            source = db.execute("SELECT sequence,reason FROM identity_health WHERE scope=? AND state='FAILED' "
+                                "ORDER BY sequence DESC LIMIT 1", (SOURCE_SCOPE,)).fetchone()
+        if event is not None and event[1] == "FAILED":
+            return event[2]
+        if mapping is None:
+            return "IDENTITY_NOT_PINNED"
+        if event is None:
+            return "IDENTITY_HEALTH_NOT_RECORDED"
+        record = IdentityRecord.model_validate_json(mapping[0])
+        if (event[3], event[4]) != (record.version, record.mapping_digest):
+            return "IDENTITY_HEALTH_INCONSISTENT"
+        if source is not None and source[0] > event[0]:
+            return "IDENTITY_SOURCE_FAILED:" + source[1]
+        return record
 
     def latest(self, desk_symbol: str) -> IdentityRecord | None:
         with closing(sqlite3.connect(self.path)) as db:
@@ -211,13 +279,28 @@ class IdentityStore:
         claims: dict[str, list[str]] = {}
         for desk, (asset, _, _) in chosen.items():
             claims.setdefault(asset.id, []).append(desk)
+        received = clock(assets.received_at)
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("INSERT OR IGNORE INTO asset_lists VALUES (?,?,?)",
-                       (assets.digest, clock(assets.received_at).isoformat(), len(assets.assets)))
+                       (assets.digest, received.isoformat(), len(assets.assets)))
+            # Newest recorded failure per scope: a list not received after it is stale
+            # and may not record a success over it (audit F1, recovery order).
+            newest = dict(db.execute("SELECT scope, MAX(received_at) FROM identity_health WHERE state='FAILED' "
+                                     "GROUP BY scope").fetchall())
+
+            def stale(desk):
+                return any(newest.get(s) is not None and newest[s] >= _utc_text(received)
+                           for s in (SOURCE_SCOPE, symbol_scope(desk)))
+            for desk, code in out.items():
+                self._health(db, symbol_scope(desk), "FAILED", code, received, digest=assets.digest)
             for desk, (asset, method, meta) in sorted(chosen.items()):
                 if len(claims[asset.id]) > 1:
                     out[desk] = "ASSET_CONFLICT"
+                    self._health(db, symbol_scope(desk), "FAILED", out[desk], received, digest=assets.digest)
+                    continue
+                if stale(desk):
+                    out[desk] = "IDENTITY_STALE_ASSET_LIST"   # no write: the newer failure stands
                     continue
                 fields = dict(desk_symbol=desk, webull_symbol=meta.provider_symbol or desk,
                               webull_instrument_id=meta.instrument_id, webull_name=meta.name,
@@ -235,17 +318,21 @@ class IdentityStore:
                     (asset.id, desk)).fetchone()
                 if other is not None:
                     out[desk] = "ASSET_REUSED_BY_ANOTHER_SYMBOL"
+                    self._health(db, symbol_scope(desk), "FAILED", out[desk], received, digest=assets.digest)
                     continue
-                at = clock(assets.received_at).isoformat()
+                at = received.isoformat()
                 if latest is not None and latest[1] == digest:
                     db.execute("UPDATE mappings SET last_confirmed_at=? WHERE desk_symbol=? AND version=?",
                                (at, desk, latest[0]))
-                    out[desk] = IdentityRecord.model_validate_json(latest[2])
-                    continue
-                version = 1 if latest is None else latest[0] + 1
-                record = IdentityRecord(**fields, version=version, mapping_digest=digest,
-                                        valid_after_session=None if latest is None else session)
-                db.execute("INSERT INTO mappings VALUES (?,?,?,?,?,?,?)",
-                           (desk, version, asset.id, digest, record.model_dump_json(), at, at))
+                    record = IdentityRecord.model_validate_json(latest[2])
+                else:
+                    version = 1 if latest is None else latest[0] + 1
+                    record = IdentityRecord(**fields, version=version, mapping_digest=digest,
+                                            valid_after_session=None if latest is None else session)
+                    db.execute("INSERT INTO mappings VALUES (?,?,?,?,?,?,?)",
+                               (desk, version, asset.id, digest, record.model_dump_json(), at, at))
+                self._health(db, symbol_scope(desk), "OK", None, received, record, assets.digest)
                 out[desk] = record
+            if not newest.get(SOURCE_SCOPE) or newest[SOURCE_SCOPE] < _utc_text(received):
+                self._health(db, SOURCE_SCOPE, "OK", None, received, digest=assets.digest)
         return out

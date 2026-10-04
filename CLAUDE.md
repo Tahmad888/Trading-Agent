@@ -28,7 +28,9 @@ Alpaca SIP volume producer and probe, `docs/ALPACA_VOLUME.md`,
 `docs/checkpoints/G5a-alpaca-volume.md`) closed by Astra on `df99472`. Checkpoint 2
 (identity, volume consumers, signal/ticket gates, PARTIAL discovery publication;
 `docs/checkpoints/G5a-cp2-volume-consumers.md`) is implemented, opt-in via
-`DESK_ALPACA_VOLUME_CACHE`, and pending Astra's audit. Checkpoint 3 (scoped history
+`DESK_ALPACA_VOLUME_CACHE`. Astra's audit of `b5dab2c` found F1 (identity health not
+persisted) and F2 (final guard did not hold the volume/identity store); both are repaired
+(persisted identity health, `BEGIN IMMEDIATE` held to ticket commit) and pending her re-audit. Checkpoint 3 (scoped history
 validation) has not started. Historical access does not prove real-time entitlement.
 
 Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify and
@@ -140,7 +142,7 @@ https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg
 - `src/desk/contracts.py`: typed hand-offs (trade proposal, legs, risk decision, schema-2 approval record).
 - `src/desk/tickets.py`: G4 local ticket preparation, display, approval, revocation, history and single-use consumption (`python -m desk.tickets`; no broker action).
 - `src/desk/risk.py`: the risk engine, with limits from blueprint section 10: user-selected dollar risk per ticket, including estimated costs, with no grade-dollar mapping or hard $100 ceiling, user-overridable dollar-loss warnings (not halts), the blocking manual stop, quote-age and trading-status checks. No caps on trade or position counts.
-- `src/desk/alpaca_volume.py`, `src/desk/alpaca_probe.py`: G5a opt-in Alpaca SIP volume evidence and its bounded probe (no consumer yet; prices stay Webull).
+- `src/desk/alpaca_volume.py`, `src/desk/alpaca_probe.py`: G5a opt-in Alpaca SIP volume evidence and its bounded probe; `alpaca_assets.py` (identity pins and identity health) and `alpaca_source.py` (consumers' provider and the final guard) wire it in (prices stay Webull).
 - `src/desk/bars.py`: parses and checks price bars; bad, short or stale bars raise `BarDataError` (no trade).
 - `src/desk/indicators.py`: the feature pack on TA-Lib 0.8.1, matched to TradingView; `tests/tv_reference.py` holds the Pine formulas it's tested against.
 - `src/desk/screen_check.py`: prints a ticker's latest daily values to compare with Taz's screen.

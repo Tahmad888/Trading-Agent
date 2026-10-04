@@ -18,15 +18,17 @@ handle volume, EP early volume, discovery liquidity); Massive (G3a) is the other
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 import sqlite3
 
 import pandas as pd
 from pydantic import ValidationError
 
 from desk.alpaca_assets import AssetError, IdentityRecord, IdentityStore
-from desk.alpaca_volume import (AlpacaVolumeClient, AlpacaVolumeError, BarRequest, RequestBudget, VolumeCache,
-                                prior_sessions)
+from desk.alpaca_volume import (NETWORK_FORBIDDEN, AlpacaVolumeClient, AlpacaVolumeError, BarRequest,
+                                RequestBudget, VolumeCache, prior_sessions)
 from desk.bars import BarDataError
 from desk.calendar import ET, clock, latest_closed_session, previous_trading_day, session, sessions
 from desk.data_basis import (ALPACA_CHANNEL_POLICY, AlpacaDecisionVolume, attached_decision)
@@ -36,6 +38,11 @@ from desk.security import SecurityMetadata
 ENV_CACHE, ENV_BUDGET = "DESK_ALPACA_VOLUME_CACHE", "DESK_ALPACA_VOLUME_BUDGET"
 CONFIG_UNAVAILABLE = "ALPACA_VOLUME_CONFIG_UNAVAILABLE"
 NOT_CONFIGURED = "ALPACA_VOLUME_NOT_CONFIGURED"
+# Asset-list outcomes that sent no request: nothing new was observed about the source
+# (a provider stop is already persisted in the cache), so no health event is written.
+NO_REQUEST_SENT = ("REQUEST_BUDGET_EXHAUSTED", "RUN_STOPPED_AFTER_", NETWORK_FORBIDDEN)
+# Same busy timeout as the account store's final lock; a longer wait refuses the ticket.
+GUARD_TIMEOUT_SECONDS = 5
 
 # Consumer registry: every decision that reads volume, its window and its card rule.
 # The daily request covers the largest window; tests hold each consumer to it.
@@ -129,6 +136,13 @@ class AlpacaVolumeProvider:
                 self._assets = self.client.fetch_assets()
             except AssetError as exc:
                 self._asset_error = exc.code
+                if not exc.code.startswith(NO_REQUEST_SENT):
+                    # An attempted asset-list request failed: persisted, so a later
+                    # process cannot read an old pin as current (audit F1).
+                    try:
+                        self.store.record_source_failure(exc.code, self.client._now())
+                    except (sqlite3.Error, AlpacaVolumeError):
+                        self._asset_error = "IDENTITY_STORE_UNAVAILABLE"
             self.batches.append({"kind": "assets", "receipt": getattr(self.client, "asset_receipt", None),
                                  "error": self._asset_error,
                                  "assets": len(self._assets.assets) if self._assets else 0})
@@ -137,7 +151,42 @@ class AlpacaVolumeProvider:
         try:
             return self.store.resolve(meta, self._assets, decision_session)
         except (sqlite3.Error, ValidationError):
-            return {s: "IDENTITY_STORE_UNAVAILABLE" for s in frames}
+            out = {s: "IDENTITY_STORE_UNAVAILABLE" for s in frames}
+            try:
+                self.store.record_failures(out, self.client._now())
+            except (sqlite3.Error, AlpacaVolumeError):
+                pass   # the store is unreachable; the gate's own read fails closed too
+            return out
+
+    @contextmanager
+    def held(self):
+        """Hold the volume/identity file's writer reservation (audit F2).
+
+        ``BEGIN IMMEDIATE`` takes SQLite's single writer slot in rollback-journal and WAL
+        modes, so no STOP, FAILED, revision, mapping or identity-health write from any
+        connection or process can commit until release; reads made meanwhile see the
+        last committed state. No request may be sent while it is held: the client
+        refuses with ``NETWORK_FORBIDDEN_IN_FINAL_GUARD``. Callers take it after the
+        signal-store lock and before the account lock, and before the final clock.
+        """
+        if self.issue:
+            yield
+            return
+        paths = sorted({str(Path(self.client.cache.path).resolve()), str(Path(self.store.path).resolve())})
+        held = []
+        try:
+            for path in paths:
+                db = sqlite3.connect(path, timeout=GUARD_TIMEOUT_SECONDS, isolation_level=None)
+                held.append(db)
+                db.execute("BEGIN IMMEDIATE")
+            self.client.network_blocked = True
+            yield
+        finally:
+            self.client.network_blocked = False
+            for db in reversed(held):
+                if db.in_transaction:
+                    db.execute("ROLLBACK")
+                db.close()
 
     # ---- attach ---------------------------------------------------------------
     def _batch(self, frames, channel: str, req_for, identities, *, through=None):
@@ -224,13 +273,14 @@ class AlpacaVolumeProvider:
             if setup in CARDS and CARDS[setup].fingerprint() != evidence["rule_version"]:
                 return "CHANGED", "VOLUME_RULE_CHANGED_REQUALIFY"
             if refresh:
+                if self.client.network_blocked:
+                    return "UNAVAILABLE", NETWORK_FORBIDDEN
                 frame = pd.DataFrame()
                 frame.attrs["security_metadata"] = (metadata or {}).get(desk)
                 current = self.identities({desk: frame}, latest_closed_session(now))[desk]
             else:
-                current = self.store.latest(desk)
-                if current is None:
-                    return "UNAVAILABLE", "IDENTITY_NOT_PINNED"
+                # Persisted identity health, not just the last pin (audit F1); no request.
+                current = self.store.current(desk)
             if not isinstance(current, IdentityRecord):
                 return "UNAVAILABLE", current
             if current.dependency() != ident:

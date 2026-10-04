@@ -5,7 +5,7 @@ only denies stop-budget sizing. Selected exposure remains reviewable.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from fractions import Fraction
 from typing import Annotated, Callable, ContextManager, Literal, NamedTuple, Protocol
@@ -94,13 +94,23 @@ class EventRiskSource:
 
     @contextmanager
     def held_event(self, event_id):
-        with self.log.signals.held_event(event_id) as view:
+        """Signal store lock, then the volume/identity store's writer reservation.
+
+        Both are held until the ticket's final write commits (audit F2), so a volume
+        STOP, failure, revision, mapping change or identity-health failure either
+        committed before and is seen by ``status`` or lands after the ticket commit.
+        Order: ticket -> signal -> volume/identity -> account (taken last by tickets).
+        """
+        from desk.alpaca_source import provider_of
+        provider = provider_of(self.source)
+        with self.log.signals.held_event(event_id) as view, \
+                (provider.held() if provider is not None else nullcontext()):
             def status(at):
                 event = view(at)
                 eligible = bool(event["eligible"])
                 if eligible:
                     # G5a: saved volume qualification must still be current in the
-                    # integrated cache (local read; no request) at the final write.
+                    # integrated cache (local read under the held reservation; no request).
                     from desk.scanner import volume_status
                     from desk.signal_state import restore_signal
                     state, _ = volume_status(self.source, restore_signal(event["candidate_signal"]), at,

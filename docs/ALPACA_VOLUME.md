@@ -151,6 +151,41 @@ UNAVAILABLE suspends; CHANGED (used volume, source, share basis, identity versio
 card fingerprint) invalidates and queues the existing rebuild. Revoked or consumed
 tickets are never revived.
 
+**Identity health (audit F1).** Mapping history (`mappings`) and current eligibility
+are separate. `identity_health` is an append-only, ordered log (`sequence`, scope
+`symbol:<desk>` or the shared `source:alpaca-assets`, `OK`/`FAILED`, reason, mapping
+version and digest, asset-list digest, UTC receipt time). Every resolution attempt
+appends an outcome in the same transaction as any mapping write; an attempted
+asset-list request that fails appends a source FAILED (401/403/429 also keep the cache
+STOP). Requests never sent (budget exhausted, run already stopped, guard held) record
+nothing new. `IdentityStore.current` is one read: eligible only when the ticker's latest
+event is OK for exactly the latest mapping version and digest and no source FAILED is
+newer. Otherwise the gate returns the recorded reason, `IDENTITY_SOURCE_FAILED:<code>`,
+`IDENTITY_HEALTH_NOT_RECORDED` (a pin from before this table) or
+`IDENTITY_HEALTH_INCONSISTENT`. Recovery order: a failure is cleared only by a later
+successful resolution against a list received after it; a list not newer than a recorded
+failure for that ticker or the source writes nothing (`IDENTITY_STALE_ASSET_LIST`). An
+unchanged identity recovers the same pin and signal without new terms; a changed one
+takes the version/namespace/requalification path. A ticker failure affects that ticker;
+a source failure withholds every identity-dependent volume input; price-only setups are
+not consulted. A store read or write error fails closed.
+
+**Final guard and lock order (audit F2).** `AlpacaVolumeProvider.held()` takes
+`BEGIN IMMEDIATE` on the volume/identity file (sorted unique paths, 5 s busy timeout)
+and blocks the provider's network until release. `EventRiskSource.held_event` holds the
+signal store and then this reservation; the ticket's final transaction keeps both
+through its COMMIT, and the final clock is read only after every guard is held. One
+order everywhere: ticket (EXCLUSIVE) → signal (IMMEDIATE) → volume/identity (IMMEDIATE)
+→ account (IMMEDIATE, last). Volume/identity writers are single-file transactions and
+never wait on another store. A disqualifier committed before the guard is read and
+refused; a writer arriving later waits and commits after the ticket. Acquisition failure,
+an exception or rollback refuses without spending the approval and releases every
+guard. With a run stop active, the cache-only reuse path is read-only.
+
+**Migration.** Additive: the `identity_health` table and index are created on open. Older
+pins remain history and are ineligible until a fresh successful resolution; the previous
+code ignores the table.
+
 **Configuration.** `DESK_ALPACA_VOLUME_CACHE` (path; unset = unchanged Webull path) and
 `DESK_ALPACA_VOLUME_BUDGET` (HTTP requests per run, pages and the asset list included).
 A malformed budget or missing keys gives an unavailable provider: volume-dependent checks
@@ -167,7 +202,8 @@ criterion, source failure, limit) and publishes READY, PARTIAL or EMPTY as one a
 bundle (`watchlist-build.json`: generation, list, digest, report); FAILED (universe list
 or SPY benchmark) and INCOMPLETE (source failures, no leaders) keep the previous list.
 
-**Checked results.** 1282 strict tests on Python 3.12 and 3.13 (fixtures only). One
+**Checked results.** 1282 strict tests on Python 3.12 and 3.13 at `b5dab2c`; 1319 after
+the F1/F2 repair (fixtures only). One
 bounded live preview at `14aeb35` (cloud, sandbox Webull, 3 of 6 Alpaca calls): PARTIAL,
 283/283 identities and volume windows complete, 45 leaders from a ranked population of
 213, 96 disclosed source failures. Evidence:
@@ -180,7 +216,9 @@ data, iMac acceptance.
 Unset `DESK_ALPACA_VOLUME_CACHE`: every consumer takes the unchanged Webull path (whose
 volume basis is currently unaccepted, so volume-dependent checks stay unavailable).
 With Alpaca configured, any provider fault makes only the affected ticker's volume
-unavailable; price-only checks are unaffected. Massive (G3a) remains the other planned
+unavailable; price-only checks are unaffected. If the final guard cannot take the volume/identity
+reservation (another writer holds it past 5 s), the approval or consumption is refused
+unspent and can be retried. Massive (G3a) remains the other planned
 volume path.
 
 ## Rollback

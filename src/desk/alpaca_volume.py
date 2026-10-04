@@ -262,6 +262,9 @@ class RequestBudget:
         self.used += 1
 
 
+NETWORK_FORBIDDEN = "NETWORK_FORBIDDEN_IN_FINAL_GUARD"
+
+
 def _http_code(status: int) -> str:
     if status in (401, 403):
         return "AUTH_OR_ENTITLEMENT_FAILURE"
@@ -459,6 +462,9 @@ class AlpacaVolumeClient:
         self._budget, self._transport, self._clock, self._timeout = budget, transport, clock_fn, timeout
         self.cache = cache
         self.stopped: str | None = None
+        # Set while a ticket's final guard holds the cache file (audit F2): no request
+        # may be sent then, so no provider wait can happen inside the final locks.
+        self.network_blocked = False
 
     @classmethod
     def from_env(cls, env=None, **kwargs):
@@ -509,6 +515,8 @@ class AlpacaVolumeClient:
         an ``AssetList``; raises ``AssetError`` with a fixed code otherwise.
         """
         from desk.alpaca_assets import ASSET_HOST, ASSET_PARAMS, ASSET_ROUTE, AssetError, parse_assets
+        if self.network_blocked:
+            raise AssetError(NETWORK_FORBIDDEN)
         if self.stopped:
             raise AssetError("RUN_STOPPED_AFTER_" + self.stopped)
         try:
@@ -547,13 +555,21 @@ class AlpacaVolumeClient:
         """``identities`` (Alpaca symbol -> pinned ``IdentityRecord``) puts each ticker in
         its mapping's cache namespace and records the Alpaca asset ID as its identity."""
         spaces = self._spaces(req, identities)
-        # An active run stop outranks every path, the cached one included.
+        # An active run stop outranks every path, the cached one included. The cached
+        # path stays read-only (the STOP is already persisted), so it never needs the
+        # writer slot a ticket's final guard may hold.
         if self.stopped:
-            return self._unavailable(req, "RUN_STOPPED_AFTER_" + self.stopped, spaces=spaces)
+            code = "RUN_STOPPED_AFTER_" + self.stopped
+            if reuse:
+                return BatchResult(req, "UNAVAILABLE", {}, {s: code for s in req.symbols}, code, from_cache=True)
+            return self._unavailable(req, code, spaces=spaces)
         if reuse:
             if self.cache is None:
                 raise AlpacaVolumeError("NO_CACHE_CONFIGURED")
             return self._reuse(req, spaces)
+        if self.network_blocked:
+            return BatchResult(req, "UNAVAILABLE", {}, {s: NETWORK_FORBIDDEN for s in req.symbols},
+                               NETWORK_FORBIDDEN)
         sent = self._now()
         if clock(req.end) > clock(sent) - HISTORICAL_DELAY:
             return self._unavailable(req, "END_NOT_15_MINUTES_OLD", spaces=spaces)
