@@ -242,3 +242,15 @@ are refused. Details: `checkpoints/G4-ticket-approval.md` (fourth round).
 Not yet run on the iMac or on Python 3.14 for this commit. G5 acceptance stays
 **pending** Astra's check, iMac evidence for this exact commit, and the Massive and
 `SSL_CERT_FILE` iMac results.
+
+## G5a — Alpaca SIP volume producer (checkpoint 1, 2026-10-04)
+
+Taz's handoff "G5 volume and discovery follow-up" (2026-10-04 01:47Z) chose Alpaca SIP
+as the candidate volume source. Checkpoint 1 adds an opt-in, read-only producer and a
+bounded acceptance probe; no scanner, watchlist, trigger, ticket or iMac setting uses
+them. The historical replay for NVDA/SPY/QQQ/AAPL (entry session 2026-10-02) was
+complete in two requests. Record: `checkpoints/G5a-alpaca-volume.md`; contract:
+`ALPACA_VOLUME.md`. The G5 evidence above keeps its original scope. G5 stays
+**pending**: Astra's audit of this checkpoint, checkpoints 2 (consumer integration,
+per-ticker watchlist failures) and 3 (scoped history validation), then actual-iMac
+acceptance at the resulting commit. Step 09 does not resume from this checkpoint.

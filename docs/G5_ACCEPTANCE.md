@@ -83,6 +83,21 @@ Choices and their evidence labels are listed after the matrix.
 | [G5.B9; G4.E7] A valid signal reaches local approval without manual enrolment; no broker action | `tickets` + `EventRiskSource` + vendor path | [S] `test_tickets::test_complete_positive_path_from_persisted_signal_to_single_use`; [S] `g5` test 1 | Pass (`order_submitted: false`) | Live account, quote and contract adapters: Steps 11/13/15/20 |
 | [Plan G4; G4.F] Repo and external blueprint wording status recorded | `CLAUDE.md` rule 5 note; `GAP_REPAIR_PLAN.md` | Docs | Repo done; external blueprint **not updated** | Owner: "Independent check of v2.3" thread, if Taz asks |
 
+## G5a — Alpaca SIP volume producer (checkpoint 1, 2026-10-04)
+
+Taz's handoff "G5 volume and discovery follow-up" (01:47Z), checkpoint 1 only. Producer
+and probe exist; no consumer uses them (scanner integration is checkpoint 2). Details:
+`checkpoints/G5a-alpaca-volume.md`, contract `ALPACA_VOLUME.md`. Pending Astra's audit.
+
+| Requirement | Code path | Test or host artifact | Result | Remaining limitation |
+| --- | --- | --- | --- | --- |
+| [G5a producer] Read-only SIP client: documented headers, one host/route, TLS on, explicit `feed=sip`, no fallback | `alpaca_volume.AlpacaVolumeClient`, `BarRequest` | [S] `test_alpaca_volume` request/header/feed tests; [P] probe 2026-10-04 01:57Z | Pass | Historical only; real-time entitlement unproven |
+| [G5a producer] Auth/entitlement/rate limit stop the run; six-request cap; remaining pages are incomplete | `RequestBudget`, `fetch` | [S] 401/403/429, truncation, loop and six-request tests | Pass | — |
+| [G5a producer] Typed per-ticker evidence; one bad ticker never erases others | `VolumeObservation`, `BatchResult` | [S] missing-symbol and 11 malformed-row variants | Pass | Identity is symbol-level only |
+| [G5a producer] `split` and `raw` never share a basis; volumes retained as returned | `share_basis_id`, `ep_volume_component` | [S] raw/split tests; offline NVDA 2024-06-10 split fixture | Pass | No real Alpaca split-window check run |
+| [G5a producer] Cache by feed/adjustment/identity/timeframe/bounds; same content reused, changed content revised and invalidates an earlier result | `VolumeCache`, `revalidate` | [S] reuse, revision, identity-change, clock and failure-store tests | Pass | Consumers do not yet check it (checkpoint 2) |
+| [G5a calc] 50 prior exchange sessions, entry excluded, 09:30+09:45 RTH bars, Decimal, exact 0.5 boundary, DST/holidays/short session | `ep_volume_component`, `prior_sessions` | [S] 49 vs 50, gap, entry exclusion, stale, DST, boundary tests; [P] NVDA/SPY/QQQ/AAPL replay for 2026-10-02 (all available; ratios 0.246/0.120/0.130/0.079) | Pass | Volume component only; not setup qualification |
+
 ## Prompt line index
 
 G4 prompt (Taz, 2026-10-02 01:51Z):
@@ -226,6 +241,10 @@ Question 2 is open and 6 still needs the two host runs. The original wording fol
   (historical session) and `research/ai-trading/g5/g5-vendor-check-cloud-d529880-2026-10-02T1741Z.json`
   (current regular session, 16 M15 rows). Price/history PASS ×4; volume unavailable;
   actions not attested. These are **not** iMac verification.
+- **[P] G5a Alpaca SIP historical replay (cloud, 2026-10-04 01:57Z):**
+  `research/ai-trading/alpaca-volume-checkpoint1-2026-10-04/` (two requests, both 200,
+  complete; four tickers available). Historical access only; not an iMac check and
+  not a current-session or entitlement check.
 - **[H] Actual iMac integration (for `6d21ddf`), as reported in DeepSeek's audit of
   2026-10-02 (the implementer has not seen the raw transcript):** HEAD `6d21ddf`, tree
   clean, env file mode 0600; strict suite 997 passed on Python 3.14.7 (`.venv`) and on

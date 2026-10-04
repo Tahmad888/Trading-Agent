@@ -23,6 +23,12 @@ acknowledgement, revocation, expiry and single-use consumption with no orders. R
 and stays operationally open. Step 09 resumes only after the audits and Taz's go-ahead. No hardcoded dollar cap or silent over-budget execution. Step 09/10 and runner activation are
 not completed by these repairs.
 
+G5a (2026-10-04, Taz's volume/discovery handoff, checkpoint 1 only): opt-in read-only
+Alpaca SIP volume producer and probe (`docs/ALPACA_VOLUME.md`,
+`docs/checkpoints/G5a-alpaca-volume.md`). Not wired into any consumer; checkpoint 2
+(integration, per-ticker watchlist failures) and 3 (scoped history validation) wait
+for Astra's audit. Historical access does not prove real-time entitlement.
+
 Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify and
 checkpoint each numbered step before advancing under Taz's current authorization.
 Taz chooses each trade's dollar risk budget, with no hard $100 ceiling or automatic
@@ -132,6 +138,7 @@ https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg
 - `src/desk/contracts.py`: typed hand-offs (trade proposal, legs, risk decision, schema-2 approval record).
 - `src/desk/tickets.py`: G4 local ticket preparation, display, approval, revocation, history and single-use consumption (`python -m desk.tickets`; no broker action).
 - `src/desk/risk.py`: the risk engine, with limits from blueprint section 10: user-selected dollar risk per ticket, including estimated costs, with no grade-dollar mapping or hard $100 ceiling, user-overridable dollar-loss warnings (not halts), the blocking manual stop, quote-age and trading-status checks. No caps on trade or position counts.
+- `src/desk/alpaca_volume.py`, `src/desk/alpaca_probe.py`: G5a opt-in Alpaca SIP volume evidence and its bounded probe (no consumer yet; prices stay Webull).
 - `src/desk/bars.py`: parses and checks price bars; bad, short or stale bars raise `BarDataError` (no trade).
 - `src/desk/indicators.py`: the feature pack on TA-Lib 0.8.1, matched to TradingView; `tests/tv_reference.py` holds the Pine formulas it's tested against.
 - `src/desk/screen_check.py`: prints a ticker's latest daily values to compare with Taz's screen.
