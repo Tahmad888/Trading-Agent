@@ -88,8 +88,8 @@ Choices and their evidence labels are listed after the matrix.
 Taz's handoff "G5 volume and discovery follow-up" (01:47Z), checkpoint 1 only. Producer
 and probe exist; no consumer uses them (scanner integration is checkpoint 2). Details:
 `checkpoints/G5a-alpaca-volume.md`, contract `ALPACA_VOLUME.md`. Astra's audit of `2d97ea6`
-found F1–F3 (rows marked `Audit Astra`); repaired in the audit-closure commit, pending
-her re-audit.
+found F1–F3 (rows marked `Audit Astra`); repaired in `df99472` and **closed by Astra**
+(1212 strict on 3.14.6, 70 targeted on 3.12.14, relayed 2026-10-04 06:31Z).
 
 | Requirement | Code path | Test or host artifact | Result | Remaining limitation |
 | --- | --- | --- | --- | --- |
@@ -102,6 +102,22 @@ her re-audit.
 | [Audit Astra F2] A failed latest refresh (ticker or request level, identity change) stays unavailable across restart; healthy tickers stay usable; a successful refresh, even unchanged, restores it; order by sequence | `VolumeCache` events log, `fetch(reuse=True)` cache-only | [S] `test_alpaca_volume_audit::test_f2_*` | Pass (fails on `2d97ea6`) | A `2d97ea6` cache has no events, so nothing in it is eligible |
 | [Audit Astra F3] The 0.5 threshold comes from the EP card at calculation and revalidation; no caller override; altered stored results and card changes require requalification | `approved_rule`, `EPVolumeComponent` validator, `revalidate` | [S] `test_alpaca_volume_audit::test_f3_*` | Pass (fails on `2d97ea6`) | Rule version is the whole EP card fingerprint, so any card edit requalifies |
 | [G5a calc] 50 prior exchange sessions, entry excluded, 09:30+09:45 RTH bars, Decimal, exact 0.5 boundary, DST/holidays/short session | `ep_volume_component`, `prior_sessions` | [S] 49 vs 50, gap, entry exclusion, stale, DST, boundary tests; [P] NVDA/SPY/QQQ/AAPL replay for 2026-10-02 (all available; ratios 0.246/0.120/0.130/0.079) | Pass | Volume component only; not setup qualification |
+
+## G5a checkpoint 2 — volume consumers and partial discovery (2026-10-04)
+
+Taz's authorization (06:31Z, relayed). Implemented by Claude at `14aeb35`; **pending
+Astra's audit**. Details, consumer matrix and section-10 test map:
+`checkpoints/G5a-cp2-volume-consumers.md`. [S] = fixture test, [P] = provider observation.
+
+| Requirement | Code path | Test or host artifact | Result | Remaining limitation |
+| --- | --- | --- | --- | --- |
+| [CP2 §5] Webull↔Alpaca identity from the paper asset list; explicit BRK.B alias; ambiguous, changed, reused or unsupported identities isolated; changed identity versioned; older windows rejected | `alpaca_assets.IdentityStore`, `data_basis.decision_window` | [S] `test_alpaca_identity` (12), historical-mapping test; [P] preview: 283/283 exact-symbol, version 1 | Pass (implementer) | Alias and change paths fixture-only; Alpaca's current mapping is not independent historical proof (Assumption) |
+| [CP2 §5–6] Separate decision volume; Webull OHLC/`volume` unchanged; one source per comparison; no IEX/raw/mixed/fallback | `AlpacaDecisionVolume`, `decision_window` | [S] `test_volume_consumers` 10.2–10.3 | Pass (implementer) | — |
+| [CP2 §6] Liquidity, VCP, cup, EP and `rel_volume` on Alpaca with exact Decimal boundaries; EP via the approved-card component | `watchlist._liquid`, `triggers`, `scanner.ep_volume_context` | [S] boundary, window, DST, holiday, entry-exclusion tests; [P] preview liquidity for the whole universe | Pass (implementer) | Live EP RTH SIP at 10:15 not observed; Luk VWAP stays Webull (unavailable without accepted Webull volume); three card volume texts have no entry check |
+| [CP2 §7] Evidence on signals; cache gate before observation, refresh at revalidation, gate at ticket prepare/approve/consume/final fence; suspend vs invalidate+rebuild; no revival | `scanner.volume_status`/`check_volume`, `signal_state.candidate_id`, `risk_terms.held_event` | [S] `test_volume_lifecycle` (500/401/403/429, malformed, restart, revisions, identity, source, share basis, rule, revoked/consumed) | Pass (implementer) | Fixture-only; no real ticket exists yet |
+| [CP2 §7] Truthful timing: native daily final at next ET midnight; EP from 10:15; receipts after the decision clock never qualify it | `complete_through`, `settle`, pending re-prep | [S] timing tests in `test_partial_discovery`, `test_volume_consumers` | Pass (implementer) | Finality is a checkpoint-1 Assumption; decisions 1–3 for Taz in the checkpoint |
+| [CP2 §8] READY/PARTIAL/EMPTY publish atomically by generation; FAILED/INCOMPLETE retain; SPY at the latest completed session; picks and core across builds | `scanner._leader_scan_job`, `ScanLog` bundle | [S] `test_partial_discovery` (16); [R] replay of the saved 365 names: INCOMPLETE (no Alpaca data saved); [P] preview: PARTIAL generation 1, 45 leaders of 213 ranked, 96 disclosed source failures | Pass (implementer) | Scheduled Friday build and iMac not run |
+| [CP2 §9] Shared budget, pagination, stop, cache reuse | `RequestBudget`, `AlpacaVolumeProvider` | [S] 10.10 tests; [P] preview 3 of 6 calls, 2 pages exhausted | Pass (implementer) | — |
 
 ## Prompt line index
 
@@ -250,6 +266,11 @@ Question 2 is open and 6 still needs the two host runs. The original wording fol
   `research/ai-trading/alpaca-volume-checkpoint1-2026-10-04/` (two requests, both 200,
   complete; four tickers available). Historical access only; not an iMac check and
   not a current-session or entitlement check.
+- **[R]/[P] G5a checkpoint 2 replay and live preview (cloud, 2026-10-04 07:25Z, `14aeb35`):**
+  `research/ai-trading/alpaca-volume-checkpoint2-2026-10-04/REPORT.md`. Replay of the
+  saved 365-name artifacts (no network) and one bounded discovery build through
+  production components (3 Alpaca calls, sandbox Webull, scratch data). Not an iMac
+  check, not a scheduled build and not a live EP or entitlement check.
 - **[H] Actual iMac integration (for `6d21ddf`), as reported in DeepSeek's audit of
   2026-10-02 (the implementer has not seen the raw transcript):** HEAD `6d21ddf`, tree
   clean, env file mode 0600; strict suite 997 passed on Python 3.14.7 (`.venv`) and on

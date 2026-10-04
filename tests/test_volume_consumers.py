@@ -23,7 +23,7 @@ from desk.indicators import daily_features
 from desk.playbook.cards import CARDS
 from desk.playbook.filters import GateResult, MarketSize
 from desk.signal_state import candidate_id
-from tests.alpaca_support import AlpacaSim, Clock, asset_row, dry_daily, provider, with_volume
+from tests.alpaca_support import AlpacaSim, Clock, asset_id, asset_row, dry_daily, provider, with_volume
 from tests.test_scanner import Fake, daily, frames, m15, UP
 from tests.test_triggers import CUP, DARVAS, LUK, QULL, ctx, run
 from tests.charts import features
@@ -188,6 +188,22 @@ def test_holiday_and_early_close_follow_the_exchange_calendar(tmp_path):
     frame, _ = attached(tmp_path, end=end, now=at(date(2026, 12, 2), 9, 45))
     window = decision_window(frame, 50)
     assert date(2026, 11, 26) not in window.sessions and date(2026, 11, 27) in window.sessions
+
+
+def test_window_reaching_before_a_changed_identity_is_unsupported_historical_mapping(tmp_path):
+    from desk.data_basis import decision_rel_volume
+    first, _ = attached(tmp_path)
+    assert decision_window(first, 50).decision.identity.version == 1
+    # Next run: the asset list now gives LEAD a new Alpaca asset ID (fixture). The new pin
+    # is valid only after its decision session, so a 50-session window cannot use it.
+    later = date(2026, 9, 30)
+    changed, _ = attached(tmp_path, end=later, now=at(date(2026, 10, 1), 9, 45),
+                          assets=[asset_row("LEAD", id=asset_id("LEAD", "new"))])
+    decision = attached_decision(changed)
+    assert decision.identity.version == 2 and decision.identity.valid_after_session == later
+    with pytest.raises(VolumeUnavailable, match="UNSUPPORTED_HISTORICAL_MAPPING"):
+        decision_window(changed, 50)
+    assert decision_rel_volume(changed, 50).isna().all()       # display feature never mixes entities
 
 
 def ep_source(tmp_path, *, entry=date(2026, 9, 29), rth=None, daily=None, now=None, budget=6, **sim):

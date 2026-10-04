@@ -104,3 +104,101 @@ Unset `DESK_ALPACA_VOLUME_CACHE` (default): no provider, every consumer takes th
 unchanged Webull path. Code rollback: revert this checkpoint's commit; the new tables
 and files (`watchlist-build.json`, identity tables) are additive and ignored by the
 previous code, which keeps reading `watchlist.json`.
+
+## Result (after code)
+
+Code commit `14aeb35` (parent `df99472`); this document, the contract and the G5 matrix
+follow in the docs commit. Implemented by Claude; **not audited**. Labels: Checked
+(observed here), Assumption (unverified), User policy (Taz).
+
+### Consumer matrix
+
+All rows read Alpaca only when a provider is configured (`DESK_ALPACA_VOLUME_CACHE`);
+without one, rows 1–5 run the unchanged Webull path. "Gate" is `scanner.volume_status`
+(cache before observation, fresh refresh at revalidation, cache at ticket prepare,
+approve, consume and final fence).
+
+| # | Consumer | Required bars | Source / definition | Identity | Availability check | Persisted dependency | Regression tests |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Discovery liquidity (`watchlist._liquid`) | latest 50 **final** native-daily sessions (through `complete_through`) | Alpaca SIP split native daily, `alpaca-sip-split:native-daily-v1` | pinned record, version > old window rejected | `decision_window(final_only)`: short, missing, misaligned, unfinished, historical mapping → `source_failure:liquidity` | `liquidity_evidence` per leader in `watchlist-build.json`; digest on the leader row | `test_discovery_liquidity_uses_final_alpaca_sessions_with_an_exact_boundary`, `test_discovery_liquidity_unavailable_is_a_source_failure_not_a_fallback`, `test_healthy_and_failed_candidates_publish_partial_with_every_exclusion` |
+| 2 | `rel_volume` feature | 50 sessions per point | same | same | NaN for any point without a full final same-identity window | none (display only, no decision consumer) | `test_attached_volume_changes_only_rel_volume_never_webull_columns`, `test_window_reaching_before_a_changed_identity_is_unsupported_historical_mapping` |
+| 3 | VCP dry volume | 50 sessions ending at the signal bar | same | same | `decision_window`; exact `s10×50 < 0.7×s50×10` | `Signal.volume_evidence` (dependency digest in `candidate_id`) | `test_alpaca_volume_drives_vcp_and_cup_while_webull_frames_stay_unchanged`, `test_vcp_dry_volume_boundary_is_exact_and_strict`, `test_full_short_missing_and_unfinished_daily_windows`, `test_holiday_and_early_close_follow_the_exchange_calendar` |
+| 4 | Cup handle volume | 50 sessions ending at the signal bar (handle ≤ 25 inside it) | same | same | same; exact handle mean < 50-day mean | same | `test_alpaca_volume_drives_vcp_and_cup_while_webull_frames_stay_unchanged` |
+| 5 | EP early volume | 50 native-daily sessions before the entry session + RTH M15 09:30 and 09:45 | `alpaca-sip-split:rth30/native-daily50-v1` via `ep_volume_component` (card threshold 0.5) | same record for both channels | `alpaca_ep_inputs`; 15-minute-old end (10:15 ET), missing intervals, DST, short prior windows | `Signal.volume_evidence` + `Context.ep_volume` | `test_ep_uses_the_approved_card_component_with_an_exact_boundary`, `test_ep_excludes_the_entry_day_and_rejects_missing_intervals`, `test_ep_before_1015_is_unavailable_without_a_request_and_retries`, `test_ep_rth_intervals_follow_daylight_saving`, `test_holiday_shortened_prior_window_for_ep`, `test_mover_ep_unavailable_at_1000_retries_at_1015` |
+| 6 | Luk anchored VWAP | from the 63-bar low anchor | **unchanged** Webull price × Webull volume, gated by `volume_basis` | Webull only | raises (setup unavailable) without an accepted Webull volume basis; never Alpaca weights | none | `test_luk_anchored_vwap_never_reads_alpaca_weights` |
+| 7 | `session_vwap`, `developing_daily_from_m15` volume | — | Webull | — | no decision consumer | none | unchanged suites |
+| 8 | Movers / most-active lists | provider list | Webull ranking fields | — | candidate source only; EP decides | none | unchanged `test_discovery` |
+| 9 | Card text with no entry check (VCP rising entry volume, cup 1.4×, Darvas 1.5× breakout) | — | — | — | registered in `NOT_IMPLEMENTED`, never satisfied | none | `test_every_volume_consumer_and_unimplemented_card_condition_is_registered` |
+| 10 | Signals, revision rebuild, risk terms, tickets | the signal's evidence | as captured | version compared | gate: UNAVAILABLE suspends, CHANGED invalidates + rebuild | evidence on the signal and event terms | `tests/test_volume_lifecycle.py` (11 tests) |
+
+### Section 10 test map (Checked: all pass)
+
+| § | Tests |
+| --- | --- |
+| 10.1 | `tests/test_alpaca_identity.py` (12) and `test_window_reaching_before_a_changed_identity_is_unsupported_historical_mapping` |
+| 10.2 | `test_alpaca_volume_drives_vcp_and_cup_while_webull_frames_stay_unchanged`, `test_attached_volume_changes_only_rel_volume_never_webull_columns` |
+| 10.3 | `test_unchanged_webull_path_without_configuration`, `test_missing_keys_or_bad_config_isolate_volume_and_keep_price_checks` (parametrized), `test_decision_volume_refuses_iex_raw_and_mixed_sources` |
+| 10.4 | `test_full_short_missing_and_unfinished_daily_windows`, `test_holiday_and_early_close_follow_the_exchange_calendar`, the five EP tests in row 5 |
+| 10.5 | `test_every_volume_consumer_and_unimplemented_card_condition_is_registered`, `test_luk_anchored_vwap_never_reads_alpaca_weights` and the row tests above |
+| 10.6 | `test_alpaca_qualified_vcp_reaches_a_single_use_ticket`, `test_failed_refresh_blocks_prepare_approve_consume_and_survives_restart` (500/401/403/429), `test_stop_inside_a_run_blocks_every_later_volume_request`, `test_malformed_ticker_is_isolated_while_healthy_tickers_qualify` |
+| 10.7 | `test_unchanged_refresh_and_unrelated_changes_keep_terms`, `test_revised_used_volume_invalidates_queues_rebuild_and_never_revives_the_approval`, `test_changed_identity_requalifies`, `test_source_change_requalifies_and_price_only_signals_are_untouched`, `test_share_basis_and_rule_changes_requalify`, `test_revoked_or_consumed_tickets_stay_dead_after_an_unchanged_refresh` |
+| 10.8 | `tests/test_partial_discovery.py`: partial, zero leaders/EMPTY, INCOMPLETE, benchmark/universe FAILED (parametrized), no previous list, crash after/before the commit point, tampered bundle, restart and recovery, legacy generation 0, SPY latest completed session |
+| 10.9 | `test_user_picks_and_core_exemptions_across_partial_and_failed_builds`, `test_publication_records_attempt_and_stage_counts` |
+| 10.10 | `test_pagination_completes_and_exhausted_budget_stays_incomplete`, `test_cache_reuse_makes_zero_calls_and_a_stop_blocks_later_requests`, `test_receipts_after_the_decision_clock_cannot_qualify_it`, `test_complete_through_is_the_latest_final_native_daily_session`, `test_dependency_terms_exclude_receipts`, `test_cache_gate_runs_before_trigger_observation_without_requests` |
+
+Existing tests changed (behaviour the spec changes): `test_discovery` (a failed ticker
+now gives PARTIAL, not a vetoed build; new INCOMPLETE case), `test_scanner` (stale SPY
+reports "no valid completed SPY bars"), `test_alpaca_volume` (module users now include
+the source, data_basis and scanner).
+
+### Verification (Checked, 2026-10-04, Claude cloud container)
+
+- `python -m pytest -q -W error` with the docs commit's tree: **1282 passed** on Python
+  3.12.3 (97.2 s) and **1282 passed** on Python 3.13.14 (99.2 s). Baseline `df99472` had
+  1212, so 70 tests were added. No other Python is available here; 3.14 not tested by
+  Claude.
+- `git diff --check`: clean.
+- Deterministic replay of the saved 365-name artifacts and one bounded live preview:
+  `/mnt/project-files/research/ai-trading/alpaca-volume-checkpoint2-2026-10-04/REPORT.md`.
+  Preview: PARTIAL, 3 of 6 Alpaca calls, 283/283 identities and 50-session windows
+  complete, 213 ranked, 45 leaders, 96 disclosed source failures, generation 1.
+
+### Implemented vs fixture-tested vs provider-tested
+
+- **Provider-tested (once, cloud, weekend):** asset-list identity for 283 exact-symbol
+  names; native-daily SIP liquidity for the whole current universe through
+  `leader_scan_job`; PARTIAL publication and status files.
+- **Fixture-tested only:** BRK.B alias, ambiguous/changed/reused identity, EP RTH M15
+  path, VCP/cup consumers, every signal/ticket gate, crash/restart, stop codes.
+- **Not tested:** live EP at 10:15 ET, real-time entitlement, the scheduled Friday build,
+  iMac.
+
+### Decisions for Taz (implemented as described; change on request)
+
+1. The Friday 16:40 build's liquidity ends Thursday, because Friday's native daily
+   (extended hours) is not final until midnight (checkpoint 1 Assumption).
+2. VCP/cup volume cannot qualify at the 16:10 close scan; those names are re-prepared at
+   the next session's first slot with the same price terms.
+3. EP volume is available from 10:15 ET (free SIP history needs a 15-minute-old end); the
+   10:00 mover check retries at the next slot.
+4. Card volume conditions with no entry check (row 9) are listed, not invented.
+5. Luk's anchored VWAP stays on the Webull path; with Webull volume unaccepted it is
+   unavailable. An Alpaca-native VWAP would be a separate change.
+6. A failed universe ranking list makes the build FAILED (shared input), like SPY.
+
+### Migration
+
+None required. First use creates the identity tables in the volume cache. A data
+directory with only `watchlist.json` is read as generation 0 until the first bundle.
+
+### Plan B
+
+Unset `DESK_ALPACA_VOLUME_CACHE`: unchanged Webull path. A provider fault isolates only
+the affected tickers' volume; price-only setups continue.
+
+### Unresolved acceptance
+
+Astra's audit of this checkpoint; live EP RTH evidence at 10:15 ET on a session day;
+the iMac run; Checkpoint 3 (scoped history validation); the Webull/Alpaca SPY
+2026-09-18 disagreement (no vendor declared correct); G5's Massive dividend evidence
+and `SSL_CERT_FILE` items. G5 and Step 09 are **not** complete.

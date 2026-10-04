@@ -3,9 +3,10 @@
 2026-10-04. Implementer: Claude (cloud container). Auditor: Astra. Requested by Taz
 ("Claude handoff: G5 volume and discovery follow-up", 01:47Z): implement checkpoint 1
 only, verify, push and stop for Astra's audit. **Status:** Astra's audit of `2d97ea6`
-(2026-10-04 06:07Z relay) did not sign off; her findings F1–F3 are repaired in the
-audit-closure commit (section at the end), pending her re-audit. Trader-day step: **watch**. Nothing here
-is Astra's approval. Checkpoints 2 and 3, Step 09 and any iMac change are not started.
+(2026-10-04 06:07Z relay) did not sign off; her findings F1–F3 were repaired in
+`df99472` (section at the end) and Astra closed them (06:31Z relay). Trader-day step:
+**watch**. Checkpoint 2 is implemented and pending her audit:
+`G5a-cp2-volume-consumers.md`. Checkpoint 3, Step 09 and any iMac change are not started.
 
 ## Before-code record
 

@@ -1,8 +1,10 @@
-# Alpaca SIP volume producer (G5 checkpoint 1)
+# Alpaca SIP volume producer and consumers (G5a checkpoints 1 and 2)
 
 Trader-day step: **watch** (volume evidence for the watchlist and the EP volume test).
-Status: implemented, opt-in and **inactive**. No scanner, watchlist, trigger, ticket or
-iMac setting uses it. Scanner integration is checkpoint 2, after Astra's audit.
+Status: checkpoint 1 (producer, probe) audited and closed by Astra on `df99472`.
+Checkpoint 2 (consumers, identity, partial discovery) is implemented and **pending
+Astra's audit**; it is opt-in (`DESK_ALPACA_VOLUME_CACHE`) and no iMac setting or runner
+enables it. Checkpoint 3 (scoped history validation) has not started.
 
 Code: `src/desk/alpaca_volume.py` (client, evidence, cache, calculation) and
 `src/desk/alpaca_probe.py` (bounded acceptance probe). Tests:
@@ -12,7 +14,7 @@ Code: `src/desk/alpaca_volume.py` (client, evidence, cache, calculation) and
 
 | Item | Contract | Label |
 | --- | --- | --- |
-| Route | `GET https://data.alpaca.markets/v2/stocks/bars` only; redirects refused; default TLS context (certificate and hostname checks on) | Sourced: [stock bars](https://docs.alpaca.markets/us/reference/stockbars) |
+| Route | `GET https://data.alpaca.markets/v2/stocks/bars` and (checkpoint 2) `GET https://paper-api.alpaca.markets/v2/assets?status=active&asset_class=us_equity`, each allowlisted separately; no account, order or position route; redirects refused; default TLS context (certificate and hostname checks on) | Sourced: [stock bars](https://docs.alpaca.markets/us/reference/stockbars) |
 | Credentials | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` from the environment, sent as `APCA-API-KEY-ID` / `APCA-API-SECRET-KEY` headers. Never logged, saved or put in a URL | Sourced (same page) |
 | Feed | `feed=sip` on every request. An auth or entitlement error is unavailable evidence; no fallback to IEX, Webull or ranking-list volume | User policy (handoff) |
 | Adjustment | `split` for the paired EP channels; `raw` only for diagnostics. Volumes kept exactly as returned; no multipliers | Sourced: `split` adjusts price and volume for splits, `raw` applies none |
@@ -21,7 +23,7 @@ Code: `src/desk/alpaca_volume.py` (client, evidence, cache, calculation) and
 | Stop | 401/403 (`AUTH_OR_ENTITLEMENT_FAILURE`) and 429 (`RATE_LIMITED`) stop the run; later calls are refused without a request. No retry, key rotation or IP workaround. Other HTTP or transport errors make that request unavailable | User policy |
 | Budget | `RequestBudget` shared by one run; the probe allows at most 6 HTTP requests in total, pages included | User policy |
 | Prices | Not retained. Webull stays the price source; no VWAP from Webull prices with Alpaca weights | User policy |
-| Identity | Symbol as requested. `asof` is not sent, so Alpaca's default symbol mapping applies; no independent provider identity is resolved (`provider_identity: null`, recorded in `mapping_provenance`). The cache pins each symbol's identity record; a change makes that ticker unavailable (`IDENTITY_CHANGED`) | Sourced (`asof` maps ticker identity, not adjustment versions); the missing independent identity is a known limit |
+| Identity | Checkpoint 1: symbol as requested, `provider_identity: null`. Checkpoint 2: `alpaca_assets.IdentityStore` joins each desk symbol's Webull metadata to one row of the paper asset list (one cached GET per run, shared budget) and pins a versioned record (see below). `asof` is not sent, so Alpaca's current entity mapping applies | Sourced (`asof` maps ticker identity, not adjustment versions; the asset routes do not prove a historical mapping) |
 | Plans | Basic is free; live Basic equities are IEX only; real-time consolidated coverage needs the paid tier. No purchase is made or implied | Sourced: [plans](https://docs.alpaca.markets/us/docs/about-market-data-api) |
 
 ### Evidence record (`VolumeObservation`, one per ticker per complete request)
@@ -100,22 +102,94 @@ current EP card (`VOLUME_RULE_CHANGED_REQUALIFY`), or whose stored result differ
 fresh calculation (`VOLUME_RESULT_MISMATCH`). Accepting `adjustment=split` is not taken
 as complete, independent corporate-action coverage.
 
-## Planned consumers (checkpoint 2, not wired)
+## Checkpoint 2: identity, consumers and gates
 
-Discovery's 50-day liquidity average, daily relative volume, setup volume comparisons
-(VCP, cup, Darvas, breakout), EP RTH30/native-D50, stored qualification evidence,
-scanner refresh/revalidation, revision rebuild and ticket consumption. Each comparison
-must use one source end to end. `data_basis.VolumeBasis` has no Alpaca policy yet;
-checkpoint 2 adds it with its own tests instead of reusing the Webull policy string.
+Record before coding, consumer matrix, timing decisions and test map:
+`checkpoints/G5a-cp2-volume-consumers.md`. Code: `src/desk/alpaca_assets.py`,
+`src/desk/alpaca_source.py`, `data_basis` (decision volume), and the wired consumers.
+
+**Identity** (`alpaca_assets.py`). Per desk symbol: Webull symbol and instrument ID,
+Alpaca symbol and asset ID (separate fields), class, exchange, names, status, method
+(`exact-symbol`, or `explicit-class-share-alias` from a written alias table: BRK.B only;
+punctuation is never stripped), asof policy, asset-list receipt and digest. Unresolved
+(`WEBULL_IDENTITY_MISSING`, `ASSET_NOT_FOUND`), ambiguous, unsupported (inactive, non-US
+equity), conflicting, reused or alias-mismatched identities make that ticker's volume
+unavailable with the code kept. A changed identity gets version n+1 with
+`valid_after_session` and a new cache namespace; the old version stays as history. A
+window that reaches back to or before `valid_after_session` is
+`UNSUPPORTED_HISTORICAL_MAPPING`. A first pin relies on Alpaca's current entity mapping,
+corroborated only by the Webull instrument's own price history covering the window
+(Assumption: not independent proof of a historical mapping).
+
+**Decision volume** (`data_basis.AlpacaDecisionVolume`, policy ids
+`alpaca-sip-split:native-daily-v1` and `alpaca-sip-split:rth-m15-v1`): attached as
+`frame.attrs["decision_volume"]`. The Webull OHLC, `volume` column, bar provenance and
+`volume_basis` are unchanged. `decision_window(df, n, final_only)` is the one consumer
+view: with an attachment it reads only Alpaca values joined by NY session date (M15 by
+exact interval start), refuses IEX, raw, mixed or misaligned input, and never falls back
+to Webull; without one the old Webull path runs unchanged.
+
+**Consumers** (all comparisons exact in Decimal, one source each): discovery liquidity
+(mean of the latest 50 final sessions ≥ 1,000,000), VCP dry volume (10-day mean < 0.7 ×
+50-day mean), cup handle volume (handle mean < 50-day mean), EP through
+`ep_volume_component` (the approved-card calculation above), and the display-only
+`rel_volume` feature (same denominator semantics, float once per point, no decision
+consumer). Anchored VWAP (Luk) keeps its existing Webull price × Webull volume path gated
+by `volume_basis`; it never reads Alpaca weights. Card volume conditions with no entry
+check today (VCP rising entry volume, cup 1.4× and Darvas 1.5× breakout volume) are
+listed in `alpaca_source.NOT_IMPLEMENTED`, never treated as satisfied.
+
+**Evidence and gates.** Each qualifying signal carries `volume_evidence`: used values and
+sessions/intervals, definitions, share basis, both identities and mapping version,
+request fields, snapshot digests, receipts, card fingerprint, result, and a dependency
+digest. `signal_state.candidate_id` hashes only the dependency terms (not receipts or
+snapshot digests), so an identical later receipt is not a new candidate. The gate
+`scanner.volume_status` runs from the cache before trigger observation, with a fresh
+refresh at signal revalidation, and from the cache at ticket preparation, approval,
+consumption and the final fence (`risk_terms.EventRiskSource.held_event`).
+UNAVAILABLE suspends; CHANGED (used volume, source, share basis, identity version or
+card fingerprint) invalidates and queues the existing rebuild. Revoked or consumed
+tickets are never revived.
+
+**Configuration.** `DESK_ALPACA_VOLUME_CACHE` (path; unset = unchanged Webull path) and
+`DESK_ALPACA_VOLUME_BUDGET` (HTTP requests per run, pages and the asset list included).
+A malformed budget or missing keys gives an unavailable provider: volume-dependent checks
+report the reason, prices and price-only setups keep working.
+
+**Timing.** Native daily is treated as final at the next ET midnight (checkpoint 1
+Assumption): the 16:10 close scan cannot qualify that day's VCP/cup volume, so those
+names are re-prepared at the next session's first slot; the Friday 16:40 build's
+liquidity window ends Thursday. EP's 09:30/09:45 bars need a 15-minute-old end, so EP
+volume is available from 10:15 ET; the 10:00 mover check retries at the next slot.
+
+**Partial discovery.** `leader_scan_job` gives every candidate one outcome (selected,
+criterion, source failure, limit) and publishes READY, PARTIAL or EMPTY as one atomic
+bundle (`watchlist-build.json`: generation, list, digest, report); FAILED (universe list
+or SPY benchmark) and INCOMPLETE (source failures, no leaders) keep the previous list.
+
+**Checked results.** 1282 strict tests on Python 3.12 and 3.13 (fixtures only). One
+bounded live preview at `14aeb35` (cloud, sandbox Webull, 3 of 6 Alpaca calls): PARTIAL,
+283/283 identities and volume windows complete, 45 leaders from a ranked population of
+213, 96 disclosed source failures. Evidence:
+`/mnt/project-files/research/ai-trading/alpaca-volume-checkpoint2-2026-10-04/REPORT.md`.
+Not established: live EP RTH SIP at 10:15, real-time entitlement, BRK.B alias on live
+data, iMac acceptance.
 
 ## Plan B
 
-Unavailable volume for the affected ticker (current behaviour). Price-only checks are
-unaffected. Massive (G3a) remains the other planned volume path.
+Unset `DESK_ALPACA_VOLUME_CACHE`: every consumer takes the unchanged Webull path (whose
+volume basis is currently unaccepted, so volume-dependent checks stay unavailable).
+With Alpaca configured, any provider fault makes only the affected ticker's volume
+unavailable; price-only checks are unaffected. Massive (G3a) remains the other planned
+volume path.
 
 ## Rollback
 
-Remove `src/desk/alpaca_volume.py`, `src/desk/alpaca_probe.py`,
+Checkpoint 2: unset `DESK_ALPACA_VOLUME_CACHE`, or revert its commit. The identity
+tables, `watchlist-build.json` and `pending-*.json` files are additive; the previous code
+ignores them and keeps reading `watchlist.json`.
+
+Checkpoint 1: remove `src/desk/alpaca_volume.py`, `src/desk/alpaca_probe.py`,
 `tests/test_alpaca_volume.py` and this document, and revert the doc and
 `.env.example` edits of the checkpoint commit. Nothing else imports the module, so
 no runtime behaviour changes.

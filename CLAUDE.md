@@ -23,11 +23,13 @@ acknowledgement, revocation, expiry and single-use consumption with no orders. R
 and stays operationally open. Step 09 resumes only after the audits and Taz's go-ahead. No hardcoded dollar cap or silent over-budget execution. Step 09/10 and runner activation are
 not completed by these repairs.
 
-G5a (2026-10-04, Taz's volume/discovery handoff, checkpoint 1 only): opt-in read-only
-Alpaca SIP volume producer and probe (`docs/ALPACA_VOLUME.md`,
-`docs/checkpoints/G5a-alpaca-volume.md`). Not wired into any consumer; checkpoint 2
-(integration, per-ticker watchlist failures) and 3 (scoped history validation) wait
-for Astra's audit. Historical access does not prove real-time entitlement.
+G5a (2026-10-04, Taz's volume/discovery handoff): checkpoint 1 (opt-in read-only
+Alpaca SIP volume producer and probe, `docs/ALPACA_VOLUME.md`,
+`docs/checkpoints/G5a-alpaca-volume.md`) closed by Astra on `df99472`. Checkpoint 2
+(identity, volume consumers, signal/ticket gates, PARTIAL discovery publication;
+`docs/checkpoints/G5a-cp2-volume-consumers.md`) is implemented, opt-in via
+`DESK_ALPACA_VOLUME_CACHE`, and pending Astra's audit. Checkpoint 3 (scoped history
+validation) has not started. Historical access does not prove real-time entitlement.
 
 Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify and
 checkpoint each numbered step before advancing under Taz's current authorization.
