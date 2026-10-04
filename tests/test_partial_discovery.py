@@ -88,7 +88,8 @@ def test_zero_leaders_complete_is_empty_and_incomplete_without_leaders_retains(t
     assert "OLD" not in json.loads((tmp_path / "watchlist.json").read_text())
     incomplete = sc.leader_scan_job(fake(leaders=(), missing=("MISSING",)), log, at(minute=50))
     status = incomplete.discovery["watchlist_build"]
-    assert status["status"] == "INCOMPLETE" and status["retained"] and status["generation"] == 1
+    # CP3 audit F1: every candidate failed its source data, so the build is FAILED (list retained).
+    assert status["status"] == "FAILED" and status["retained"] and status["generation"] == 1
     assert status["published_at"] == at().isoformat() and incomplete.error
 
 

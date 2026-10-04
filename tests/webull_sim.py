@@ -7,7 +7,8 @@ touches the network. Rows go out newest first, as Webull's do.
 
 Provider behaviors (``mode``): ``bounded`` honors ``start_time``, ``end_time`` and
 ``count``; ``ignores_start`` honors only ``end_time`` and ``count``; ``excess``
-ignores ``start_time`` and ``count`` and returns up to 1000 rows (excess old rows).
+ignores ``start_time`` and ``count`` and returns up to 1000 rows (excess old rows). ``cap[symbol]`` returns at
+most that many of the newest rows (a provider that stops short).
 """
 from __future__ import annotations
 
@@ -55,6 +56,7 @@ class WebullSim:
         self.wrong_id: dict[str, str] = {}
         self.delay: dict[str, int] = {}
         self.requests: list[tuple[str, dict]] = []
+        self.cap: dict[str, int] = {}             # at most this many newest daily rows for a symbol
 
     def add(self, symbol, ohlcv: dict, *, sub="COMMON_STOCK", instrument_id=None):
         self.world[symbol] = {"id": instrument_id or f"wb:{symbol}", "sub": sub,
@@ -106,6 +108,8 @@ class WebullSim:
                 if self.mode == "bounded" and start is not None:
                     items = [(t, r) for t, r in items if t >= start]
                 rows = [r for _, r in items][-(1000 if self.mode == "excess" else body["count"]):]
+                if symbol in self.cap:
+                    rows = rows[-self.cap[symbol]:]
                 rows += [dict(r) for r in self.extra.get(symbol, [])]
             else:
                 rows = []

@@ -146,6 +146,14 @@ def classify_daily(rows: Sequence[Mapping], window: ScopeWindow, *, timestamp_un
     """
     required, report = [], {"rows_returned": len(rows), "before": 0, "after": 0, "excluded_defects": [],
                             "excluded_defect_count": 0, "earliest": None}
+    seen: dict = {}
+
+    def exclude(i, stamp, day, field, reason, row, **extra):
+        report["excluded_defect_count"] += 1
+        if len(report["excluded_defects"]) < MAX_DEFECTS:
+            report["excluded_defects"].append({"index": i, "time": stamp.isoformat(), "session": day.isoformat(),
+                "field": field, "reason": reason, "status": "EXCLUDED_OUTSIDE_SCOPE", "row": sanitized(row), **extra})
+
     for i, row in enumerate(rows):
         try:
             stamp = parse_time(row["time"], timestamp_unit=timestamp_unit)
@@ -160,15 +168,16 @@ def classify_daily(rows: Sequence[Mapping], window: ScopeWindow, *, timestamp_un
             raise BarRowError("SCOPED_TIMESTAMP_AMBIGUOUS: " + describe(defect, len(rows)), defect)
         day = local.date()
         report["earliest"] = min(filter(None, [report["earliest"], day.isoformat()]))
+        first = seen.setdefault(stamp, i)
         if window.required_start <= day <= window.required_end:
+            # A required duplicate stays in the rows: the strict parser rejects it.
             required.append(row)
             continue
         report["before" if day < window.required_start else "after"] += 1
+        if first != i:
+            # Audit D1: an old duplicate is recorded, never silently dropped.
+            exclude(i, stamp, day, "time", f"duplicate bar times (also row {first})", row, duplicate_of=first)
         found = row_defect(row)
         if found:
-            report["excluded_defect_count"] += 1
-            if len(report["excluded_defects"]) < MAX_DEFECTS:
-                report["excluded_defects"].append({"index": i, "time": stamp.isoformat(), "session": day.isoformat(),
-                    "field": found[0], "reason": found[1], "status": "EXCLUDED_OUTSIDE_SCOPE",
-                    "row": sanitized(row)})
+            exclude(i, stamp, day, found[0], found[1], row)
     return required, report

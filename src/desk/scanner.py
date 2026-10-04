@@ -565,9 +565,10 @@ def leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *, decisio
 
     Outcomes (G5a checkpoint 2): READY (complete, leaders), PARTIAL (some candidates
     failed on their own data; the independently valid leaders publish with every
-    exclusion disclosed), EMPTY (complete, no leaders). FAILED (universe, ranking or
-    shared SPY benchmark) and INCOMPLETE (candidate failures and no valid leader)
-    publish nothing; the previous list stays in force with its own publication time.
+    exclusion disclosed), EMPTY (complete, no leaders). FAILED (universe, ranking,
+    shared SPY benchmark, or every candidate failed its source data) and INCOMPLETE
+    (candidate failures, some candidates evaluated, no valid leader) publish nothing;
+    the previous list stays in force with its own publication time.
     """
     rec, wl, report = _leader_scan_job(source, log, now, decision_clock=decision_clock)
     at = datetime.fromisoformat(rec.at)
@@ -685,7 +686,12 @@ def _leader_scan_job(source: BarSource, log: "ScanLog", now: datetime, *,
                     **({"liquidity_digest": scan_.evidence[l.symbol]["dependency_digest"]}
                        if l.symbol in scan_.evidence else {})} for l in scan_.leaders]
     status = ("PARTIAL" if failures else "READY") if leaders else ("INCOMPLETE" if failures else "EMPTY")
-    finish(status, failures if status == "INCOMPLETE" else {}, rec.leaders, scan_.population, evidence)
+    if status == "INCOMPLETE" and not any(o["outcome"] != "source_failure" and o["stage"] != "benchmark"
+                                          for o in outcomes.values()):
+        # Audit F1 (CP3): no candidate was evaluated at all, so nothing about the
+        # market is known; the previous list stays with its age disclosed.
+        status = "FAILED"
+    finish(status, failures if status in ("INCOMPLETE", "FAILED") else {}, rec.leaders, scan_.population, evidence)
     report["excluded_source_failures"] = len(failures)
     if status not in ScanLog.PUBLISHED:
         return rec, None, report

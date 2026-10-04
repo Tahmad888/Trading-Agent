@@ -48,6 +48,14 @@ def parse_time(raw, *, timestamp_unit: str | None = None) -> pd.Timestamp:
     return stamp.tz_convert("UTC")
 
 
+def _number(value) -> float:
+    """One raw OHLCV value under the provider contract: a finite-or-not numeric string,
+    integer or float. Booleans are refused before conversion (``float(True)`` is 1.0)."""
+    if isinstance(value, (bool, np.bool_)):
+        raise TypeError("non-numeric value (boolean)")
+    return float(value)
+
+
 def row_defect(row: Mapping) -> tuple[str, str] | None:
     """The first OHLCV defect of one row as (field, reason), or None. Time is separate."""
     values = {}
@@ -55,9 +63,7 @@ def row_defect(row: Mapping) -> tuple[str, str] | None:
         if c not in row:
             return c, "missing field"
         try:
-            if isinstance(row[c], bool):
-                raise TypeError
-            values[c] = float(row[c])
+            values[c] = _number(row[c])
         except (TypeError, ValueError, OverflowError):
             return c, "non-numeric value"
         if not np.isfinite(values[c]):
@@ -127,7 +133,7 @@ def bars_from_webull(rows: Iterable[Mapping], *, timestamp_unit: str | None = No
             times = [parse_time(row["time"], timestamp_unit=timestamp_unit) for row in rows]
             df = pd.DataFrame({
                 "time": pd.to_datetime(times, utc=True),
-                **{c: [float(r[c]) for r in rows] for c in COLUMNS},
+                **{c: [_number(r[c]) for r in rows] for c in COLUMNS},
             })
         except (KeyError, TypeError, ValueError, OverflowError) as e:
             raise BarDataError(f"bad bar row: {e}") from e

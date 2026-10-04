@@ -233,6 +233,12 @@ def test_duplicate_outside_the_scope_is_a_diagnostic_not_a_rejection(tmp_path):
     desk = Desk(tmp_path, sim)
     out = desk.scoped("AAA")
     assert len(out["AAA"]) == 260 and desk.vendor.last_scope_report["AAA"]["before"] == 6
+    # CP3 audit D1: the duplicate is detected and persisted, not only counted.
+    assert desk.vendor.last_scope_report["AAA"]["excluded_defect_count"] == 1
+    (kept,) = desk.store.defects(HOST, "AAA", DISCOVERY_POLICY)
+    assert kept["status"] == "EXCLUDED_OUTSIDE_SCOPE" and kept["field"] == "time" and kept["row_index"] == 265
+    assert kept["reason"] == "duplicate bar times (also row 0)"     # the appended copy comes first (newest-first reply)
+    assert json.loads(kept["row_json"])["time"] == sim.row("AAA", MARGIN[0])["time"]
 
 
 def test_stale_receipt_refuses_even_a_scoped_request(tmp_path):
@@ -262,18 +268,22 @@ def test_missing_session_or_suspension_is_refused_never_filled(tmp_path):
 
 
 def test_short_history_stays_an_eligibility_outcome_unless_evidence_shows_it_is_incomplete(tmp_path):
+    # CP3 audit F1: a short reply alone no longer proves a young listing. Here an
+    # uncapped full-history capture (259 rows for a 1000-row request) establishes it.
     sim = world("AAA")
     sim.add("YOUNG", series(FRIDAY, 259, start=60))
     sim.universe("AAA", "YOUNG")
     desk = Desk(tmp_path, sim)
+    assert len(desk.full("YOUNG")["YOUNG"]) == 259
     _, build = desk.build()
     assert build["outcomes"]["YOUNG"] == {"outcome": "criterion", "stage": "history", "reason": "under a year of bars"}
     assert build["status"] == "READY"
-    # A reply that is short only because the provider returned less: full evidence proves older rows.
+    # A reply that is short only because the provider returned less: accepted evidence proves older rows.
     desk.full("AAA")
     sim.drop("AAA", *[d for d in list(sim.world["AAA"]["rows"]) if d < WINDOW[60]])
     assert desk.scoped("AAA") == {}
-    assert desk.vendor.last_errors["AAA"].startswith("SCOPED_HISTORY_INCOMPLETE: full-history evidence starts")
+    assert desk.vendor.last_errors["AAA"].startswith("SCOPED_HISTORY_INCOMPLETE: accepted evidence for this "
+                                                     "instrument starts")
 
 
 def test_a_capped_reply_that_misses_the_start_is_truncated_not_short(tmp_path):
@@ -287,7 +297,8 @@ def test_a_capped_reply_that_misses_the_start_is_truncated_not_short(tmp_path):
     with pytest.raises(BarDataError, match="SCOPED_HISTORY_TRUNCATED"):
         _daily_scoped(clipped, meta, scope, BUILD, HOST)
     clipped.attrs["scope_report"]["rows_returned"] = 250
-    assert len(_daily_scoped(clipped, meta, scope, BUILD, HOST)) == 250       # short: the 260 gate decides
+    # Not truncated; whether it is short history is decided from accepted evidence (audit F1).
+    assert len(_daily_scoped(clipped, meta, scope, BUILD, HOST)) == 250
 
 
 # ------------------------------------------------------------------ 6 ----

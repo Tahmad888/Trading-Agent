@@ -112,9 +112,9 @@ listing.
   age and identity pin as today; scoped daily request; required-window validation (aware
   ET session labels, contiguous required sessions, ends at the cutoff; a gap or a missing
   first session with older rows present is `MISSING_REQUIRED_SESSIONS`; a response that
-  hit its row cap without reaching the start is `SCOPED_HISTORY_TRUNCATED`; a contiguous
-  series with no older rows is short history and keeps the existing "under a year"
-  eligibility outcome); the unchanged raw M15 anchor check; price evidence with method
+  hit its row cap without reaching the start is `SCOPED_HISTORY_TRUNCATED`; a late start
+  with no older rows is decided from accepted evidence, per the audit repair below); the
+  unchanged raw M15 anchor check; price evidence with method
   `webull-discovery-v1`. An inner source without `bars_scoped` raises
   `DISCOVERY_SCOPE_UNSUPPORTED` before any request, and the scanner then uses the
   unchanged full path and says so in the build report.
@@ -194,8 +194,10 @@ costs the names whose old rows are malformed.
   largest relative difference in SMA50/150/200 over the last 22 rows was 1.9e-14. A Trend
   Template comparison could only change if an SMA sits that close to its threshold; flat
   series ties agree exactly. No tolerance is added to any decision.
-- A contiguous scoped series with no row before the window and fewer rows than requested
-  is treated as a genuinely short history, as the full path already does.
+- ~~A contiguous scoped series with no row before the window and fewer rows than requested
+  is treated as a genuinely short history, as the full path already does.~~ **Withdrawn
+  after Astra's audit (F1):** the reply's own shape does not prove a young listing. See
+  "Audit repair" below.
 
 ## Results (after code; Claude, 2026-10-04)
 
@@ -290,3 +292,121 @@ observations beside 23 discovery `CONSISTENT` rows.
 - Ten names carry an in-window high/low defect in 2026-04-24..30 (Assumption: provider-wide).
   They stay rejected; correcting them needs reviewed price evidence.
 - Massive dividend evidence and `SSL_CERT_FILE` still wait on the iMac (unchanged).
+
+## Audit repair: F1, F2, D1 (before-code record, 2026-10-04)
+
+Taz's prompt (23:29Z, relayed; verbatim at
+`research/ai-trading/g5/audits/g5a-cp3-audit-repair-prompt-2026-10-04-verbatim.md`)
+hands over Astra's audit of `33256b3`. Her audit file and probe results were not
+attached; the scenarios below are rebuilt from the prompt text. Baseline `33256b3`; no
+newer remote commit on either branch and no local changes (checked 23:31Z).
+
+### Requirements (User policy, from the prompt)
+
+- **F1.** A clipped scoped reply must not turn a known ticker into a healthy short
+  history. Before a refresh is recorded as successful, its first session is checked
+  against every earlier *accepted* full-history and discovery capture of the same
+  instrument ID. That knowledge survives restarts, window rolls and failed refreshes,
+  and a narrower reply cannot erase it. A known required session missing from the
+  reply is a per-ticker source failure; the last accepted discovery pointer stays and a
+  failed observation is recorded. The inference "contiguous short reply with no older
+  rows = young listing" is removed: a reply that starts after the required start is
+  short history only when an accepted full-history capture that returned fewer rows
+  than it asked for (so the provider had nothing older) starts at the same session;
+  otherwise it is `SCOPED_COVERAGE_UNVERIFIED`, a source failure. No listing date is
+  invented and no provider call is added.
+- **F1, publication.** Valid peers publish PARTIAL with only the valid candidates. When
+  every candidate fails its source evaluation, the build is FAILED: the previous list
+  stays, with its age, and nothing healthy is published. (Until now that case was
+  INCOMPLETE; INCOMPLETE stays for builds where some candidates evaluated but none led.)
+  A fresh complete reply recovers; a stale reply is never promoted.
+- **F2.** The shared Webull parser rejects `true`/`false` in any OHLCV field before
+  conversion, with row, session and field in the diagnostic. Finite numeric strings,
+  integers, floats and zero volume stay valid. Full-path strictness and per-ticker
+  isolation are unchanged. Outside the scope a boolean row is excluded and recorded;
+  inside it rejects the ticker.
+- **D1.** Classification detects duplicate timestamps among all rows. A duplicate
+  outside the required interval is recorded as `EXCLUDED_OUTSIDE_SCOPE` with its row
+  index, timestamp and the earlier row it repeats, and does not reject the ticker; a
+  required duplicate still rejects.
+- Unchanged: the 260-session policy, full-history setup paths, thresholds, SIP contracts,
+  identity health, CP2 final guards, signal overlap/revision checks, separate pointers.
+
+### Acceptance cases (through the real Webull parser, vendor wrapper, scanner and ScanLog)
+
+F1: (a) scoped-only desk, READY leader, then a reply clipped to 259 sessions with no
+older rows: source failure in the same process and after a restart, no full pointer
+involved, discovery pointer unchanged, failed observation recorded; (b) a second failed
+refresh keeps the knowledge; (c) next-session window roll with a formerly seen required
+session omitted fails; (d) a healthy peer publishes PARTIAL without the clipped name;
+(e) a sole failed candidate keeps the previous list as FAILED with its age; (f) a fresh
+complete reply recovers and a stale one is refused; (g) short history established by an
+uncapped full-history capture stays the "under a year" criterion; (h) a first-time short
+reply with no such evidence, or a capped one, is a source failure.
+F2: raw parser rejects booleans in each field and keeps numeric strings, numbers and zero
+volume; the integrated control that fails the Trend Template is not made a leader by a
+boolean low on either path; an outside-scope boolean is excluded and recorded, an
+in-scope one rejects.
+D1: an old duplicate is stored as `EXCLUDED_OUTSIDE_SCOPE` with both row references and
+the ticker still ranks; a required duplicate rejects.
+
+### Audit repair results (Claude, 2026-10-04)
+
+Code completion only; pending Astra's re-audit. No provider call was made for the repair.
+G5 is not complete.
+
+**What changed.** `bars.py`: `_number` refuses `bool`/`numpy.bool_` before `float()` in
+`bars_from_webull` and `row_defect` (F2). `history_scope.classify_daily`: every timestamp is
+tracked; a repeat outside the required interval is stored as `EXCLUDED_OUTSIDE_SCOPE`
+with `duplicate bar times (also row j)` and `duplicate_of`; a required repeat goes to the
+strict parser, which rejects it (D1). `vendor_basis.py` (F1): `VendorHistoryStore.coverage()`
+reads the earliest first session of every accepted (`CONSISTENT`/`REVISED`) capture of the
+same instrument ID in any scope from the append-only observations and snapshots, so a
+narrower later reply, a restart, a failed refresh or a window roll cannot erase it; new
+table `coverage_starts` records where an uncapped full-history capture (fewer than the
+1000 rows asked for) began. `VendorBasisSource._short_history` runs before a late-starting
+reply is recorded: earlier accepted coverage gives `SCOPED_HISTORY_INCOMPLETE`, otherwise
+no uncapped start at that session gives `SCOPED_COVERAGE_UNVERIFIED`; both are source
+failures and leave the last accepted pointer in place with an `UNAVAILABLE` observation.
+`full_coverage_start` is removed. `scanner._leader_scan_job`: when no candidate was
+evaluated (every outcome a source failure), the build is FAILED, not INCOMPLETE; the
+previous list stays with `retained_age_hours`. Three existing CP2 tests that had a single
+failed candidate now expect FAILED (`test_partial_discovery`, `test_discovery`,
+`test_volume_consumers`); INCOMPLETE remains for builds with evaluated non-leaders.
+
+**Before / after** (same fixtures, `33256b3` worktree vs this repair, script output in
+`research/ai-trading/g5a-cp3-scoped-history-2026-10-04/audit-repair/repro.txt`):
+
+| Scenario | `33256b3` | After |
+| --- | --- | --- |
+| F1: READY AAA, then reply clipped to 259 sessions, no older rows | EMPTY in process and after restart; AAA `under a year of bars`; AAA removed from the list | FAILED both times; `SCOPED_HISTORY_INCOMPLETE: accepted evidence for this instrument starts 2025-09-22; the reply starts 2025-09-23 (known sessions missing: 1)`; list keeps AAA; pointer unchanged |
+| F2: `low: true` on 2026-02-13 for SLOW (fails the Trend Template on real lows) | READY, SLOW selected as a leader; full path accepted; raw parser `low=1.0` | PARTIAL, AAA only; SLOW `DAILY_ROW_INVALID: non-numeric value at session 2026-02-13 (…, row 159 of 260, field low)`; full path rejects (row 159 of 1000) |
+| D1: duplicate of a margin row | 0 excluded defects, none stored | 1 stored: `EXCLUDED_OUTSIDE_SCOPE`, field time, `duplicate bar times (also row 0)`; ticker accepted |
+
+The new file run against `33256b3`: 13 of 22 fail (the other 9 are controls or cases the
+old parser rejected for a different reason).
+
+**Tests (Checked).**
+
+| Command | Python | Result |
+| --- | --- | --- |
+| `python -m pytest -q -W error` | 3.12.3 | 1407 passed (147 s) |
+| `python -m pytest -q -W error` | 3.13.14 | 1407 passed (148 s) |
+| targeted: `test_scoped_history_audit test_scoped_history test_volume_audit_cp2 test_volume_audit_r1r2 test_vendor_basis test_partial_discovery test_discovery test_webull test_g5_integration test_volume_consumers test_volume_lifecycle` | 3.12.3 and 3.13.14 | 290 passed each |
+| `git diff --check` | — | clean |
+
+1407 = 1385 + 22 new (`tests/test_scoped_history_audit.py`). Mutation checks (guard
+removed, scoped suites run, file restored), all caught: booleans converted again; earlier
+accepted coverage ignored; short reply taken as a young listing; coverage read from full
+history only; all-failed build left INCOMPLETE; excluded duplicates not detected; uncapped
+flag always set.
+
+**Source limitation (documented, not resolved).** Webull's bounded reply cannot show where
+a listing begins. On a scoped-only desk a genuinely young listing is now a source failure
+until an uncapped full-history capture of it exists (for example after it has been on the
+watchlist). In the live preview at `9e43eeb`, 8 names were `under a year of bars`; under
+this repair they would be reported as unverified coverage instead (inferred, not re-run).
+No listing date is invented and no provider call is added.
+
+**Remaining acceptance.** Astra's re-audit; the iMac pull, strict suite and one read-only
+scoped build; a scheduled Friday 16:40 build; a regular-session check.

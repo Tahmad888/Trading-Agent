@@ -325,7 +325,8 @@ def test_discovery_liquidity_unavailable_is_a_source_failure_not_a_fallback(tmp_
     log.write_watchlist({"OLD": ["leader scan"]})
     rec = sc.leader_scan_job(src, log, at(day, 16, 40))
     build = json.loads((tmp_path / "watchlist-status.json").read_text())
-    assert rec.discovery["watchlist_build"]["status"] == "INCOMPLETE" and build["stage_counts"] == {
+    # CP3 audit F1: the only candidate failed (liquidity source): FAILED, old list retained.
+    assert rec.discovery["watchlist_build"]["status"] == "FAILED" and build["stage_counts"] == {
         "source_failure:liquidity": 1}
     assert json.loads((tmp_path / "watchlist.json").read_text()) == {"OLD": ["leader scan"]}
 

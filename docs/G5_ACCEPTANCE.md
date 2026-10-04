@@ -126,8 +126,10 @@ Astra's audit**. Details, consumer matrix and section-10 test map:
 ## G5a checkpoint 3 — scoped discovery history (2026-10-04)
 
 Taz's prompt (22:29Z, relayed). Implemented by Claude at `9e43eeb` (parent `ba78ba0`,
-which Astra accepted for CP2); **pending Astra's audit**. Details, dependency inventory and
-section-9 test map: `checkpoints/G5a-cp3-scoped-history.md`.
+which Astra accepted for CP2). Astra's audit of `33256b3` found F1 (a clipped reply became a
+healthy EMPTY), F2 (boolean OHLCV read as 1.0, predating CP3) and D1 (excluded duplicates
+not stored); repaired in the commit after `33256b3`, **pending her re-audit**. Details,
+dependency inventory and section-9 test map: `checkpoints/G5a-cp3-scoped-history.md`.
 
 | Requirement | Code path | Test or host artifact | Result | Remaining limitation |
 | --- | --- | --- | --- | --- |
@@ -139,6 +141,9 @@ section-9 test map: `checkpoints/G5a-cp3-scoped-history.md`.
 | [CP3] Full-history diagnostics keep row, session, field and reason; defects stored sanitized and bounded | `bars.BarRowError`, `VendorHistoryStore.record_defects` | [S] case 2; [P] 21 live `DAILY_ROW_INVALID … at session <date>` (was `DAILY_PROVIDER_UNAVAILABLE`), 27 named gaps | Pass (implementer) | — |
 | [CP3] Discovery evidence never overwrites, clears or revalidates full history; revisions stay visible; `compatible_prices` rule kept | `scoped_current`, `latest(scope)`, `latest_revision`, `webull-discovery-v1` | [S] interleave/restart, revision, cannot-arm tests; [P] live `current` 0 rows | Pass (implementer) | — |
 | [CP3] Old-defect names recover; in-window defects still reject | build path | [P] 48 earlier failures: 29 outside-only, 19 inside, 0 mismatches; preview 227 ranked / 48 leaders / 59 bar failures (was 213 / 45 / 82) | Pass (implementer) | Cloud sandbox, Sunday run; not iMac or a scheduled build |
+| [CP3 audit F1] A clipped reply cannot become a healthy short history: coverage checked against every accepted full and discovery capture of the same instrument (durable, restart-safe); late start without uncapped full-history evidence is unverified; all-failed build is FAILED, list retained | `VendorHistoryStore.coverage`, `coverage_starts`, `VendorBasisSource._short_history`, `scanner._leader_scan_job` | [S] `test_scoped_history_audit` F1 (7 tests: same process, restart, repeat, stale, recovery, window roll, PARTIAL peer, INCOMPLETE control, unverified first-time, capped vs uncapped); mutation checks A2–A5, A7 | **Failed audit at `33256b3`**; Pass (implementer), pending Astra's re-audit | Young listings without an uncapped full capture are now source failures (no extra provider call added) |
+| [CP3 audit F2] Boolean OHLCV refused before conversion in the shared parser | `bars._number`, `bars_from_webull`, `row_defect` | [S] 10 raw-parser cases, numeric/zero-volume control, false-leader control (SLOW became a leader at `33256b3`), outside-scope boolean recorded; mutation A1 | **Failed audit at `33256b3`** (predates CP3); Pass (implementer), pending Astra | — |
+| [CP3 audit D1] Excluded duplicates detected and stored with both row references | `history_scope.classify_daily` | [S] old duplicate stored as `EXCLUDED_OUTSIDE_SCOPE` and ticker ranks; required duplicate rejects; mutation A6 | **Failed audit at `33256b3`**; Pass (implementer), pending Astra | — |
 
 ## Prompt line index
 

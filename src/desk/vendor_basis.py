@@ -58,6 +58,9 @@ class VendorHistoryStore:
                     row_index INTEGER, row_time TEXT, field TEXT, reason TEXT NOT NULL,
                     status TEXT NOT NULL CHECK(status IN ('EXCLUDED_OUTSIDE_SCOPE','REJECTED_REQUIRED_DATA')),
                     evidence_digest TEXT NOT NULL, row_json TEXT, observed_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS coverage_starts (
+                    host TEXT NOT NULL, symbol TEXT NOT NULL, instrument_id TEXT NOT NULL,
+                    session TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(host,symbol,instrument_id,session));
             ''')
             columns = {r[1] for r in db.execute("PRAGMA table_info(observations)")}
             for column in ("scope", "scope_digest"):
@@ -93,8 +96,13 @@ class VendorHistoryStore:
         after = {r[0]:list(r[1:]) for r in basis.daily_history}
         return old[1], sorted(d for d in before.keys() & after.keys() if before[d] != after[d])
 
-    def record(self, host, symbol, at, status, detail, basis=None):
-        """Full-history evidence: the only writer of the ``current`` pointer."""
+    def record(self, host, symbol, at, status, detail, basis=None, *, uncapped_start=False):
+        """Full-history evidence: the only writer of the ``current`` pointer.
+
+        ``uncapped_start``: the provider returned fewer rows than the full request asked
+        for, so nothing older exists there and the capture's first session is where this
+        instrument's history starts (audit F1; the only evidence of a short history).
+        """
         digest = None
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -109,6 +117,9 @@ class VendorHistoryStore:
                     status, detail = "REVISED", "Daily OHLCV revised on " + ",".join(changed)
                 db.execute("INSERT OR IGNORE INTO snapshots VALUES (?,?)", (digest,payload))
                 db.execute("INSERT OR REPLACE INTO current VALUES (?,?,?,?)", (host,symbol,digest,clock(at).isoformat()))
+                if uncapped_start:
+                    db.execute("INSERT OR IGNORE INTO coverage_starts VALUES (?,?,?,?,?)",
+                               (host,symbol,basis.security_id,basis.coverage_start.isoformat(),clock(at).isoformat()))
             db.execute("INSERT INTO observations(host,symbol,at,status,detail,digest,scope) VALUES (?,?,?,?,?,?,?)",
                        (host,symbol,clock(at).isoformat(),status,detail,digest,FULL_HISTORY))
         return {"status":status, "detail":detail, "snapshot":digest}
@@ -183,12 +194,26 @@ class VendorHistoryStore:
                              (host,symbol,FULL_HISTORY,scope)).fetchone()
         return dict(zip(("at","status","detail","snapshot","scope_digest"), row)) if row else None
 
-    def full_coverage_start(self, host, symbol):
-        """First session of the current full-history evidence, if any (prior capture)."""
+    def coverage(self, host, symbol, instrument_id):
+        """What accepted evidence proves about this instrument's daily coverage (audit F1).
+
+        ``earliest``: the first session of any accepted capture (full history or any
+        scope; ``CONSISTENT`` or ``REVISED`` observations, append-only), so a later
+        narrower reply cannot erase it across restarts, window rolls or failed refreshes.
+        ``established``: the session where an uncapped full-history capture showed the
+        history starts, when that is still the earliest accepted session; otherwise None.
+        Only the same instrument ID counts.
+        """
         with closing(sqlite3.connect(self.path)) as db:
-            row = db.execute("SELECT s.payload FROM current c JOIN snapshots s ON s.digest=c.digest "
-                             "WHERE host=? AND symbol=?", (host,symbol)).fetchone()
-        return date.fromisoformat(json.loads(row[0])["coverage_start"]) if row else None
+            earliest = db.execute(
+                "SELECT MIN(json_extract(s.payload,'$.coverage_start')) FROM observations o JOIN snapshots s "
+                "ON s.digest=o.digest WHERE o.host=? AND o.symbol=? AND o.status IN ('CONSISTENT','REVISED') "
+                "AND json_extract(s.payload,'$.security_id')=?", (host,symbol,instrument_id)).fetchone()[0]
+            starts = {r[0] for r in db.execute("SELECT session FROM coverage_starts WHERE host=? AND symbol=? "
+                                               "AND instrument_id=?", (host,symbol,instrument_id))}
+        earliest = date.fromisoformat(earliest) if earliest else None
+        established = earliest if earliest is not None and earliest.isoformat() in starts else None
+        return {"earliest": earliest, "established": established}
 
     def current_snapshot(self, host, symbol, scope=FULL_HISTORY):
         with closing(sqlite3.connect(self.path)) as db:
@@ -260,8 +285,8 @@ def _daily_scoped(frame, metadata, scope, now, host):
     contiguous exchange sessions ending at the scope's cutoff. A gap is never filled
     and never called short history: a first required session missing while older rows
     exist is a gap, and a capped response that did not reach the start is truncated.
-    A contiguous series with no older row is a genuinely short history; the existing
-    260-row eligibility rule decides it.
+    A reply that starts late with no older row is NOT taken as a young listing by
+    itself: ``VendorBasisSource._short_history`` decides it from accepted evidence.
     """
     received = _raw(frame, metadata, "D", now, host)
     local = frame.index.tz_convert(ET)
@@ -475,7 +500,8 @@ class VendorBasisSource:
                 frame = (clean[symbol].tail(count) if timespan == "D" else wanted[symbol]).copy()
                 _raw(frame,metadata[symbol],timespan,now,self.host)
                 frame.attrs["bar_provenance"] = self._provenance(basis, timespan)
-                self.store.record(self.host,symbol,now,"CONSISTENT","Vendor price consistency; action completeness unknown",basis)
+                self.store.record(self.host,symbol,now,"CONSISTENT","Vendor price consistency; action completeness unknown",basis,
+                                  uncapped_start=len(daily[symbol]) < 1000)
                 self._attach_volume(frame, symbol, metadata[symbol], timespan, now)
                 out[symbol] = frame
             except BarDataError as exc:
@@ -497,6 +523,25 @@ class VendorBasisSource:
         for symbol, reason in self.last_errors.items():
             self.store.record(self.host,symbol,self._clock(),"UNAVAILABLE",reason)
         return out
+
+    def _short_history(self, symbol, scope, first):
+        """A reply starting after the required start is short history only when accepted
+        evidence says so (audit F1). Earlier accepted evidence for the same instrument
+        proves the missing sessions exist; without an uncapped full-history capture that
+        starts at ``first``, where the listing begins is not established. Both are source
+        failures; no listing date is inferred from the reply's own shape."""
+        try:
+            known = self.store.coverage(self.host, symbol, scope.instrument_id)
+        except sqlite3.Error:
+            raise BarDataError("SCOPED_COVERAGE_UNVERIFIED: coverage evidence unavailable") from None
+        if known["earliest"] is not None and known["earliest"] < first:
+            missing = sessions(scope.required_start, first)[:-1] if known["earliest"] <= scope.required_start else \
+                sessions(known["earliest"], first)[:-1]
+            raise BarDataError(f"SCOPED_HISTORY_INCOMPLETE: accepted evidence for this instrument starts "
+                               f"{known['earliest']}; the reply starts {first} (known sessions missing: {len(missing)})")
+        if known["established"] != first:
+            raise BarDataError(f"SCOPED_COVERAGE_UNVERIFIED: the reply starts {first}, after the required start "
+                               f"{scope.required_start}, and no accepted uncapped history shows the listing starts there")
 
     def discovery_bars(self, symbols, *, category, liquidity_through=None):
         """Daily bars for the weekly leader build only, on an explicit discovery scope.
@@ -558,11 +603,8 @@ class VendorBasisSource:
                     raise BarDataError(reason)
                 clean[symbol] = _daily_scoped(daily[symbol], metadata[symbol], scope, self._clock(), self.host)
                 first = clean[symbol].index[0].tz_convert(ET).date()
-                known = self.store.full_coverage_start(self.host, symbol) if first > scope.required_start else None
-                if known is not None and known < first:
-                    # Earlier evidence proves older rows exist: an incomplete reply, not a young listing.
-                    raise BarDataError(f"SCOPED_HISTORY_INCOMPLETE: full-history evidence starts {known}, "
-                                       f"the scoped reply starts {first}")
+                if first > scope.required_start:
+                    self._short_history(symbol, scope, first)
             except BarDataError as exc:
                 self.last_errors[symbol] = str(exc)
             except MALFORMED as exc:

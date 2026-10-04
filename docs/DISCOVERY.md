@@ -49,6 +49,15 @@ and the same old row still rejects them, now with its session, field and reason.
 adapter without scoped requests falls back to the unchanged full path and the build
 report says so (`history_scope.path`).
 
+After Astra's audit of that checkpoint, a reply that starts after the window's first
+session is never taken as a young listing by itself. If any earlier accepted capture of
+the same instrument (full or discovery) started earlier, the reply is incomplete; if no
+accepted uncapped full-history capture shows the history starts there, coverage is
+unverified. Both are per-ticker source failures, so a clipped reply cannot remove a
+leader by making it look new. When every candidate fails its source data, the build is
+FAILED and the previous list stays, with its age shown. Boolean OHLCV values and
+duplicate rows are rejected inside the window and recorded outside it.
+
 `scan-log.jsonl` discovery fields report source labels, per-source failures and user
 preparation. `watchlist-status.json` records the latest weekly attempt and last
 successful refresh. READY and EMPTY are successful builds; EMPTY keeps core/user

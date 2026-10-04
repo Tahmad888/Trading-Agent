@@ -313,7 +313,8 @@ def test_incomplete_weekly_build_without_valid_leaders_retains_old_list(tmp_path
     source=Fake(frames(day),lists={"MONTH_3":[{"symbol":"MISSING","price":100}]})
     rec=sc.leader_scan_job(source,log,now(hour=16,minute=40,day=day))
     status=rec.discovery["watchlist_build"]
-    assert rec.error and status["status"]=="INCOMPLETE" and status["retained"] and status["generation"]==0
+    # CP3 audit F1: the only candidate failed its source data: FAILED, old list retained.
+    assert rec.error and status["status"]=="FAILED" and status["retained"] and status["generation"]==0
     assert "OLD" in json.loads((tmp_path/"watchlist.json").read_text())
 
 
