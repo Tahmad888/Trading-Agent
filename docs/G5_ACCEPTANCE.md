@@ -87,7 +87,9 @@ Choices and their evidence labels are listed after the matrix.
 
 Taz's handoff "G5 volume and discovery follow-up" (01:47Z), checkpoint 1 only. Producer
 and probe exist; no consumer uses them (scanner integration is checkpoint 2). Details:
-`checkpoints/G5a-alpaca-volume.md`, contract `ALPACA_VOLUME.md`. Pending Astra's audit.
+`checkpoints/G5a-alpaca-volume.md`, contract `ALPACA_VOLUME.md`. Astra's audit of `2d97ea6`
+found F1–F3 (rows marked `Audit Astra`); repaired in the audit-closure commit, pending
+her re-audit.
 
 | Requirement | Code path | Test or host artifact | Result | Remaining limitation |
 | --- | --- | --- | --- | --- |
@@ -95,7 +97,10 @@ and probe exist; no consumer uses them (scanner integration is checkpoint 2). De
 | [G5a producer] Auth/entitlement/rate limit stop the run; six-request cap; remaining pages are incomplete | `RequestBudget`, `fetch` | [S] 401/403/429, truncation, loop and six-request tests | Pass | — |
 | [G5a producer] Typed per-ticker evidence; one bad ticker never erases others | `VolumeObservation`, `BatchResult` | [S] missing-symbol and 11 malformed-row variants | Pass | Identity is symbol-level only |
 | [G5a producer] `split` and `raw` never share a basis; volumes retained as returned | `share_basis_id`, `ep_volume_component` | [S] raw/split tests; offline NVDA 2024-06-10 split fixture | Pass | No real Alpaca split-window check run |
-| [G5a producer] Cache by feed/adjustment/identity/timeframe/bounds; same content reused, changed content revised and invalidates an earlier result | `VolumeCache`, `revalidate` | [S] reuse, revision, identity-change, clock and failure-store tests | Pass | Consumers do not yet check it (checkpoint 2) |
+| [G5a producer] Cache by feed/adjustment/identity/timeframe/bounds; same content reused, changed content revised and invalidates an earlier result | `VolumeCache`, `revalidate` | [S] reuse, revision, identity-change, clock and failure-store tests | **Failed audit at `2d97ea6`** (F1, F2, F3 below); Pass after the repair | Consumers do not yet check it (checkpoint 2) |
+| [Audit Astra F1] An active auth/entitlement/rate-limit stop also blocks cached returns; a recorded stop survives restart until a successful refresh | `AlpacaVolumeClient.fetch`, `VolumeCache.record_stop`/`eligible` | [S] `test_alpaca_volume_audit::test_f1_*` (401, 403, 429; daily and RTH) | Pass (fails on `2d97ea6`) | — |
+| [Audit Astra F2] A failed latest refresh (ticker or request level, identity change) stays unavailable across restart; healthy tickers stay usable; a successful refresh, even unchanged, restores it; order by sequence | `VolumeCache` events log, `fetch(reuse=True)` cache-only | [S] `test_alpaca_volume_audit::test_f2_*` | Pass (fails on `2d97ea6`) | A `2d97ea6` cache has no events, so nothing in it is eligible |
+| [Audit Astra F3] The 0.5 threshold comes from the EP card at calculation and revalidation; no caller override; altered stored results and card changes require requalification | `approved_rule`, `EPVolumeComponent` validator, `revalidate` | [S] `test_alpaca_volume_audit::test_f3_*` | Pass (fails on `2d97ea6`) | Rule version is the whole EP card fingerprint, so any card edit requalifies |
 | [G5a calc] 50 prior exchange sessions, entry excluded, 09:30+09:45 RTH bars, Decimal, exact 0.5 boundary, DST/holidays/short session | `ep_volume_component`, `prior_sessions` | [S] 49 vs 50, gap, entry exclusion, stale, DST, boundary tests; [P] NVDA/SPY/QQQ/AAPL replay for 2026-10-02 (all available; ratios 0.246/0.120/0.130/0.079) | Pass | Volume component only; not setup qualification |
 
 ## Prompt line index

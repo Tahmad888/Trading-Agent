@@ -254,3 +254,6 @@ complete in two requests. Record: `checkpoints/G5a-alpaca-volume.md`; contract:
 **pending**: Astra's audit of this checkpoint, checkpoints 2 (consumer integration,
 per-ticker watchlist failures) and 3 (scoped history validation), then actual-iMac
 acceptance at the resulting commit. Step 09 does not resume from this checkpoint.
+Astra's audit of `2d97ea6` (relayed 2026-10-04 06:07Z) found three cache/threshold
+defects (F1–F3); the audit-closure commit repairs them with regressions and waits for
+her re-audit (details in `checkpoints/G5a-alpaca-volume.md`).

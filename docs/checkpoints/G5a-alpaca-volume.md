@@ -2,7 +2,9 @@
 
 2026-10-04. Implementer: Claude (cloud container). Auditor: Astra. Requested by Taz
 ("Claude handoff: G5 volume and discovery follow-up", 01:47Z): implement checkpoint 1
-only, verify, push and stop for Astra's audit. Trader-day step: **watch**. Nothing here
+only, verify, push and stop for Astra's audit. **Status:** Astra's audit of `2d97ea6`
+(2026-10-04 06:07Z relay) did not sign off; her findings F1–F3 are repaired in the
+audit-closure commit (section at the end), pending her re-audit. Trader-day step: **watch**. Nothing here
 is Astra's approval. Checkpoints 2 and 3, Step 09 and any iMac change are not started.
 
 ## Before-code record
@@ -58,7 +60,7 @@ test (`tests/test_native_volume.py`).
 | Stale observation despite fresh receipt | `test_stale_observations_fail_despite_a_fresh_receipt`, `test_receipt_before_the_intervals_complete_is_refused` |
 | Failed auth/entitlement | `test_auth_entitlement_and_rate_limit_stop_the_run` (401, 403, 429) |
 | Truncation | `test_remaining_pagination_is_incomplete_not_a_truncated_success`, `test_probe_never_exceeds_six_requests`, `test_pagination_loop_is_refused` |
-| Same-content cache reuse | `test_same_content_is_reused_without_a_request` |
+| Same-content cache reuse | `test_same_content_is_reused_without_a_request` (the `2d97ea6` reuse path was defective: F1, F2 below) |
 | Changed content | `test_changed_content_is_a_revision_and_invalidates_an_earlier_result` |
 | 49 versus 50 sessions | `test_exactly_50_sessions_pass_and_49_fail`, `test_gap_inside_the_window_is_not_zero_filled` |
 | Entry-day exclusion | `test_entry_session_row_is_excluded_from_the_baseline` |
@@ -140,3 +142,38 @@ pass strict.
   (used to refuse earlier daily receipts).
 - Alpaca's default symbol mapping (no `asof`) is acceptable for these four tickers'
   2026 history; any rename would need an explicit identity check.
+
+## Audit closure (Astra's audit of 2d97ea6, 2026-10-04)
+
+Astra reproduced three defects with synthetic probes against `2d97ea6`; Claude
+reproduced all three with her script before changing code (same outputs). Nothing
+else in checkpoint 1 changed: no thresholds, consumers, risk, tickets or provider calls.
+
+| Finding | Defect at `2d97ea6` | Fix | Regressions (`tests/test_alpaca_volume_audit.py`) |
+| --- | --- | --- | --- |
+| F1 (P2) | `fetch(reuse=True)` returned cached data before checking `self.stopped`, so a 401/403/429 stop could be bypassed | The active run stop is checked first on every path; a stop is also persisted as a `STOP` event, so after a restart every earlier success is ineligible until that key is refreshed successfully | `test_f1_active_stop_refuses_cached_daily_and_rth` (401, 403, 429; daily and RTH caches populated), `test_f1_recorded_stop_survives_restart_until_a_successful_refresh` (×3) |
+| F2 (P2) | Failures were logged but `current()` ignored them; after a restart an earlier good snapshot came back `COMPLETE` | Append-only `events` log (`OK`/`FAILED`/`STOP`) ordered by sequence; eligibility = latest event for the ticker/key is `OK` and no later `STOP`. Unchanged successful refreshes add `OK` and restore eligibility. Snapshots are kept. `reuse=True` is cache-only (never sends a request) and reports each ticker's reason | `test_f2_failed_refresh_is_not_forgotten_across_restart_until_recovery` (healthy → bad SPY → reuse → restart/reuse → unchanged recovery at the same receipt clock → reuse), `test_f2_missing_ticker_on_refresh_stays_unavailable`, `test_f2_request_level_failure_is_persisted` (transport, HTTP), `test_f2_identity_change_is_persisted`, `test_f2_reuse_never_sends_a_request`; auth/entitlement covered by the F1 tests |
+| F3 (P2) | `ep_volume_component(threshold=...)` let a caller relax 0.5 under the same policy id; `revalidate` trusted the stored threshold | No threshold parameter; `approved_rule()` reads the EP card's `early_volume` and fingerprint at every calculation and revalidation. The component records `rule_version`; its validator rejects a threshold other than the approved one and a pass flag that does not follow from its numbers. `revalidate` refuses a changed rule (`VOLUME_RULE_CHANGED_REQUALIFY`) or a result that differs from a fresh calculation (`VOLUME_RESULT_MISMATCH`). The 0.5 rule is unchanged | `test_f3_caller_cannot_supply_a_threshold`, `test_f3_unsupported_threshold_cannot_claim_the_policy` (0.001, 0.9), `test_f3_stored_altered_result_is_rejected_on_revalidation`, `test_f3_approved_rule_change_requires_fresh_qualification`, `test_f3_legitimate_boundary_unchanged` |
+
+All 18 regressions fail on `2d97ea6` (run against a checkout of that commit) and pass on
+the repair. `test_f3_legitimate_boundary_unchanged` is a control: on `2d97ea6` it fails
+only because `rule_version` did not exist; its 0.5 boundary assertions held there too.
+Astra's script on the repaired tree: F1 `reuse_status=UNAVAILABLE`,
+`all_volume_components_available_again=false`; F2 `reuse_status=PARTIAL`,
+`reuse_failures={SPY: NONFINITE_OR_NEGATIVE_VOLUME}`; F3 the call with `threshold=`
+raises `TypeError`.
+
+Provider evidence: the 2026-10-04 01:57Z historical run keeps its stated scope. It
+exercised fresh fetches only (no reuse path), and its `volume-cache.sqlite` predates the
+event log, so none of it is eligible under the repaired cache. No new provider call was
+made for this closure.
+
+### Verification (cloud container, audit-closure commit)
+
+| Python | `test_alpaca_volume.py` + `test_alpaca_volume_audit.py` | `python -m pytest -q -W error` |
+| --- | --- | --- |
+| 3.12.3 | 70 passed | **1212 passed** (1194 + 18 regressions) |
+| 3.13.14 | 70 passed | **1212 passed** |
+
+Regressions against a `2d97ea6` checkout: 18 failed. `git diff --cached --check`: clean.
+Not run on the iMac or Python 3.14. Nothing here is Astra's approval.

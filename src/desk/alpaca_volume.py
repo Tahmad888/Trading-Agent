@@ -324,7 +324,14 @@ def _symbol_bars(rows, req: BarRequest) -> tuple[tuple[str, Decimal], ...]:
 # ------------------------------------------------------------------ cache ----
 
 class VolumeCache:
-    """Cache by feed, adjustment, identity, timeframe and bounds; keeps revisions."""
+    """Cache by feed, adjustment, identity, timeframe and bounds; keeps revisions.
+
+    Eligibility is decided by an append-only event log ordered by sequence, not by
+    receipt time: a ticker's cached snapshot is reusable only when its latest event
+    for that request key is a successful refresh and no provider stop (auth,
+    entitlement, rate limit) was recorded after it. Failures never delete earlier
+    snapshots; those stay as audit history.
+    """
 
     def __init__(self, path):
         self.path = Path(path)
@@ -338,8 +345,9 @@ class VolumeCache:
                     first_received TEXT NOT NULL, last_received TEXT NOT NULL, revision INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS revisions(sequence INTEGER PRIMARY KEY, key TEXT, at TEXT,
                     old_digest TEXT, new_digest TEXT, changed TEXT);
-                CREATE TABLE IF NOT EXISTS failures(sequence INTEGER PRIMARY KEY, key TEXT, symbol TEXT,
-                    at TEXT, code TEXT);
+                CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT,
+                    symbol TEXT, at TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('OK','FAILED','STOP')),
+                    code TEXT, digest TEXT);
             ''')
 
     @staticmethod
@@ -365,11 +373,15 @@ class VolumeCache:
             old = db.execute("SELECT c.digest,c.last_received,c.revision,s.payload FROM current c "
                              "JOIN snapshots s ON s.digest=c.digest WHERE c.key=?", (key,)).fetchone()
             db.execute("INSERT OR IGNORE INTO snapshots VALUES (?,?)", (obs.content_digest, payload))
+            if old is not None and clock(old[1]) > clock(obs.received_at):
+                raise AlpacaVolumeError("CLOCK_MOVED_BACKWARDS")
+            # The success event is what makes this key eligible again, even when the
+            # content is unchanged; its sequence orders it after any earlier failure.
+            db.execute("INSERT INTO events(key,symbol,at,state,code,digest) VALUES (?,?,?,'OK',NULL,?)",
+                       (key, obs.requested_symbol, at, obs.content_digest))
             if old is None:
                 db.execute("INSERT INTO current VALUES (?,?,?,?,0)", (key, obs.content_digest, at, at))
                 return {"status": "NEW", "revision": 0, "changed_bars": []}
-            if clock(old[1]) > clock(obs.received_at):
-                raise AlpacaVolumeError("CLOCK_MOVED_BACKWARDS")
             if old[0] == obs.content_digest:
                 db.execute("UPDATE current SET last_received=? WHERE key=?", (at, key))
                 return {"status": "UNCHANGED", "revision": old[2], "changed_bars": []}
@@ -384,14 +396,37 @@ class VolumeCache:
 
     def record_failure(self, req: BarRequest, symbol: str, code: str, at: datetime):
         with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute("INSERT INTO failures(key,symbol,at,code) VALUES (?,?,?,?)",
+            db.execute("INSERT INTO events(key,symbol,at,state,code,digest) VALUES (?,?,?,'FAILED',?,NULL)",
                        (self.key(req, symbol), symbol, clock(at).isoformat(), code))
 
-    def current(self, req: BarRequest, symbol: str) -> VolumeObservation | None:
+    def record_stop(self, code: str, at: datetime):
+        """A provider stop makes every earlier success ineligible until refreshed."""
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("INSERT INTO events(key,symbol,at,state,code,digest) VALUES (NULL,NULL,?,'STOP',?,NULL)",
+                       (clock(at).isoformat(), code))
+
+    def eligible(self, req: BarRequest, symbol: str) -> tuple[VolumeObservation | None, str | None]:
+        """(snapshot, None) when reusable now; otherwise (None, the reason)."""
+        key = self.key(req, symbol)
         with closing(sqlite3.connect(self.path)) as db:
-            row = db.execute("SELECT s.payload FROM current c JOIN snapshots s ON s.digest=c.digest WHERE c.key=?",
-                             (self.key(req, symbol),)).fetchone()
-        return VolumeObservation.model_validate_json(row[0]) if row else None
+            latest = db.execute("SELECT sequence,state,code,digest FROM events WHERE key=? "
+                                "ORDER BY sequence DESC LIMIT 1", (key,)).fetchone()
+            stop = db.execute("SELECT sequence,code FROM events WHERE state='STOP' "
+                              "ORDER BY sequence DESC LIMIT 1").fetchone()
+            row = db.execute("SELECT s.payload,c.digest FROM current c JOIN snapshots s ON s.digest=c.digest "
+                             "WHERE c.key=?", (key,)).fetchone()
+        if latest is None:
+            return None, "NOT_CACHED"
+        if latest[1] != "OK":
+            return None, latest[2]
+        if stop is not None and stop[0] > latest[0]:
+            return None, "PROVIDER_STOP_AFTER_LAST_SUCCESS:" + stop[1]
+        if row is None or row[1] != latest[3]:
+            return None, "CACHE_STATE_INCONSISTENT"
+        return VolumeObservation.model_validate_json(row[0]), None
+
+    def current(self, req: BarRequest, symbol: str) -> VolumeObservation | None:
+        return self.eligible(req, symbol)[0]
 
     def revisions(self, req: BarRequest, symbol: str) -> list[dict]:
         with closing(sqlite3.connect(self.path)) as db:
@@ -428,18 +463,33 @@ class AlpacaVolumeClient:
         failures = {s: code for s in req.symbols}
         if self.cache is not None:
             at = self._now()
+            if code in STOP_CODES:
+                self.cache.record_stop(code, at)
             for s in req.symbols:
                 self.cache.record_failure(req, s, code, at)
         return BatchResult(req, "UNAVAILABLE", {}, failures, code, tuple(issues), tuple(pages), tuple(raw))
 
+    def _reuse(self, req: BarRequest) -> BatchResult:
+        """Cache only: never sends a request. Each ticker is eligible or carries its reason."""
+        observations, failures = {}, {}
+        for symbol in req.symbols:
+            obs, reason = self.cache.eligible(req, symbol)
+            if obs is None:
+                failures[symbol] = reason
+            else:
+                observations[symbol] = obs
+        status = "COMPLETE" if not failures else "PARTIAL" if observations else "UNAVAILABLE"
+        return BatchResult(req, status, observations, failures, None if observations else "NO_ELIGIBLE_CACHE",
+                           from_cache=True, cache_status={s: {"status": "REUSED"} for s in observations})
+
     def fetch(self, req: BarRequest, *, reuse: bool = False) -> BatchResult:
-        if reuse and self.cache is not None:
-            cached = {s: self.cache.current(req, s) for s in req.symbols}
-            if all(cached.values()):
-                return BatchResult(req, "COMPLETE", cached, {}, from_cache=True,
-                                   cache_status={s: {"status": "REUSED"} for s in req.symbols})
+        # An active run stop outranks every path, the cached one included.
         if self.stopped:
             return self._unavailable(req, "RUN_STOPPED_AFTER_" + self.stopped)
+        if reuse:
+            if self.cache is None:
+                raise AlpacaVolumeError("NO_CACHE_CONFIGURED")
+            return self._reuse(req)
         sent = self._now()
         if clock(req.end) > clock(sent) - HISTORICAL_DELAY:
             return self._unavailable(req, "END_NOT_15_MINUTES_OLD")
@@ -546,8 +596,18 @@ class ComparisonPolicy:
 
 
 POLICY = ComparisonPolicy()
-# The EP card's own parameter (0.5); never redefined here.
-THRESHOLD = Decimal(str(CARDS["5_qullamaggie_episodic_pivot"].p("early_volume")))
+EP_CARD = "5_qullamaggie_episodic_pivot"
+
+
+def approved_rule() -> tuple[Decimal, str]:
+    """The EP card's current early-volume threshold (0.5) and the card fingerprint.
+
+    Read at every calculation and revalidation; callers cannot supply a threshold,
+    and a stored result never selects its own rule. An approved card change
+    (new fingerprint) requires fresh qualification.
+    """
+    card = CARDS[EP_CARD]
+    return Decimal(str(card.p("early_volume"))), card.fingerprint()
 SCOPE = "volume component only; not setup qualification, signal activation or profitability evidence"
 
 
@@ -567,10 +627,22 @@ class EPVolumeComponent(BaseModel):
     prior50_average: Decimal
     ratio: Decimal
     threshold: Decimal
+    rule_version: Text  # EP card fingerprint the threshold came from
     threshold_met: bool
     daily_digest: Text
     rth_digest: Text
     scope: Literal["volume component only; not setup qualification, signal activation or profitability evidence"] = SCOPE
+
+    @model_validator(mode="after")
+    def approved_and_consistent(self):
+        # An unsupported threshold cannot claim this policy; any experiment needs
+        # its own non-eligible policy id. The pass flag must follow from the numbers.
+        if self.threshold != approved_rule()[0]:
+            raise ValueError("Threshold is not the approved EP rule for this policy")
+        if self.prior_count != len(self.prior_sessions) or self.threshold_met != (
+                self.first30_volume * self.prior_count >= self.threshold * self.prior50_total):
+            raise ValueError("Volume result is inconsistent with its inputs")
+        return self
 
     def report(self) -> dict:
         data = self.model_dump(mode="json")
@@ -588,8 +660,8 @@ def prior_sessions(entry: date, count: int = POLICY.sessions) -> tuple[date, ...
     return tuple(reversed(days))
 
 
-def ep_volume_component(entry: date, daily: VolumeObservation, rth: VolumeObservation, *,
-                        threshold: Decimal = THRESHOLD) -> EPVolumeComponent:
+def ep_volume_component(entry: date, daily: VolumeObservation, rth: VolumeObservation) -> EPVolumeComponent:
+    threshold, rule_version = approved_rule()
     if daily.channel != "native-daily" or rth.channel != "rth-m15":
         raise AlpacaVolumeError("WRONG_CHANNEL")
     if daily.adjustment != rth.adjustment or daily.share_basis_id != rth.share_basis_id:
@@ -631,7 +703,7 @@ def ep_volume_component(entry: date, daily: VolumeObservation, rth: VolumeObserv
         numerator_definition=rth.definition_id, denominator_definition=daily.definition_id,
         share_basis_id=daily.share_basis_id, first30_intervals=tuple((_utc(s), by_stamp[s]) for s in needed),
         first30_volume=first30, prior_sessions=prior, prior_count=len(prior), prior50_total=total,
-        prior50_average=average, ratio=ratio, threshold=threshold, threshold_met=met,
+        prior50_average=average, ratio=ratio, threshold=threshold, rule_version=rule_version, threshold_met=met,
         daily_digest=daily.content_digest, rth_digest=rth.content_digest)
 
 
@@ -639,8 +711,10 @@ def revalidate(component: EPVolumeComponent, daily: VolumeObservation, rth: Volu
     """A revised input never leaves an earlier volume result intact."""
     if (daily.content_digest, rth.content_digest) != (component.daily_digest, component.rth_digest):
         raise AlpacaVolumeError("VOLUME_EVIDENCE_REVISED")
-    if ep_volume_component(component.entry_session, daily, rth, threshold=component.threshold) != component:
-        raise AlpacaVolumeError("VOLUME_EVIDENCE_REVISED")
+    if (component.threshold, component.rule_version) != approved_rule():
+        raise AlpacaVolumeError("VOLUME_RULE_CHANGED_REQUALIFY")
+    if ep_volume_component(component.entry_session, daily, rth) != component:
+        raise AlpacaVolumeError("VOLUME_RESULT_MISMATCH")
 
 
 def evaluate(entry: date, daily: BatchResult, rth: BatchResult) -> dict[str, EPVolumeComponent | str]:

@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from desk import alpaca_probe
-from desk.alpaca_volume import (MAPPING, POLICY, THRESHOLD, AlpacaVolumeClient, AlpacaVolumeError, BarRequest,
+from desk.alpaca_volume import (MAPPING, POLICY, AlpacaVolumeClient, AlpacaVolumeError, BarRequest,
                                 HttpReply, RequestBudget, VolumeCache, VolumeObservation, definition_id,
                                 ep_volume_component, evaluate, prior_sessions, revalidate, share_basis_id)
 from desk.calendar import ET, session, sessions
@@ -141,7 +141,7 @@ def test_complete_reply_gives_each_ticker_a_volume_component():
     c = out["SPY"]
     assert c.prior_count == 50 and c.prior_sessions[0] == date(2026, 7, 23) and c.prior_sessions[-1] == date(2026, 10, 1)
     assert c.prior50_average == Decimal(1000) and c.first30_volume == Decimal(500)
-    assert c.ratio == Decimal("0.5") and c.threshold == THRESHOLD == Decimal("0.5") and c.threshold_met
+    assert c.ratio == Decimal("0.5") and c.threshold == Decimal("0.5") and c.threshold_met
     assert c.first30_intervals == (("2026-10-02T13:30:00Z", Decimal(300)), ("2026-10-02T13:45:00Z", Decimal(200)))
     assert c.policy == POLICY.id and c.numerator_definition != c.denominator_definition
 
@@ -477,7 +477,8 @@ def test_failures_are_kept_per_ticker_in_the_cache(tmp_path):
     import sqlite3
     from contextlib import closing
     with closing(sqlite3.connect(tmp_path / "v.db")) as db:
-        assert db.execute("SELECT symbol, code FROM failures").fetchall() == [("QQQ", "SYMBOL_MISSING")]
+        assert db.execute("SELECT symbol, state, code FROM events ORDER BY sequence").fetchall() == [
+            ("SPY", "OK", None), ("QQQ", "FAILED", "SYMBOL_MISSING")]
 
 
 # ------------------------------------------------------------ probe / scope ----

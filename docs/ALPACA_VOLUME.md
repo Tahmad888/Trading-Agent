@@ -53,7 +53,11 @@ starting 09:30 and 09:45 ET on the entry session; denominator is the mean of the
 `native-daily` volumes of the 50 exchange sessions before the entry session. Both must
 be `split`, same identity record, same share basis. The two definitions stay distinct;
 this is not a claim that they cover the same trades. The threshold is the EP card's own
-`early_volume` parameter (0.5), compared exactly as `first30 × 50 ≥ 0.5 × total`.
+`early_volume` parameter (0.5), compared exactly as `first30 × 50 ≥ 0.5 × total`. It is
+read from the card at every calculation and revalidation (`approved_rule()`); callers
+cannot pass a threshold (F3). Each result records the card fingerprint as
+`rule_version`, and a result whose threshold is not the approved one cannot be built
+under this policy id. An approved card change requires fresh qualification.
 
 Unavailable when: fewer than the 50 required sessions (no zero fill, no carry-forward),
 either 09:30/09:45 bar missing, the RTH receipt earlier than 15 minutes after 10:00 ET,
@@ -67,12 +71,34 @@ or profitability evidence.
 ### Cache and revisions (`VolumeCache`, SQLite)
 
 Keyed by feed, adjustment, symbol, timeframe and exact bounds. Same content is
-`UNCHANGED` (only the last-received time moves; `fetch(reuse=True)` serves it with no
-request). Changed content is `REVISED`, with the changed bar timestamps and a revision
-counter. A receipt older than the stored one is refused. Per-ticker failures are stored.
+`UNCHANGED` (only the last-received time moves); changed content is `REVISED`, with
+the changed bar timestamps and a revision counter. A receipt older than the stored one
+is refused. Snapshots are never deleted; they stay as audit history.
+
+Eligibility (repaired after Astra's audit of `2d97ea6`, findings F1 and F2) comes from an
+append-only `events` log ordered by sequence, not by receipt time:
+
+- every successful refresh of a ticker adds `OK`, even when the content is unchanged;
+- every per-ticker failure (malformed or missing ticker, identity change, clock
+  regression) and every request-level failure (HTTP, transport, envelope, pagination,
+  budget) adds `FAILED` for each affected ticker;
+- an authentication, entitlement or rate-limit stop adds `STOP` as well.
+
+A cached snapshot is eligible only when that ticker's latest event for that request key
+is `OK` and no `STOP` was recorded after it. A failed latest refresh therefore stays
+unavailable across restarts until a later successful refresh; healthy tickers in the
+same request stay usable. `fetch(reuse=True)` is cache-only: it never sends a request
+and returns each ticker's snapshot or its reason (`NOT_CACHED`, the failure code, or
+`PROVIDER_STOP_AFTER_LAST_SUCCESS:<code>`). While a client has an active run stop, every
+fetch, the cached path included, returns `RUN_STOPPED_AFTER_<code>`. There is no
+archival replay mode. A cache written by `2d97ea6` has no events, so nothing in it is
+eligible.
+
 `revalidate()` refuses an earlier `EPVolumeComponent` whose input digests no longer
-match, so a revision cannot leave an old volume result standing. Accepting
-`adjustment=split` is not taken as complete, independent corporate-action coverage.
+match (`VOLUME_EVIDENCE_REVISED`), whose threshold or rule version differs from the
+current EP card (`VOLUME_RULE_CHANGED_REQUALIFY`), or whose stored result differs from a
+fresh calculation (`VOLUME_RESULT_MISMATCH`). Accepting `adjustment=split` is not taken
+as complete, independent corporate-action coverage.
 
 ## Planned consumers (checkpoint 2, not wired)
 
