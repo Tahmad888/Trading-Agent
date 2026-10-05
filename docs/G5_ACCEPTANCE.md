@@ -335,14 +335,33 @@ Checkpoint 3 remain pending.** Step 09 remains paused. No trading activation.
 | CP3 iMac baseline/scoped preview | [H] Taz supplied b747904, Python 3.14.7, 1410 strict tests (200.15s); `/Users/taz/Desktop/g5a-cp3-imac-4nghj27p`: 379/379 accounted, 227 ranked, 48 leaders, PARTIAL, 81 disclosed source failures; Webull 54/70, Alpaca 3/6; 298 symbols, two native-daily SIP pages exhausted. Astra has not opened those iMac files. | Accepted for b747904 and historical Friday cutoff; new quote commit host check still pending |
 | Existing host TLS/CA | [H] Taz's 2026-10-03 report: SSL_CERT_FILE set/existing/matches certifi, certificate and hostname required, Webull sandbox and Massive TLS PASS. | Accepted unaffected baseline evidence; new tastytrade HTTPS/WSS host check pending |
 | Massive dividend/split observations | [H] Taz's 2026-10-04 00:28–00:41Z reports in `/Users/taz/Desktop/g5-volume-urzfS2`: SPY/QQQ two dividends each; NFLX 2025-11-17 10:1 event, 50 post-split sessions PASS and crossing window EXPECTED_REFUSAL. One unrelated AXIAp identity issue isolated. SPY ex-date daily/minute volume disagreement was measured, not explained or waived. | Accepted scoped observations; no universal action completeness/volume claim |
-| Child 2 quote implementation | [S] `tastytrade_quotes`, `tastytrade_transport`, `quote_risk`, `quote_check`; current checkpoint lists final strict result. Actual provider identity/times, caller-source check, per-symbol failures, health/price final fence, closed-market evidence limit; no Candle volume. | Implemented/offline verified, pending child 3 review |
-| Child 3 code review | This checkpoint is built and self-checked by Astra following Claude's pause. Self-review is not independent second-chair approval. | Pending |
+| Child 2 quote implementation | [S] Astra's `78da588`: `tastytrade_quotes`, `tastytrade_transport`, `quote_risk`, `quote_check`; provider identity/times, caller-source check, per-symbol failures, health/price final fence, closed-market evidence limit; no Candle volume. Child 3 review found F1–F10 (below). | Implemented by Astra; defects repaired in child 3 |
+| Child 3 code review and repairs | [S] Claude's independent review of `78da588` (13 synthetic probes, 18 targeted mutations, 1475 strict on Python 3.12.3 and 3.13.14) found F1–F10; Astra reproduced F1–F8. Claude implemented the repairs (`checkpoints/G5a-cp3-child3-quote-repairs.md`); dispositions in the table below. | Implemented by Claude; **independent sign-off pending Astra's audit** |
 | Child 4 current-commit iMac | Pull reviewed quote commit, install `.[dev,quotes]`, strict suite, private credentials and read-only diagnostic; see quote handoff. | Pending |
 | Child 5 actual regular-session quotes/recovery | SPY/QQQ/NVDA and real SPY call/put metadata; source times versus simultaneous independent observations; quote side freshness, updates, missing fields, disconnect/recovery. | Pending; closed-session data cannot close it |
 | Child 6 actual Friday 16:40 build | Latest Friday price session; prior Thursday finalized SIP liquidity. Existing deterministic calendar/cutoff tests are reused. | Deterministic tests only; actual scheduled-time read-only build pending |
 | Child 6 overnight revisions/dividend integrated workflow | Existing production-component revision-versus-gap, dividend rebuild, restart/provider failure and final approval races reused in strict suite. | Automated evidence retained; required actual-host overnight comparison not supplied |
 | Human-facing actual ticket/full inputs | G4 fixtures are not a real ticket. Account/market context, full option ContractBook/open interest/valuation where required and planner dependencies are not fabricated by the quote adapter. | Pending; no real approval/order claim |
 | Immediate consolidated intraday volume | Existing historical SIP delivery remains delayed; tastytrade Candle volume excluded. Existing EP guards/50 sessions/0.5 unchanged. | Unresolved; quote support does not resolve it |
+
+### Child 3 dispositions (F1–F10)
+
+Code-closed = production code changed and a regression detects removal of the fix.
+Nothing below is provider, iMac, regular-session or operational evidence: zero provider
+calls were made. Details and test names: `checkpoints/G5a-cp3-child3-quote-repairs.md`.
+
+| Item | Disposition | Still pending |
+| --- | --- | --- |
+| F1 lazy FEED_CONFIG deadlock | Code-closed: subscribe on channel open, per-type maps, bounded schema deadline | Live tastytrade ordering (child 5) |
+| F2 repeated/changed FEED_CONFIG fatal | Code-closed: identical config harmless, changed order adopted and withholds old values, invalid core map withholds then stops | Live config behaviour (child 5) |
+| F3 future source time | Diagnostic-closed: still ineligible (no tolerance adopted), lead and clock-uncertainty explanation reported | iMac `sntp` offset (child 4); any tolerance is an open decision |
+| F4 old side-change time | Diagnostic-closed: labelled "exceeds quote policy, not delay evidence"; 60 s policy unchanged | Option quote freshness policy before option tickets (policy) |
+| F5 mixed quote ordering | Code-closed: `QUOTE_ORDER_AMBIGUOUS` withholds, watermark recovery | Whether dxFeed composite quotes do this live (unverified) |
+| F6 reserved label without provenance | Code-closed: blocking `quote_source_matches`, visible warning, approve/consume refused | — |
+| F7 identity not verified before signal mutation | Code-closed: reviewed mapping verified before revalidation and in the final fence | **No operational mapping exists**; each watchlist name needs Taz's review |
+| F8 quote session per CLI command | Diagnostic-closed: actionable "quote session changed" refusal; generation binding kept | Long-lived shared quote service (future design, not built) |
+| F9 halts | Code-closed for known HALTED via optional Profile on a separate channel; UNDEFINED/missing is unknown | Profile delivery for this account (child 5); final `security_tradable` wiring |
+| F10 heartbeat recovery | Code-closed: bounded recovery with fresh token/generation/events; denial/schema/429/expiry stop | Live reconnect (child 5); token renewal for an all-day service |
 
 The referenced iMac/cloud artifacts are not available in this implementation
 checkout. That is an access limitation, not a failed provider check or a claim that

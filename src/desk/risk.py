@@ -23,7 +23,7 @@ from pydantic import ValidationError
 from desk.contracts import (DEBIT_STRUCTURES, LEG_SHAPES, OPTION_STRUCTURES, RiskDecision,
                             RiskWarning, RuleCheck, TradeProposal)
 from desk.instruments import ContractBook, InstrumentError, loss_measures, money
-from desk.risk_terms import RiskTerms, RiskTermsSource, stop_distance
+from desk.risk_terms import QUOTE_ENVIRONMENTS, RESERVED_QUOTE_SOURCES, RiskTerms, RiskTermsSource, stop_distance
 from desk.risk_context import AccountEvidence, Exposure, MarketContext, SetupRegistry, default_registry
 from desk.playbook.cards import CARDS
 from desk.playbook.filters import MarketSize
@@ -239,9 +239,15 @@ def evaluate(
                     and terms.setup_id == proposal.setup_id and terms.setup_version == proposal.setup_version
                     and bool(terms.event_digest))
         check("signal_identity", identity, float(identity), 1)
-        if terms.quote_provenance is not None:
-            quote_identity = (terms.quote_provenance.source == proposal.quote_source
-                              and terms.quote_provenance.symbol == terms.symbol)
+        proof = terms.quote_provenance
+        if proof is not None or proposal.quote_source in RESERVED_QUOTE_SOURCES:
+            # A reserved label is never verified by the caller's text (child 3, F6): the
+            # independent terms must carry matching source, environment, instrument and
+            # reviewed-mapping evidence.
+            allowed = QUOTE_ENVIRONMENTS["live" if live else "paper"]
+            quote_identity = (proof is not None and proof.source == proposal.quote_source
+                              and proof.symbol == terms.symbol and proof.environment in allowed
+                              and bool(proof.mapping_digest))
             check("quote_source_matches", quote_identity, float(quote_identity), 1)
         age = (now - terms.checked_at).total_seconds()
         quote_age = (now - terms.quote_at).total_seconds()

@@ -6,7 +6,7 @@ import ssl
 
 import pytest
 
-from desk.tastytrade_quotes import (FIELDS, FeedDecoder, QuoteService, QuoteUnavailable,
+from desk.tastytrade_quotes import (CORE, FIELDS, FeedDecoder, QuoteService, QuoteUnavailable,
                                    instrument, number)
 from desk.tastytrade_transport import (Credentials, ReadClient, Session, StreamToken,
                                       capture, json_read, tls_context)
@@ -80,7 +80,7 @@ def test_negotiated_order_multiple_rows_and_decimal_precision():
 
 
 @pytest.mark.parametrize("bad", [dict(dataFormat="FULL", eventFields=FIELDS),
-                                  dict(dataFormat="COMPACT", eventFields={"Trade": list(FIELDS["Trade"])}),
+                                  dict(dataFormat="COMPACT", eventFields={"Trade": ["eventType", "eventSymbol", "price"]}),
                                   dict(dataFormat="COMPACT", eventFields={k: list(v)+[v[0]] for k,v in FIELDS.items()})])
 def test_schema_refusal(bad):
     with pytest.raises(QuoteUnavailable):
@@ -226,14 +226,16 @@ def test_bad_quote_token_response(change):
 
 
 def handshake(session):
+    """Subscription goes out when the channel opens; the field map may come later."""
     session.receive(dict(type="SETUP", channel=0, keepaliveTimeout=60), AT)
     auth = session.receive(dict(type="AUTH_STATE", channel=0, state="UNAUTHORIZED"), AT)
     assert auth[0]["token"]
     session.receive(dict(type="AUTH_STATE", channel=0, state="AUTHORIZED"), AT)
-    session.receive(dict(type="CHANNEL_OPENED", channel=3), AT)
-    session.receive(dict(type="FEED_CONFIG", channel=3, dataFormat="COMPACT"), AT)
-    return session.receive(dict(type="FEED_CONFIG", channel=3, dataFormat="COMPACT",
-                                eventFields={k:list(v) for k,v in FIELDS.items()}), AT)
+    opened = session.receive(dict(type="CHANNEL_OPENED", channel=3), AT)
+    assert session.receive(dict(type="FEED_CONFIG", channel=3, dataFormat="COMPACT"), AT) == []
+    assert session.receive(dict(type="FEED_CONFIG", channel=3, dataFormat="COMPACT",
+                                eventFields={k:list(FIELDS[k]) for k in CORE}), AT) == []
+    return [m for m in opened if m["type"] == "FEED_SUBSCRIPTION"]
 
 
 def test_handshake_subscribes_actual_streamer_and_keepalive_is_not_trade():
@@ -242,11 +244,11 @@ def test_handshake_subscribes_actual_streamer_and_keepalive_is_not_trade():
     session = Session(source, StreamToken("wss://fixture", "secret", AT+AGE, "api"), AT)
     assert not source.connected
     subscriptions = handshake(session)[0]["add"]
-    assert subscriptions == [{"type": k, "symbol": v.streamer_symbol} for v in source.identities.values() for k in FIELDS]
+    assert subscriptions == [{"type": k, "symbol": v.streamer_symbol} for v in source.identities.values() for k in CORE]
     session.receive(dict(type="KEEPALIVE", channel=0), AT)
     with pytest.raises(QuoteUnavailable, match="TRADE_UNAVAILABLE"):
         source.trade("SPY", AT, AGE)
-    with pytest.raises(QuoteUnavailable, match="DXLINK_DENIED_OR_CLOSED"):
+    with pytest.raises(QuoteUnavailable, match="DXLINK_ERROR_UNKNOWN"):
         session.receive(dict(type="ERROR", channel=0, message="secret-client"), AT)
 
 
@@ -289,7 +291,8 @@ def test_capture_bounded_reconnect_no_cached_revival_and_no_secret_artifact():
 
 
 def test_no_candle_or_volume_interface_or_dependency():
-    assert set(FIELDS) == {"Quote", "Trade"}
+    assert set(FIELDS) == {"Quote", "Trade", "Profile"}
+    assert not any("olume" in name or "Candle" in name for names in FIELDS.values() for name in names)
     assert not hasattr(QuoteService(), "bars") and not hasattr(QuoteService(), "decision_volume")
     with pytest.raises(QuoteUnavailable):
         json_read('{"price":NaN}')

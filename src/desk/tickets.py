@@ -45,7 +45,8 @@ from desk.playbook.cards import CARDS
 from desk.risk import AccountState, RiskLimits, evaluate
 from desk.risk_context import MarketContext, SetupRegistry
 from desk.risk_state import RiskStateError, RiskStateStore
-from desk.risk_terms import RiskTerms, RiskTermsSource, stop_distance
+from desk.risk_terms import (RESERVED_QUOTE_SOURCES, EvidenceUnavailable, RiskTerms, RiskTermsSource,
+                             stop_distance)
 
 Text = Annotated[str, Field(min_length=1)]
 DEFAULT_APPROVAL_LIFETIME = timedelta(seconds=120)  # Assumption; see docs/TICKETS.md
@@ -410,6 +411,9 @@ def binding_change(stored: dict, current: dict) -> str | None:
     if stored["warning_policy"] != current.get("warning_policy"):
         return "warning policy changed since this version was prepared: " + _policy_text(current.get("warning_policy"))
     own = ("warnings", "warning_policy")
+    session_change = quote_session_change(stored.get("quote_provenance"), current.get("quote_provenance"))
+    if session_change:
+        return session_change
     if {k: v for k, v in stored.items() if k not in own} != {k: v for k, v in current.items() if k not in own}:
         return "terms or evidence changed"
     before = {w["code"]: w for w in stored["warnings"]}
@@ -431,6 +435,20 @@ def binding_change(stored: dict, current: dict) -> str | None:
     if any(code not in after and code not in BANDED_WARNINGS for code in before):
         return "warnings changed"
     return None
+
+
+QUOTE_SESSION_CHANGED = ("the quote session changed since this version was checked (a reconnect, a restart "
+                         "or a separate command process); approvals never carry across quote sessions, so "
+                         "prepare a new version from the current quote session")
+
+
+def quote_session_change(stored: dict | None, current: dict | None) -> str | None:
+    """Plain reason when only the quote connection session differs (child 3, F8)."""
+    if not stored or not current or stored == current:
+        return None
+    same = {k: v for k, v in stored.items() if k != "generation"} == {k: v for k, v in current.items()
+                                                                       if k != "generation"}
+    return QUOTE_SESSION_CHANGED if same else "the quote instrument, mapping or source changed"
 
 
 def _policy_text(policy: dict | None) -> str:
@@ -481,6 +499,8 @@ def recheck(ticket_id: str, version: int, request: TicketRequest, inputs: RiskIn
         decision = evaluate(proposal, account, inputs.limits, now, live=request.environment == "live",
                             contract_book=book, registry=inputs.registry, market=market,
                             terms_source=_TermsSnapshot(terms))
+    except EvidenceUnavailable as exc:  # a fixed, credential-free code (e.g. QUOTE_MAPPING_MISSING)
+        problems.append(f"independent evidence unavailable or invalid ({exc})")
     except Exception as exc:  # provider faults are isolated; raw responses are never shown
         problems.append(f"independent evidence unavailable or invalid ({type(exc).__name__})")
     problems.extend(option_increment_problems(request, book))
@@ -521,10 +541,14 @@ def final_problem(ticket_id: str, version: int, request: TicketRequest, inputs: 
         check = replace(check, terms=terms)
     decision, bound = final_evaluation(ticket_id, version, request, inputs, check, account, at)
     if not event.eligible or event.event_digest != check.terms.event_digest:
-        return EVENT_NOT_ELIGIBLE, decision
+        reason = getattr(event, "reason", None)
+        return (f"{EVENT_NOT_ELIGIBLE}: {reason}" if reason else EVENT_NOT_ELIGIBLE), decision
     if (check.terms.quote_provenance is not None
             and event.quote_provenance != check.terms.quote_provenance):
-        return "Quote identity or connection health changed; prepare a new version", decision
+        change = quote_session_change(check.terms.quote_provenance.model_dump(mode="json"),
+                                      event.quote_provenance.model_dump(mode="json")
+                                      if event.quote_provenance is not None else None)
+        return f"Quote evidence changed at the final check ({change or 'unavailable'}); prepare a new version", decision
     if check.terms.quote_provenance is not None and (event.quote_price is None or event.quote_at is None):
         return "Quote health snapshot is incomplete; revalidate the ticket", decision
     if not decision.approved:
@@ -1057,7 +1081,11 @@ def render(view: dict) -> str:
     if b.get("quote_provenance"):
         proof = b["quote_provenance"]
         out.append(f"Current quote source: {proof['source']} ({proof['environment']}); "
-                   f"verified instrument {proof['instrument_id']}")
+                   f"verified instrument {proof['instrument_id']}; reviewed mapping "
+                   f"{(proof.get('mapping_digest') or 'MISSING')[:12]}")
+    elif view["request"].get("quote_source") in RESERVED_QUOTE_SOURCES:
+        out.append(f"Quote source label '{view['request']['quote_source']}' is NOT backed by independent "
+                   "evidence; this ticket cannot be approved")
     if not b["eligible"] and any(leg["ceiling_qty"] for leg in b["legs"]):
         ceiling = ", ".join(str(leg["ceiling_qty"]) for leg in b["legs"])
         at = []

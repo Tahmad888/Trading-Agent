@@ -2,8 +2,10 @@
 
 Status: implementation and offline verification; pending child Step 3 review. Trader-day
 functions: watch, analyze and approve through independent quote revalidation.
-Implementer: Astra, taking over from Claude at Taz's explicit request. Claude read
-the interfaces and wrote requirements but pushed no code. Base:
+Implementer: Astra, at Taz's explicit request. (Correction recorded in child 3: Claude
+had only begun reading the interfaces when Taz asked Claude to stop; Claude wrote and
+committed no requirements or code for child 2. The earlier "wrote requirements" relay
+and any "usage pause" wording are not checked history.) Base:
 `b747904ac13c5f95c89bcc3cd6b9e40519c2b573`. Child Step 1's saved-volume audit and
 standalone repairs are accepted; parent Checkpoint 3 and G5 remain open.
 
@@ -143,3 +145,12 @@ existing calendar/revision/dividend/volume acceptance tests. No profitability,
 scheduled build, actual current-session timing or iMac result is inferred. The
 new code's parent is b747904; the delivered commit/remote SHA and host command block
 are provided in the handoff rather than embedding a self-referential SHA here.
+
+## Child 3 review outcome
+
+Claude's independent review and Astra's reproduction found F1–F10 in this commit (lazy
+and repeated FEED_CONFIG, no clock-lead explanation, side-change age wording, mixed
+quote ordering, reserved-label claim without provenance, no cross-provider identity
+check before signal mutation, CLI quote sessions, halt status, heartbeat recovery).
+Repairs and their dispositions: `G5a-cp3-child3-quote-repairs.md`. This record keeps its
+original content as history.

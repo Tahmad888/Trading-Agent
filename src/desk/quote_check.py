@@ -9,36 +9,83 @@ import platform
 from pathlib import Path
 import subprocess
 
-from desk.tastytrade_quotes import QuoteService, QuoteUnavailable, session_label
-from desk.tastytrade_transport import Credentials, ReadClient, capture, utcnow
+from desk.tastytrade_quotes import CLOCK_NOTE, QuoteService, QuoteUnavailable, canonical, session_label
+from desk.tastytrade_transport import Credentials, ReadClient, capture, select_pair, utcnow
+
+STOP_CODES = {"REST_HTTP_401", "REST_HTTP_403", "REST_HTTP_429", "REST_REQUEST_BUDGET"}
 
 
-def diagnostic(client, service, equities, *, option_underlying=None, option_strike=None,
-               seconds=30, reconnects=1, capture_fn=capture, clock=utcnow):
+def _lag_evidence(rows, in_session):
+    """Whether trade-time lag evidence exists and how it compares with the quote policy."""
+    trades = [r["trade"] for r in rows if "age_seconds" in r.get("trade", {})]
+    if not trades:
+        return "UNAVAILABLE"
+    if not in_session:
+        return "CLOSED_SESSION_AGES_ONLY_NOT_LIVE_EVIDENCE"
+    if any(t.get("lag_status") == "WITHIN_QUOTE_POLICY" for t in trades):
+        return "AVAILABLE_WITHIN_QUOTE_POLICY"
+    return "INCONSISTENT_WITH_QUOTE_POLICY"
+
+
+def diagnostic(client, service, equities, *, option_underlying=None, option_strike=None, option_median=False,
+               seconds=30, reconnects=1, profile=False, capture_fn=capture, clock=utcnow):
     started = clock()
     issues = {}
+    option = dict(status="NOT_REQUESTED")
     # Denial/rate-limit/budget errors stop this run; symbol identity/404 faults isolate.
-    stop_codes = {"REST_HTTP_401", "REST_HTTP_403", "REST_HTTP_429", "REST_REQUEST_BUDGET"}
     try:
-        for symbol in equities:
+        underlying = canonical(option_underlying, "Equity") if option_underlying else None
+        names = list(dict.fromkeys(list(equities) + ([underlying] if underlying else [])))
+        for symbol in names:
             try:
                 client.resolve(symbol, "Equity", service)
             except QuoteUnavailable as exc:
                 issues[symbol] = str(exc)
-                if str(exc) in stop_codes:
+                if str(exc) in STOP_CODES:
                     raise
-        if option_underlying:
-            call, put = client.chain_pair(option_underlying, strike=option_strike)
-            for symbol in (call, put):
+        chain = None
+
+        def add_pair(selection):
+            identities = []
+            for symbol in (selection["call"], selection["put"]):
                 try:
-                    client.resolve(symbol, "Equity Option", service)
+                    identities.append(client.resolve(symbol, "Equity Option", service))
                 except QuoteUnavailable as exc:
                     issues[symbol] = str(exc)
-                    if str(exc) in stop_codes:
+                    if str(exc) in STOP_CODES:
                         raise
+            option.update(selection, status="SUBSCRIBED" if identities else "UNAVAILABLE")
+            return identities
+
+        if underlying:
+            option = dict(status="WAITING_FOR_UNDERLYING_TRADE", underlying=underlying)
+            chain = client.chain_options(underlying)
+            if option_strike is not None or option_median:
+                add_pair(select_pair(chain, now=clock(), strike=option_strike, median=option_median))
         if not service.identities:
             raise QuoteUnavailable("NO_ACCEPTED_IDENTITIES")
-        result = capture_fn(client, service, seconds=seconds, reconnects=reconnects)
+
+        def extend(session, svc, received):
+            """Choose the pair near an observed underlying trade, then subscribe it once."""
+            if option.get("status") != "WAITING_FOR_UNDERLYING_TRADE":
+                return []
+            trade = svc.last_trade(underlying)
+            if trade is None:
+                return []
+            from desk.risk import RiskLimits
+            age = (received - trade.traded_at).total_seconds()
+            option.update(reference_price=str(trade.price), reference_age_seconds=age,
+                          reference_within_quote_policy=age <= RiskLimits().max_quote_age.total_seconds())
+            try:
+                identities = add_pair(select_pair(chain, now=received, reference=trade.price))
+            except QuoteUnavailable as exc:
+                option.update(status="UNAVAILABLE", reason=str(exc))
+                if str(exc) in STOP_CODES:
+                    raise
+                return []
+            return session.add(identities)
+
+        result = capture_fn(client, service, seconds=seconds, reconnects=reconnects, extend=extend, profile=profile)
     except QuoteUnavailable as exc:
         service.disconnect(str(exc))
         result = dict(stop_reason=str(exc), observations=[], requests=client.requests,
@@ -47,20 +94,40 @@ def diagnostic(client, service, equities, *, option_underlying=None, option_stri
     in_session = session_label(started) == session_label(finished) == "RTH"
     observations = result["observations"]
     latest = observations[-1] if observations else None
+    rows = (latest or {}).get("checks", [])
+    if option.get("status") == "WAITING_FOR_UNDERLYING_TRADE":
+        option["status"] = "NOT_TESTED_NO_UNDERLYING_TRADE"
     groups = {}
     for kind, label in (("Equity", "stocks"), ("Equity Option", "options")):
-        rows = [row for row in (latest or {}).get("checks", []) if row["kind"] == kind]
-        groups[label] = dict(checks=rows, timing_status=("NOT_TESTED_MARKET_CLOSED" if not in_session else
-                             "OBSERVATIONS_REQUIRE_REVIEW" if rows else "NOT_TESTED_NO_OBSERVATIONS"))
+        group = [row for row in rows if row["kind"] == kind]
+        timing = ("NOT_TESTED_MARKET_CLOSED" if not in_session else
+                  "OBSERVATIONS_REQUIRE_REVIEW" if group else "NOT_TESTED_NO_OBSERVATIONS")
+        if label == "options" and option.get("method") == "MEDIAN_LISTED_NOT_REPRESENTATIVE":
+            timing = "NOT_REPRESENTATIVE_MEDIAN_STRIKE"
+        groups[label] = dict(checks=group, timing_status=timing)
+    groups["options"]["selection"] = option
+    clock_rows = {f"{row['symbol']}:{part}": row[part]["clock_uncertainty"] for row in rows
+                  for part in ("trade", "quote") if "clock_uncertainty" in row.get(part, {})}
     return dict(purpose="read-only quote observations; no signal/order activation",
                 environment=client.environment, started_at=started.isoformat(), finished_at=finished.isoformat(),
                 LIVE_TIMING="OBSERVATIONS_REQUIRE_REVIEW" if in_session else "NOT_TESTED_MARKET_CLOSED",
+                lag_evidence=_lag_evidence([r for r in rows if r["kind"] == "Equity"], in_session),
                 status=("OBSERVATIONS_ONLY" if observations and result["stop_reason"] == "CAPTURE_COMPLETE"
                         else "UNAVAILABLE"), identity_issues=issues,
                 stocks=groups["stocks"], options=groups["options"], capture=result,
+                clock=dict(host_offset="NOT_MEASURED_BY_THIS_COMMAND",
+                           read_only_check="sntp time.apple.com (no clock-setting flags)",
+                           tolerance_applied="NONE", future_source_time=clock_rows,
+                           explanation=CLOCK_NOTE if clock_rows else None),
+                identity_capture=[identity.capture() for identity in service.identities.values()],
+                mapping_review="Identity capture is evidence for a person's review only; this command never "
+                               "records or approves a Webull↔tastytrade mapping (python -m desk.quote_mapping review).",
                 missing_runtime_inputs=["broker account/risk snapshots", "market regime",
-                                       "option ContractBook deliverables/price increments", "option open interest",
-                                       "immediate consolidated intraday volume"],
+                                        "option ContractBook deliverables/price increments", "option open interest",
+                                        "immediate consolidated intraday volume",
+                                        "reviewed Webull↔tastytrade mappings for watchlist names",
+                                        "verified provider trading status wiring (Profile delivery unconfirmed)",
+                                        "long-lived shared quote service with token renewal"],
                 source_roles=dict(current_quotes="tastytrade-dxlink", historical_prices="Webull unchanged",
                                   decision_volume="Alpaca SIP unchanged"))
 
@@ -70,7 +137,12 @@ def main(argv=None):
     parser.add_argument("--symbols", nargs="+", required=True)
     parser.add_argument("--environment", choices=("production", "sandbox"), required=True)
     parser.add_argument("--option-underlying")
-    parser.add_argument("--option-strike", type=Decimal)
+    parser.add_argument("--option-strike", type=Decimal,
+                        help="Explicit strike; otherwise the strike nearest the observed underlying trade")
+    parser.add_argument("--option-median-fallback", action="store_true",
+                        help="Off-hours only: median listed strike, reported as not representative")
+    parser.add_argument("--profile", action="store_true",
+                        help="Also request Profile trading status on a separate channel")
     parser.add_argument("--seconds", type=int, default=30)
     parser.add_argument("--reconnects", type=int, default=1)
     parser.add_argument("--max-requests", type=int, default=20)
@@ -82,13 +154,16 @@ def main(argv=None):
         parser.error("Seconds must be 1..600; reconnects 0..2")
     if args.option_strike is not None and (not args.option_strike.is_finite() or args.option_strike <= 0):
         parser.error("Option strike must be positive and finite")
+    if args.option_strike is not None and args.option_median_fallback:
+        parser.error("Use either --option-strike or --option-median-fallback")
     try:
         client = ReadClient(Credentials(os.environ.get("TASTYTRADE_CLIENT_SECRET", ""),
                                         os.environ.get("TASTYTRADE_REFRESH_TOKEN", "")),
                             environment=args.environment, max_requests=args.max_requests)
         service = QuoteService(environment=args.environment)
         report = diagnostic(client, service, args.symbols, option_underlying=args.option_underlying,
-                            option_strike=args.option_strike, seconds=args.seconds, reconnects=args.reconnects)
+                            option_strike=args.option_strike, option_median=args.option_median_fallback,
+                            seconds=args.seconds, reconnects=args.reconnects, profile=args.profile)
     except QuoteUnavailable as exc:
         report = dict(purpose="read-only quote observations; no signal/order activation", status="UNAVAILABLE",
                       reason=str(exc), LIVE_TIMING="NOT_TESTED", requests=0)

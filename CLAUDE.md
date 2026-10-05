@@ -2,14 +2,21 @@
 
 ## Active repair work
 
-Latest scope (2026-10-04): G5 → G5a parent Checkpoint 3 → six child steps.
-Child 1 saved-volume audit is accepted. Child 2 tastytrade quote implementation is
-recorded in `docs/checkpoints/G5a-cp3-child2-tastytrade-quotes.md`; Astra took over
-after Claude's usage pause at b747904. Read this record and `docs/TASTYTRADE_QUOTES.md`
-before quote work. Historical Webull prices and Alpaca SIP decision volume are
+Latest scope (2026-10-05): G5 → G5a parent Checkpoint 3 → six child steps.
+Child 1 saved-volume audit is accepted. Child 2 tastytrade quote implementation was
+built by Astra at `78da588` (record `docs/checkpoints/G5a-cp3-child2-tastytrade-quotes.md`);
+Taz had asked Claude to stop before Claude wrote or committed anything for it. Child 3
+(code review and repairs): Claude's independent review found F1–F10; Claude implemented
+the repairs (`docs/checkpoints/G5a-cp3-child3-quote-repairs.md`): lazy/changed/partial
+DXLink field maps, reviewed Webull↔tastytrade identity mappings verified before any
+signal-state change (`src/desk/quote_mapping.py`; no operational mapping exists yet),
+reserved `tastytrade-dxlink` label, ambiguous-quote withholding, clock-lead evidence,
+optional Profile status, bounded heartbeat recovery. Child 3 sign-off is pending Astra's
+audit. Read the child-3 record and `docs/TASTYTRADE_QUOTES.md` before quote work. Historical Webull prices and Alpaca SIP decision volume are
 unchanged; immediate consolidated intraday volume remains unresolved. The adapter
-does not supply a complete live RiskInputs factory. Child 3 review, child 4 current
-commit iMac setup/checks, child 5 regular-session stock/option timing, and child 6
+does not supply a complete live RiskInputs factory or a long-lived quote service (the
+ticket CLI's separate commands cannot share one quote session). Child 3 sign-off, child 4
+current-commit iMac setup/checks, child 5 regular-session stock/option timing, and child 6
 remaining G5 acceptance stay pending. Step 09 and activation remain paused. The
 reconciliation at the end of `docs/G5_ACCEPTANCE.md` carries Taz's accepted b747904
 iMac evidence without claiming it verifies this new quote implementation.
@@ -165,6 +172,7 @@ https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg
 - `src/desk/risk.py`: the risk engine, with limits from blueprint section 10: user-selected dollar risk per ticket, including estimated costs, with no grade-dollar mapping or hard $100 ceiling, user-overridable dollar-loss warnings (not halts), the blocking manual stop, quote-age and trading-status checks. No caps on trade or position counts.
 - `src/desk/alpaca_volume.py`, `src/desk/alpaca_probe.py`: G5a opt-in Alpaca SIP volume evidence and its bounded probe; `alpaca_assets.py` (identity pins and identity health) and `alpaca_source.py` (consumers' provider and the final guard) wire it in (prices stay Webull).
 - `src/desk/bars.py`: parses and checks price bars; bad, short or stale bars raise `BarDataError` (no trade).
+- `src/desk/tastytrade_quotes.py`, `tastytrade_transport.py`, `quote_risk.py`, `quote_check.py`, `quote_mapping.py`: G5a CP3 read-only tastytrade quotes, DXLink transport, the identity-verified ticket bridge, the diagnostic and reviewed Webull↔tastytrade mappings (`docs/TASTYTRADE_QUOTES.md`).
 - `src/desk/history_scope.py`: G5a CP3 typed discovery scope (260 sessions, cannot be shortened) and pre-parse row classification; only the Friday leader build uses it.
 - `src/desk/indicators.py`: the feature pack on TA-Lib 0.8.1, matched to TradingView; `tests/tv_reference.py` holds the Pine formulas it's tested against.
 - `src/desk/screen_check.py`: prints a ticker's latest daily values to compare with Taz's screen.

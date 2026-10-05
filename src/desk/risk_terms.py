@@ -15,8 +15,25 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 Positive = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 
 
+# Quote-source labels that assert independent adapter evidence. A ticket request
+# carrying one is refused unless the resolved terms hold matching provenance (F6).
+RESERVED_QUOTE_SOURCES = frozenset({"tastytrade-dxlink"})
+QUOTE_ENVIRONMENTS = {"live": frozenset({"production"}), "paper": frozenset({"production", "sandbox"})}
+
+
+class EvidenceUnavailable(ValueError):
+    """Independent evidence is unavailable. Its message is a fixed, credential-free
+    code (for example ``QUOTE_MAPPING_MISSING``), safe to show on a ticket."""
+
+
 class QuoteProvenance(BaseModel):
-    """Independent adapter identity/health, excluding changing receipt times."""
+    """Independent adapter identity/health, excluding changing receipt times.
+
+    ``generation`` is the quote connection session: a reconnect, restart or another
+    process is a different session, so approvals never carry across it (child 3, F8).
+    ``mapping_digest`` is the reviewed Webull↔quote-provider mapping the quote was
+    verified against before any signal state could change (child 3, F7).
+    """
     model_config = ConfigDict(extra="forbid", frozen=True)
     source: str = Field(min_length=1)
     environment: str = Field(min_length=1)
@@ -25,6 +42,7 @@ class QuoteProvenance(BaseModel):
     streamer_symbol: str = Field(min_length=1)
     identity_digest: str = Field(min_length=1)
     generation: str = Field(min_length=1)
+    mapping_digest: str | None = None
 
 
 class RiskTerms(BaseModel):
@@ -63,6 +81,8 @@ class EventStatus(NamedTuple):
     symbol: str | None = None
     quote_price: float | None = None
     quote_at: datetime | None = None
+    price_basis: dict | None = None   # the signal's stored price evidence (identity source)
+    reason: str | None = None         # fixed code when a quote fence refuses
 
 
 class EventFence(Protocol):
@@ -138,7 +158,8 @@ class EventRiskSource:
                     state, _ = volume_status(self.source, restore_signal(event["candidate_signal"]), at,
                                              refresh=False)
                     eligible = state == "OK"
-                return EventStatus(eligible, event["terms_digest"], symbol=event["signal"]["symbol"])
+                return EventStatus(eligible, event["terms_digest"], symbol=event["signal"]["symbol"],
+                                   price_basis=event["signal"].get("price_basis"))
             yield status
 
     def resolve(self, event_id, now):

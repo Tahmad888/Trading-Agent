@@ -32,6 +32,7 @@ def check(source, symbols, *, timespans=("D", "M15")):
         checks = {name: {"symbol": name, "provider_symbol": item.provider_symbol,
                          "instrument_id": item.instrument_id, "name": item.name,
                          "security_type": item.sub_category, "bar_category": item.bar_category,
+                         "exchange_code": item.exchange_code, "currency": item.currency,
                          "metadata_observed_at": item.observed_at.isoformat(),
                          "bars": {}, "status": "PENDING"}
                   for name, item in metadata.items()}
