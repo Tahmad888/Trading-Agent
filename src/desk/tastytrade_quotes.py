@@ -153,10 +153,14 @@ class Instrument:
     right: str | None = None
     strike: Decimal | None = None
     metadata: tuple = field(default=(), compare=False)
+    # Equity classification (child 3, R2): only a real JSON boolean from `is-etf`;
+    # None means unavailable, never "common stock". Part of the identity digest.
+    is_etf: bool | None = None
 
     def capture(self) -> dict:
         """Metadata a reviewer compares with Webull's; no credentials, no prices."""
         return {"desk_symbol": self.symbol, "kind": self.kind, "instrument_id": self.instrument_id,
+                "is_etf": self.is_etf,
                 "streamer_symbol": self.streamer_symbol, "provider_symbol": self.provider_symbol,
                 "identity_digest": self.identity_digest, "received_at": self.received_at.isoformat(),
                 "provider_fields": dict(self.metadata)}
@@ -179,8 +183,9 @@ def instrument(requested: str, row: dict, received: datetime) -> Instrument:
         raise QuoteUnavailable("STREAMER_IDENTITY_MISSING")
     if row.get("active") is not True:
         raise QuoteUnavailable("IDENTITY_INACTIVE_OR_UNKNOWN")
-    underlying = expiry = right = strike = None
+    underlying = expiry = right = strike = is_etf = None
     if kind == "Equity":
+        is_etf = row.get("is-etf") if type(row.get("is-etf")) is bool else None
         ident = row.get("cusip") or row.get("id")
         if isinstance(ident, bool) or not isinstance(ident, (str, int)) or not str(ident).strip():
             raise QuoteUnavailable("INSTRUMENT_ID_MISSING")
@@ -202,12 +207,12 @@ def instrument(requested: str, row: dict, received: datetime) -> Instrument:
         ident = symbol
     payload = dict(symbol=symbol, provider_symbol=row["symbol"], streamer_symbol=streamer,
                    instrument_id=ident, kind=kind, underlying=underlying,
-                   expiry=str(expiry), right=right, strike=str(strike))
+                   expiry=str(expiry), right=right, strike=str(strike), is_etf=is_etf)
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     metadata = tuple((k, row[k]) for k in CAPTURE_FIELDS
                      if k in row and isinstance(row[k], (str, int, bool)) and not isinstance(row[k], float))
     return Instrument(symbol, row["symbol"], streamer, ident, kind, digest, aware(received),
-                      underlying, expiry, right, strike, metadata)
+                      underlying, expiry, right, strike, metadata, is_etf)
 
 
 @dataclass(frozen=True)
@@ -276,6 +281,12 @@ class QuoteService:
         self._future: dict[tuple[str, str], dict] = {}
         self._last_receipt: dict[tuple[str, str], datetime] = {}
         self._kind_state: dict[str, str] = {}
+        # Halt latch (child 3, R3): symbol -> evidence of the last HALTED Profile. Only an
+        # ACTIVE Profile for that symbol in the current session clears it; delivery
+        # failures, UNDEFINED, reconnects, trades and accepted maps never do.
+        self._halts: dict[str, dict] = {}
+        # Accepted events per (symbol, kind) in the current generation (child 3, R4).
+        self._generation_events: dict[tuple[str, str], int] = {}
         self.generation = ""
         self.connected = False
         self.expires_at: datetime | None = None
@@ -314,6 +325,7 @@ class QuoteService:
             self.generation = uuid4().hex
             self.expires_at = aware(expires_at)
             self._kind_state.clear()
+            self._generation_events.clear()
 
     def ready(self, received: datetime):
         """Transport/channel readiness. A decodable schema is tracked separately."""
@@ -407,7 +419,16 @@ class QuoteService:
         store[symbol] = value
         self._failures.pop((symbol, kind), None)
         self.events[kind] += 1
+        self._generation_events[symbol, kind] = self._generation_events.get((symbol, kind), 0) + 1
         return True
+
+    def generation_events(self) -> dict[str, dict[str, int]]:
+        """Accepted events per symbol and component in the current generation."""
+        with self._lock:
+            out: dict[str, dict[str, int]] = {}
+            for (symbol, kind), count in self._generation_events.items():
+                out.setdefault(symbol, {})[kind] = count
+            return out
 
     def _quote(self, symbol, identity, row, received):
         value = Quote(identity, optional_number(row.get("bidPrice")), optional_number(row.get("askPrice")),
@@ -451,7 +472,19 @@ class QuoteService:
             raise QuoteUnavailable("PROFILE_STATUS_INVALID")
         value = Profile(identity, status, _epoch(row.get("haltStartTime")), _epoch(row.get("haltEndTime")),
                         aware(received), self.generation)
+        if status == "HALTED":
+            self._halts[symbol] = {"observed_at": aware(received).isoformat(), "generation": self.generation,
+                                   "identity_digest": identity.identity_digest,
+                                   "halt_start": value.halt_start.isoformat() if value.halt_start else None}
+        elif status == "ACTIVE":
+            self._halts.pop(symbol, None)  # positive resumption evidence for this symbol
         return self._accept(symbol, "Profile", self._profiles, value)
+
+    def halted(self, symbol: str) -> dict | None:
+        """Retained halt evidence for the symbol, if any (no health requirement)."""
+        with self._lock:
+            evidence = self._halts.get(symbol)
+            return dict(evidence) if evidence else None
 
     def provenance(self, identity: Instrument, mapping_digest: str | None = None) -> QuoteProvenance:
         return QuoteProvenance(source=SOURCE, environment=self.environment, symbol=identity.symbol,
@@ -462,6 +495,8 @@ class QuoteService:
     def trade(self, symbol: str, now: datetime, max_age: timedelta) -> tuple[Trade, QuoteProvenance]:
         with self._lock:
             identity = self._health(symbol, now)
+            if symbol in self._halts:
+                raise QuoteUnavailable("SECURITY_HALTED")  # a halted print is not current evidence
             if (symbol, "Trade") in self._failures:
                 raise QuoteUnavailable(self._failures[symbol, "Trade"])
             value = self._trades.get(symbol)
@@ -475,6 +510,8 @@ class QuoteService:
         """Executable two-sided quote only; each unavailable part has its own code."""
         with self._lock:
             self._health(symbol, now)
+            if symbol in self._halts:
+                raise QuoteUnavailable("SECURITY_HALTED")
             if (symbol, "Quote") in self._failures:
                 raise QuoteUnavailable(self._failures[symbol, "Quote"])
             value = self._quotes.get(symbol)
@@ -499,9 +536,17 @@ class QuoteService:
             return value
 
     def status(self, symbol: str, now: datetime) -> tuple[str, str]:
-        """(ACTIVE | HALTED | UNKNOWN, reason). UNDEFINED and missing Profile are UNKNOWN."""
+        """(ACTIVE | HALTED | UNKNOWN, reason). UNDEFINED and missing Profile are UNKNOWN.
+
+        A retained halt stays HALTED until an ACTIVE Profile clears it (R3).
+        """
         with self._lock:
             self._health(symbol, now)
+            live = self._profiles.get(symbol)
+            if symbol in self._halts:
+                if live is not None and live.generation == self.generation and live.status == "HALTED":
+                    return "HALTED", "PROFILE_HALTED"
+                return "HALTED", "HALT_RETAINED_NO_RESUMPTION_EVIDENCE"
             if (symbol, "Profile") in self._failures:
                 return "UNKNOWN", self._failures[symbol, "Profile"]
             value = self._profiles.get(symbol)
@@ -557,8 +602,11 @@ class QuoteService:
                 try:
                     status, reason = self.status(symbol, now)
                 except QuoteUnavailable as exc:
-                    status, reason = "UNKNOWN", str(exc)
+                    status, reason = ("HALTED", "HALT_RETAINED_NO_RESUMPTION_EVIDENCE") if symbol in self._halts \
+                        else ("UNKNOWN", str(exc))
                 item["trading_status"] = dict(status=status, reason=reason)
+                if symbol in self._halts:
+                    item["trading_status"]["halt_evidence"] = dict(self._halts[symbol])
                 for kind in ("Trade", "Quote"):
                     if (symbol, kind) in self._future:
                         item[kind.lower()]["clock_uncertainty"] = dict(self._future[symbol, kind],

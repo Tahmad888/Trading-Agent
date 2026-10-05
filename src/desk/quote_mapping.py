@@ -17,21 +17,25 @@ historical scanner is unaffected.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, ValidationError, model_validator
 
 from desk.tastytrade_quotes import Instrument, QuoteUnavailable, canonical
 
-SCHEMA = "desk-quote-mappings-v1"
-METHOD = "reviewed-crosswalk-v1"
+SCHEMA = "desk-quote-mappings-v2"
+LEGACY_SCHEMAS = {"desk-quote-mappings-v1"}
+METHOD = "reviewed-crosswalk-v2"
 Text = Annotated[str, Field(min_length=1)]
 
 
@@ -59,14 +63,14 @@ class TastytradeSide(BaseModel):
     cusip: Text | None = None
     description: Text
     listed_market: Text | None = None
-    is_etf: bool
+    is_etf: StrictBool          # only a real boolean; "false", None or missing is refused
 
 
 class QuoteMapping(BaseModel):
     """One reviewed mapping. Names and listings are supporting evidence only."""
     model_config = ConfigDict(frozen=True, extra="forbid")
     desk_symbol: Text
-    method: Literal["reviewed-crosswalk-v1"] = METHOD
+    method: Literal["reviewed-crosswalk-v2"] = METHOD
     webull: WebullSide
     tastytrade: TastytradeSide
     reviewed_by: Text
@@ -77,11 +81,14 @@ class QuoteMapping(BaseModel):
 
     @staticmethod
     def semantic(desk_symbol, webull: WebullSide, tasty: TastytradeSide) -> dict:
-        """Bound identity fields; review time, names and capture digests are excluded."""
+        """Bound identity and classification; review time, names, descriptions and
+        capture digests are excluded, so harmless refreshes never need a new review."""
         return {"desk_symbol": desk_symbol, "method": METHOD,
-                "webull": {"host": webull.host, "instrument_id": webull.instrument_id, "currency": webull.currency},
+                "webull": {"host": webull.host, "instrument_id": webull.instrument_id, "currency": webull.currency,
+                           "sub_category": webull.sub_category},
                 "tastytrade": {"environment": tasty.environment, "provider_symbol": tasty.provider_symbol,
-                               "streamer_symbol": tasty.streamer_symbol, "instrument_id": tasty.instrument_id}}
+                               "streamer_symbol": tasty.streamer_symbol, "instrument_id": tasty.instrument_id,
+                               "is_etf": tasty.is_etf}}
 
     @model_validator(mode="after")
     def _consistent(self):
@@ -110,22 +117,117 @@ def consistency(desk_symbol, webull: WebullSide, tasty: TastytradeSide) -> list[
     return problems
 
 
+LOCK_TIMEOUT = 10.0  # seconds; engineering bound on waiting for the mapping fence
+
+
+class MappingView:
+    """Records read under the mapping fence. Verifies without touching the file again."""
+
+    def __init__(self, records: dict[str, QuoteMapping], problems: dict[str, str]):
+        self.records, self.problems = records, problems
+
+    def verify(self, symbol: str, *, price_basis: dict | None, identity: Instrument, environment: str,
+               webull_identity: dict | None) -> QuoteMapping:
+        """The reviewed mapping, only if both providers' current identities match it.
+
+        ``webull_identity`` is the Webull identity the vendor path has pinned for this
+        host and symbol (instrument ID, currency, exchange, sub-category), read locally.
+        Raises QuoteUnavailable with a QUOTE_MAPPING_* code otherwise.
+        """
+        if symbol in self.problems:
+            raise QuoteUnavailable(self.problems[symbol])
+        record = self.records.get(symbol)
+        if record is None:
+            raise QuoteUnavailable("QUOTE_MAPPING_MISSING")
+        basis = price_basis if isinstance(price_basis, dict) else {}
+        if not basis.get("host"):
+            # Only the G3 vendor basis records which Webull host produced the signal.
+            raise QuoteUnavailable("QUOTE_MAPPING_WEBULL_HOST_UNKNOWN")
+        webull = record.webull
+        if (basis.get("host"), str(basis.get("security_id")), basis.get("currency"), basis.get("symbol")) != (
+                webull.host, webull.instrument_id, webull.currency, symbol):
+            raise QuoteUnavailable("QUOTE_MAPPING_WEBULL_MISMATCH")
+        if not isinstance(webull_identity, dict) or not webull_identity.get("sub_category"):
+            raise QuoteUnavailable("QUOTE_MAPPING_WEBULL_IDENTITY_UNAVAILABLE")
+        if (str(webull_identity.get("instrument_id")), webull_identity.get("currency")) != (
+                webull.instrument_id, webull.currency):
+            raise QuoteUnavailable("QUOTE_MAPPING_WEBULL_MISMATCH")
+        if webull_identity["sub_category"] != webull.sub_category:
+            raise QuoteUnavailable("QUOTE_MAPPING_CLASSIFICATION_MISMATCH")
+        tasty = record.tastytrade
+        if (environment, identity.kind, identity.symbol, identity.provider_symbol, identity.streamer_symbol,
+                identity.instrument_id) != (tasty.environment, "Equity", symbol, tasty.provider_symbol,
+                                            tasty.streamer_symbol, tasty.instrument_id):
+            raise QuoteUnavailable("QUOTE_MAPPING_TASTYTRADE_MISMATCH")
+        if type(identity.is_etf) is not bool:
+            raise QuoteUnavailable("QUOTE_MAPPING_CLASSIFICATION_UNAVAILABLE")
+        if identity.is_etf is not tasty.is_etf:
+            raise QuoteUnavailable("QUOTE_MAPPING_CLASSIFICATION_MISMATCH")
+        return record
+
+
 class MappingStore:
-    """Reviewed records in one JSON file. Read on every verify; written atomically."""
+    """Reviewed records in one JSON file, behind a shared/exclusive sidecar lock.
 
-    def __init__(self, path):
+    The JSON file is replaced atomically, so the lock lives on ``<file>.lock``, which
+    is never renamed: a rename cannot bypass it. ``fcntl.flock`` locks belong to an
+    open file description, so every acquisition opens its own descriptor and threads
+    and processes exclude each other alike. Readers take a shared lock, writers an
+    exclusive one; the ticket fence holds the shared lock until its COMMIT.
+    """
+
+    def __init__(self, path, *, lock_timeout: float = LOCK_TIMEOUT):
         self.path = Path(path)
+        self.lock_path = self.path.with_name(self.path.name + ".lock")
+        self.lock_timeout = lock_timeout
 
-    def _load(self) -> tuple[dict[str, QuoteMapping], dict[str, str]]:
-        """(valid records, per-symbol problems). One bad record never disables peers."""
-        if not self.path.exists():
-            return {}, {}
+    @contextmanager
+    def _lock(self, mode, *, create: bool):
+        if not create and not self.path.exists():
+            yield False  # read-only: no store, nothing created, nothing verifies
+            return
+        if self.lock_path.is_symlink():
+            raise QuoteUnavailable("QUOTE_MAPPING_LOCK_UNAVAILABLE")
+        try:
+            if create:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except OSError:
+            raise QuoteUnavailable("QUOTE_MAPPING_LOCK_UNAVAILABLE") from None
+        try:
+            deadline = time.monotonic() + self.lock_timeout
+            while True:
+                try:
+                    fcntl.flock(fd, mode | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise QuoteUnavailable("QUOTE_MAPPING_STORE_BUSY") from None
+                    time.sleep(0.005)
+                except OSError:
+                    raise QuoteUnavailable("QUOTE_MAPPING_LOCK_UNAVAILABLE") from None
+            yield True
+        finally:
+            os.close(fd)  # closing the descriptor releases its lock
+
+    def _raw(self) -> dict:
         try:
             data = json.loads(self.path.read_text())
         except (OSError, ValueError):
             raise QuoteUnavailable("QUOTE_MAPPING_STORE_UNREADABLE") from None
-        if not isinstance(data, dict) or data.get("schema") != SCHEMA or not isinstance(data.get("mappings"), list):
+        if (not isinstance(data, dict) or data.get("schema") not in {SCHEMA, *LEGACY_SCHEMAS}
+                or not isinstance(data.get("mappings"), list)
+                or not isinstance(data.get("legacy_unverified", []), list)):
             raise QuoteUnavailable("QUOTE_MAPPING_STORE_UNREADABLE")
+        if data["schema"] in LEGACY_SCHEMAS:
+            # Earlier records lack the classification binding: kept verbatim, never trusted.
+            data = {"schema": SCHEMA, "mappings": [], "legacy_unverified": list(data["mappings"])}
+        data.setdefault("legacy_unverified", [])
+        return data
+
+    @staticmethod
+    def _parse(data: dict) -> tuple[dict[str, QuoteMapping], dict[str, str]]:
+        """(valid records, per-symbol problems). One bad record never disables peers."""
         records, problems, seen = {}, {}, {}
         for raw in data["mappings"]:
             symbol = raw.get("desk_symbol") if isinstance(raw, dict) else None
@@ -146,64 +248,59 @@ class MappingStore:
                 continue
             seen[key] = record.desk_symbol
             records[record.desk_symbol] = record
+        for raw in data["legacy_unverified"]:
+            symbol = raw.get("desk_symbol") if isinstance(raw, dict) else None
+            if isinstance(symbol, str) and symbol not in records and symbol not in problems:
+                problems[symbol] = "QUOTE_MAPPING_REVIEW_REQUIRED"
         return records, problems
 
+    @contextmanager
+    def held(self):
+        """Shared fence: the yielded view stays valid until this block exits."""
+        with self._lock(fcntl.LOCK_SH, create=False) as present:
+            yield MappingView(*(self._parse(self._raw()) if present else ({}, {})))
+
     def records(self) -> list[QuoteMapping]:
-        return list(self._load()[0].values())
+        with self.held() as view:
+            return list(view.records.values())
 
-    def verify(self, symbol: str, *, price_basis: dict | None, identity: Instrument,
-               environment: str) -> QuoteMapping:
-        """The reviewed mapping, only if both providers' current identities match it.
-
-        Raises QuoteUnavailable with a QUOTE_MAPPING_* code otherwise. Local file read,
-        no network: safe inside the final ticket fence.
-        """
-        records, problems = self._load()
-        if symbol in problems:
-            raise QuoteUnavailable(problems[symbol])
-        record = records.get(symbol)
-        if record is None:
-            raise QuoteUnavailable("QUOTE_MAPPING_MISSING")
-        basis = price_basis if isinstance(price_basis, dict) else {}
-        if not basis.get("host"):
-            # Only the G3 vendor basis records which Webull host produced the signal.
-            raise QuoteUnavailable("QUOTE_MAPPING_WEBULL_HOST_UNKNOWN")
-        if (basis.get("host"), str(basis.get("security_id")), basis.get("currency"), basis.get("symbol")) != (
-                record.webull.host, record.webull.instrument_id, record.webull.currency, symbol):
-            raise QuoteUnavailable("QUOTE_MAPPING_WEBULL_MISMATCH")
-        tasty = record.tastytrade
-        if (environment, identity.kind, identity.symbol, identity.provider_symbol, identity.streamer_symbol,
-                identity.instrument_id) != (tasty.environment, "Equity", symbol, tasty.provider_symbol,
-                                            tasty.streamer_symbol, tasty.instrument_id):
-            raise QuoteUnavailable("QUOTE_MAPPING_TASTYTRADE_MISMATCH")
-        return record
+    def verify(self, symbol: str, **kwargs) -> QuoteMapping:
+        with self.held() as view:
+            return view.verify(symbol, **kwargs)
 
     def add(self, record: QuoteMapping):
-        """Atomic replace of the whole file; the same symbol's record is replaced."""
-        records, problems = self._load()
-        if record.desk_symbol in problems:
-            raise QuoteUnavailable("QUOTE_MAPPING_AMBIGUOUS")
-        records[record.desk_symbol] = record
-        for other in records.values():
-            if (other.desk_symbol != record.desk_symbol and (other.tastytrade.environment, other.tastytrade.instrument_id)
-                    == (record.tastytrade.environment, record.tastytrade.instrument_id)):
-                raise QuoteUnavailable("QUOTE_MAPPING_AMBIGUOUS")
-        payload = {"schema": SCHEMA, "mappings": [r.model_dump(mode="json") for r in
-                                                   sorted(records.values(), key=lambda r: r.desk_symbol)]}
+        """Replace this symbol's record atomically under the exclusive lock.
+
+        Other entries, including invalid and legacy ones, are kept verbatim.
+        """
+        record = QuoteMapping.model_validate(record.model_dump(mode="json"))
         if self.path.is_symlink():
             raise QuoteUnavailable("QUOTE_MAPPING_STORE_SYMLINK")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=".quote-mappings-", dir=self.path.parent)
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w") as out:
-                out.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-                out.flush()
-                os.fsync(out.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        with self._lock(fcntl.LOCK_EX, create=True):
+            data = self._raw() if self.path.exists() else {"schema": SCHEMA, "mappings": [], "legacy_unverified": []}
+            records, problems = self._parse(data)
+            key = (record.tastytrade.environment, record.tastytrade.instrument_id)
+            if any(other.desk_symbol != record.desk_symbol and
+                   (other.tastytrade.environment, other.tastytrade.instrument_id) == key
+                   for other in records.values()):
+                raise QuoteUnavailable("QUOTE_MAPPING_AMBIGUOUS")
+            kept = [raw for raw in data["mappings"]
+                    if not (isinstance(raw, dict) and raw.get("desk_symbol") == record.desk_symbol)]
+            payload = {"schema": SCHEMA,
+                       "mappings": sorted(kept + [record.model_dump(mode="json")],
+                                          key=lambda r: str(r.get("desk_symbol") if isinstance(r, dict) else "")),
+                       "legacy_unverified": data["legacy_unverified"]}
+            fd, temporary = tempfile.mkstemp(prefix=".quote-mappings-", dir=self.path.parent)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w") as out:
+                    out.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+                    out.flush()
+                    os.fsync(out.fileno())
+                os.replace(temporary, self.path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
 
 
 def build(symbol: str, webull_report: dict, tasty_report: dict, reviewer: str, now: datetime) -> QuoteMapping:
@@ -277,7 +374,11 @@ def main(argv=None, *, stdin=None, stdout=None) -> int:
     if stdin.readline().strip() != f"MAP {record.desk_symbol}":
         print("Not recorded.", file=stdout)
         return 1
-    store.add(record)
+    try:
+        store.add(record)  # exclusive mapping lock, only after the reviewer confirmed
+    except QuoteUnavailable as exc:
+        print(f"Not recorded: {exc}. Nothing was changed.", file=stdout)
+        return 1
     print("Recorded. No network call was made.", file=stdout)
     return 0
 

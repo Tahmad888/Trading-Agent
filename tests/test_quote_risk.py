@@ -121,7 +121,7 @@ def test_changed_evidence_after_recheck_refuses_final_write(tmp_path, fault):
         elif fault == "chase":
             q.feed(price=float(q.limit) * 1.2)
         elif fault == "mapping_removed":
-            q.store.path.write_text(json.dumps({"schema": "desk-quote-mappings-v1", "mappings": []}))
+            q.store.path.write_text(json.dumps({"schema": "desk-quote-mappings-v2", "mappings": []}))
         elif fault == "mapping_changed":
             q.store.path.unlink()
             q.store.add(record(webull_id="id:SOMEONE-ELSE"))
@@ -215,11 +215,11 @@ def test_unverified_identity_never_reaches_signal_revalidation(tmp_path, monkeyp
         q.quotes.ready(q.at)
     elif case == "malformed":
         good = record().model_dump(mode="json")
-        q.store.path.write_text(json.dumps({"schema": "desk-quote-mappings-v1",
+        q.store.path.write_text(json.dumps({"schema": "desk-quote-mappings-v2",
                                             "mappings": [{**good, "mapping_digest": "tampered"}]}))
     elif case == "ambiguous":
         good = record().model_dump(mode="json")
-        q.store.path.write_text(json.dumps({"schema": "desk-quote-mappings-v1", "mappings": [good, good]}))
+        q.store.path.write_text(json.dumps({"schema": "desk-quote-mappings-v2", "mappings": [good, good]}))
     q.feed(price="3.10")  # a different issuer's price, far below the 146.5 stop
     before = q.event()
     called = []
@@ -260,14 +260,15 @@ def test_legacy_price_basis_without_webull_host_is_unverified(tmp_path):
     identity = instrument("LEAD", stock("LEAD"), q_time())
     basis = {"symbol": "LEAD", "security_id": "id:LEAD", "currency": "USD", "source": "reviewed ledger"}
     with pytest.raises(QuoteUnavailable, match="QUOTE_MAPPING_WEBULL_HOST_UNKNOWN"):
-        mappings.verify("LEAD", price_basis=basis, identity=identity, environment="production")
+        mappings.verify("LEAD", price_basis=basis, identity=identity, environment="production",
+                        webull_identity={"instrument_id": "id:LEAD", "currency": "USD", "sub_category": "COMMON_STOCK"})
 
 
 def test_one_bad_record_leaves_peer_mappings_usable(tmp_path):
     mappings = MappingStore(tmp_path / "m.json")
     good = record().model_dump(mode="json")
     other = {**record("PEER").model_dump(mode="json"), "mapping_digest": "tampered"}
-    mappings.path.write_text(json.dumps({"schema": "desk-quote-mappings-v1", "mappings": [good, other]}))
+    mappings.path.write_text(json.dumps({"schema": "desk-quote-mappings-v2", "mappings": [good, other]}))
     assert [r.desk_symbol for r in mappings.records()] == ["LEAD"]
 
 

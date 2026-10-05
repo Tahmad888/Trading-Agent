@@ -264,3 +264,173 @@ child Step 3 independent sign-off (Astra), child 4 (reviewed-commit iMac setup, 
 strict suite on 3.14.7, private credentials), child 5 (regular-session stock/option
 timing, live config ordering, Profile delivery, reconnect), child 6 (remaining G5 rows),
 operational mappings, parent Checkpoint 3 and G5. Step 09 stays paused.
+
+## Follow-up repairs R1–R4 (Astra's re-audit of `12705aa`, 2026-10-05)
+
+Astra withheld child-3 sign-off. Her audit, probe script and result JSON arrived with
+Taz's prompt (outside the repository; probe kept unchanged in the scratch area and run
+before and after). Base: `12705aa2fbc6ffb2a5320ffe1e171a1d3fd68db8`, branch head
+unchanged at fetch, clean tree. Before output on a scratch clone of `12705aa`, Python
+3.12.3: R1 approve and consume, R2, R3 and R4 all `defect_reproduced: true` (Astra's
+own run, Python 3.12.14, matched). These are implementation repairs against approved
+contracts, not trading strategy.
+
+### Requirements (written before code)
+
+- **R1 mapping fence.** Verification and every supported writer (`MappingStore.add`,
+  used by the review command) share a lock on a stable sidecar file
+  (`<store>.lock`, never renamed; the JSON is still replaced atomically, so locking the
+  JSON inode would be bypassed). `fcntl.flock` locks belong to an open file description,
+  so separate opens conflict across threads and processes
+  ([flock(2)](https://man7.org/linux/man-pages/man2/flock.2.html)). Verification holds a
+  shared lock; writers take an exclusive lock only after the reviewer has confirmed. The
+  ticket fence holds the shared lock from before the final clock until the ticket
+  COMMIT, for approval and consumption. Bounded wait (engineering: 10 s); a busy or
+  unreadable store refuses the action (`QUOTE_MAPPING_STORE_BUSY`,
+  `QUOTE_MAPPING_STORE_UNREADABLE`, `QUOTE_MAPPING_LOCK_UNAVAILABLE`). No network inside.
+  With no mapping file, nothing is created and nothing verifies (read-only). No removal
+  command exists; updates replace a symbol's record.
+- **R2 classification.** Webull: `SecurityMetadata` carries `sub_category`
+  (COMMON_STOCK/ETF); the vendor path pins `[instrument_id, currency, exchange_code,
+  sub_category]` per host and symbol and refuses any change on every fetch
+  (`SECURITY_IDENTITY_CHANGED`). The bridge reads that pinned identity locally and
+  compares instrument ID, currency and sub-category with the review. tastytrade:
+  `is-etf` (documented boolean) becomes part of the instrument identity (digest) and is
+  compared with the review at verification and in the final fence. Only a real JSON
+  boolean counts; missing, `None`, `"false"` or malformed is
+  `QUOTE_MAPPING_CLASSIFICATION_UNAVAILABLE`. Classification joins the mapping's
+  semantic digest; names, descriptions, receipt times and capture hashes do not.
+  Schema `desk-quote-mappings-v2`; v1 records are kept verbatim as
+  `legacy_unverified` and refused (`QUOTE_MAPPING_REVIEW_REQUIRED`) until re-reviewed;
+  peers are never erased. Limitations: Webull exposes no CUSIP/FIGI; tastytrade
+  `instrument-sub-type` values are not enumerated in the OpenAPI, so only `is-etf` is
+  bound; a Webull reclassification is detected by the next vendor fetch (pin refusal),
+  not inside the no-network final fence.
+- **R3 halt latch.** A HALTED Profile for a symbol is retained by `QuoteService`
+  independently of Profile delivery: a channel ERROR/CLOSED, invalid map or row,
+  UNDEFINED, disconnect/reconnect, a new Trade or an accepted map do not clear it. Only
+  an ACTIVE Profile for that symbol, received in the current session, clears it. No
+  timer. While latched, `trade()`/`quote()` refuse with `SECURITY_HALTED` (no halted
+  price serves as current evidence); the bridge refuses before revalidation and in the
+  final fence. Superseded sessions cannot clear it (session generation guard). No
+  Profile ever received stays UNKNOWN and never ACTIVE; peers are unaffected. The
+  latch lives in the process: a restart starts with no live values and no latch
+  (a new process has no quote evidence until fresh events, and approvals never carry
+  across sessions). Retention is our engineering contract; dxFeed's TradingStatus enum
+  (ACTIVE, HALTED, UNDEFINED) does not prescribe it. Exchange halts have no fixed
+  duration and end on an explicit resumption, which is why no timer clears it.
+- **R4 final-attempt reporting.** `QuoteService` counts accepted events per symbol and
+  component for the current generation. `capture` reports each attempt's generation and
+  per-symbol Quote/Trade/Profile receipt, `final_attempt`, and recoveries by symbol and
+  component (`recovered` only when every subscribed symbol received both Quote and
+  Trade in the new generation). `diagnostic` builds stock/option status and
+  `lag_evidence` from the final generation only; earlier observations appear under
+  `historical_observations`, labelled ineligible. A deliberate finite end
+  (`CAPTURE_COMPLETE`) stays distinct from faults, exhausted retries, denial, rate
+  limit and token expiry.
+
+### Lock order (final approve/consume transaction)
+
+ticket (`BEGIN EXCLUSIVE`) → signal (`held_event`) → volume/identity (only when the
+event depends on Alpaca) → **mapping (shared sidecar flock)** → quote health
+(in-process lock) → account (`held_account`) → final clock → COMMIT → release in
+reverse. Mapping is taken before the in-process quote lock so a wait on another
+process never blocks the quote feed thread. A mapping writer takes only the exclusive
+mapping lock and no other lock, so no cycle exists.
+
+### Acceptance cases (written first)
+
+1. Astra's approval and consumption races: the writer waits until COMMIT, or the
+   action refuses; never "approved/consumed while an earlier completed change
+   contradicts". Repeat with a separate `MappingStore` object and a separate process.
+2. Mapping changed before the fence refuses; unchanged mapping approves and consumes.
+3. Busy lock (bounded), unreadable store and failed write refuse the action; no
+   deadlock, no partial file, no leftover temp file, lock free afterwards; a bad peer
+   record stays isolated.
+4. Common stock → ETF and ETF → common stock (tastytrade `is-etf`) refuse before signal
+   mutation and in the final fence; review vs pinned Webull sub-category mismatch
+   refuses; missing/`None`/`"false"` classification is unavailable; a correctly mapped
+   common stock (full path) and ETF (pinned Webull identity) verify; a refreshed
+   identity with a newer receipt, new description or new capture hash stays usable;
+   v1 records are refused and preserved; share-class and wrong-issuer tests retained.
+5. HALTED then ERROR, CLOSED, invalid map, invalid row, UNDEFINED: refused at resolve,
+   approval and consumption. HALTED → reconnect → fresh Trade: refused. ACTIVE clears
+   it (with valid inputs). No Profile: UNKNOWN. Peers unaffected; a superseded
+   session's ACTIVE cannot clear it.
+6. Empty second attempt: no final-attempt Trade or lag evidence; earlier Trade only as
+   history. One ticker recovers and another does not; Quote-only and Trade-only
+   recovery; Profile-only recovery is not Quote/Trade recovery; genuine recovery
+   reported; distinct stop outcomes; closed market never PASS.
+
+### R1–R4 implementation record
+
+Changed files: `src/desk/quote_mapping.py` (sidecar flock fence, `MappingView`, schema v2
+with legacy preservation, StrictBool classification, review command reports a busy
+store), `src/desk/quote_risk.py` (fence held to COMMIT, pinned Webull identity,
+`webull_identity`), `src/desk/vendor_basis.py` (`VendorHistoryStore.pinned`, local
+read), `src/desk/tastytrade_quotes.py` (strict `is_etf` in the instrument identity,
+halt latch, per-generation event counts), `src/desk/tastytrade_transport.py`
+(`attempt_log`, `final_attempt`, per-symbol/component recoveries),
+`src/desk/quote_check.py` (final-generation status/coverage/lag, labelled history);
+tests `tests/test_quote_reaudit.py` (new, 43) and updated fixtures/expectations in
+`test_quote_risk.py`, `test_quote_repairs.py`, `test_quote_diagnostic.py`,
+`test_tastytrade_quotes.py` (`stock()` now carries `is-etf: false`); docs.
+
+Halt latch scope (documented choice): kept per symbol, including across an identity
+refresh of that symbol (fail closed; a new identity also needs its own reviewed
+mapping); cleared only by an ACTIVE Profile for that symbol in the current session.
+
+| Item | Before (`12705aa`, Astra's probe unchanged) | After (repair, same probe) | Regressions |
+| --- | --- | --- | --- |
+| R1 approve | writer finished before COMMIT; approved; `defect_reproduced: true` | writer still waiting at COMMIT; approved under the unchanged mapping; later verification sees the change; `false` | `test_quote_reaudit::test_thread_writer_with_its_own_store_waits_for_the_ticket_commit[approve, consume]`, `::test_separate_process_writer_waits_for_the_ticket_commit[approve, consume]`, `::test_writer_that_finishes_before_the_fence_makes_the_action_refuse`, `::test_busy_fence_refuses_then_releases_cleanly`, `::test_unreadable_store_refuses_and_leaves_the_lock_free`, `::test_failed_write_leaves_no_partial_file_temp_file_or_lock`, `::test_no_mapping_file_stays_read_only`, `::test_symlinked_lock_is_refused`, `::test_v1_records_are_preserved_refused_and_migrated_without_erasing_peers`, `::test_review_command_reports_a_busy_store_instead_of_crashing` |
+| R1 consume | consumed; `true` | writer waiting at COMMIT; consumed under the unchanged mapping; `false` | (same) |
+| R2 | identity digest unchanged; approved; `true` | refused at recheck `QUOTE_MAPPING_CLASSIFICATION_MISMATCH`; ticket stays pending; `false` | `::test_common_stock_becoming_an_etf_refuses_before_any_signal_change`, `::test_reclassification_between_recheck_and_commit_refuses[approve, consume]`, `::test_correctly_mapped_etf_verifies_and_an_etf_turning_common_refuses`, `::test_review_against_a_differently_classified_webull_pin_refuses`, `::test_missing_or_corrupt_classification_is_unavailable_never_common_stock[5]`, `::test_review_refuses_a_string_classification`, `::test_harmless_refresh_needs_no_new_review`, `::test_the_signal_path_pins_the_webull_classification`, `::test_classification_is_part_of_the_bound_instrument_identity` |
+| R3 | after ERROR: `UNKNOWN`; approved; `true` | after ERROR: `HALTED / HALT_RETAINED_NO_RESUMPTION_EVIDENCE`; refused; `false` | `::test_halt_is_retained_through_profile_faults[6]`, `::test_halt_then_profile_fault_between_recheck_and_commit_refuses[approve, consume]`, `::test_halt_survives_reconnect_and_fresh_trades_until_active`, `::test_superseded_session_cannot_clear_a_newer_halt`, `::test_halt_is_per_symbol_and_no_profile_is_unknown`, `test_quote_repairs::test_profile_status_is_reported_separately[HALTED]` |
+| R4 | `OBSERVATIONS_ONLY`, lag `AVAILABLE_WITHIN_QUOTE_POLICY`, attempt-1 Trade shown; `true` | `NO_FINAL_ATTEMPT_OBSERVATIONS`, lag `UNAVAILABLE`, no final rows, attempt-1 Trade only under `historical_observations`; `false` | `::test_empty_final_attempt_keeps_earlier_trade_as_history_only`, `::test_one_ticker_recovers_and_another_does_not`, `::test_single_component_recovery_is_reported_as_partial[Quote, Trade]`, `::test_profile_only_recovery_is_not_quote_or_trade_recovery`, `::test_genuine_recovery_is_reported_with_new_observations`, `test_quote_repairs::test_heartbeat_timeout_recovers_with_fresh_generation_and_new_events` |
+
+Before/after of the new file: on a scratch clone of `12705aa` (one import given a
+no-op fallback so the file collects; no baseline behaviour changed) 39 of the then 41
+tests fail; the 2 passing are controls (a mapping changed before the fence already
+refused; a superseded session already could not speak). All pass on the repair.
+
+Self-review during this round: the review command let a busy store surface as a
+traceback (now a plain "Not recorded … Nothing was changed"); the first mutation run
+showed no test proved classification is part of the bound instrument identity (test
+added; mutation Q2d now caught).
+
+#### Verification (R1–R4 commit)
+
+Runtime: Linux container (Claude cloud), CPython 3.12.3 and 3.13.14; websockets 17.1,
+pydantic 2.13.5, pytest 9.1.1 (other versions as recorded above). Not the iMac.
+
+| Command | Result |
+| --- | --- |
+| `python -m pytest -q -W error` (3.12.3) | **1609 passed in 216.70s** |
+| `python -m pytest -q -W error` (3.13.14) | **1609 passed in 224.11s** |
+| `tests/test_quote_reaudit.py` | 43 passed |
+| `git diff --check` | Clean |
+| Astra's probe, unchanged, before (`12705aa`) / after (repair) | R1 approve/consume, R2, R3, R4: `defect_reproduced` true → false (outputs kept in the implementer's scratch area; key fields in the table above) |
+| Probe outputs and new test file scanned for credentials | No token/secret/bearer text; only labelled synthetic strings |
+
+Targeted mutations for the four safeguards (each removes one protection in a scratch
+copy; the six quote test files must then fail): **20 of 20 detected** — final fence
+without the mapping lock (Q1), writer without the lock (Q1b), busy store not refused
+(Q1c), lock file created with no store (Q1d), legacy records trusted (Q1e), review
+command crashing on a busy store (Q1f), tastytrade classification unchecked (Q2),
+unavailable treated as common stock (Q2b), Webull pinned classification unchecked
+(Q2c), classification outside the instrument digest (Q2d), string classification
+accepted in a review (Q2e), any Profile clearing a halt (Q3), Profile withholding
+clearing it (Q3b), reconnect clearing it (Q3c), halted trade still served (Q3d), status
+forgetting the latch (Q3e), summary from any generation (Q4), recovery by any event
+(Q4b), coverage not per generation (Q4c). Q2d first survived; a test was added.
+
+**Not completed:** the rerun of the first-round 30-mutation set (R0–R26) on this code
+was stopped after 2 of 31 runs (control passed; R1 lazy subscription detected by 16
+tests). Those 30 were all detected on `12705aa`; their detection on this commit is not
+re-established beyond those two.
+
+Unchanged pending acceptance: child 3 sign-off (Astra's re-audit), child 4 (iMac,
+Python 3.14.7, `sntp`, credentials), child 5 (regular-session timing, live config order,
+Profile delivery, reconnect), child 6 (remaining G5 rows), operational mappings and
+runtime inputs. Hierarchy G5 → G5a parent Checkpoint 3 → children 1–6; parent CP3 and G5
+stay open; Step 09 stays paused.

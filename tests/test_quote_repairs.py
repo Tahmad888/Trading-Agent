@@ -219,13 +219,17 @@ def profile_row(status, symbol="SPY"):
         "Profile", ["Profile", symbol, status, 0, 0]])
 
 
-@pytest.mark.parametrize("status,expected", [("ACTIVE", "ACTIVE"), ("HALTED", "HALTED"), ("UNDEFINED", "UNKNOWN")])
-def test_profile_status_is_reported_separately(status, expected):
+@pytest.mark.parametrize("status,expected,trade", [("ACTIVE", "ACTIVE", "AVAILABLE"),
+                                                   ("HALTED", "HALTED", "UNAVAILABLE"),
+                                                   ("UNDEFINED", "UNKNOWN", "AVAILABLE")])
+def test_profile_status_is_reported_separately(status, expected, trade):
     server = Server(on_subscribe=[compact("Trade", trade_row())], profile=[PROFILE_MAP, profile_row(status),
                                                                          compact("Trade", trade_row())])
     result, _ = run(server, profile=True)
     check = last(result)
-    assert check["trading_status"]["status"] == expected and check["trade"]["status"] == "AVAILABLE"
+    assert check["trading_status"]["status"] == expected and check["trade"]["status"] == trade
+    if status == "HALTED":
+        assert check["trade"]["reason"] == "SECURITY_HALTED"  # a halted print is not current evidence
 
 
 def test_profile_error_or_absence_never_stops_quotes_or_trades():
@@ -271,10 +275,12 @@ def test_invalid_profile_status_is_unknown_not_active():
 
 # ---- F10 and connection health: recovery, no revival, no retry loops -----------------------------
 def test_heartbeat_timeout_recovers_with_fresh_generation_and_new_events():
-    server = Server(on_subscribe=[compact("Trade", trade_row())])
+    server = Server(on_subscribe=[compact("Trade", trade_row()), compact("Quote", quote_row())])
     result, source = run(server, seconds=200, reconnects=1)
     assert result["faults"][0]["code"] == "DXLINK_HEARTBEAT_TIMEOUT" and result["faults"][0]["recoverable"]
-    assert result["recoveries"] and result["recoveries"][0]["recovered"] and result["recoveries"][0]["fresh_events"] > 0
+    recovery = result["recoveries"][0]
+    assert recovery["recovered"] and recovery["fresh_events"] > 0
+    assert recovery["by_symbol"]["SPY"]["Trade"] and recovery["by_symbol"]["SPY"]["Quote"]
     generations = {c["generation"] for view in result["observations"] for c in view["checks"]}
     assert len(generations) == 2 and server.connections == 2
     assert not source.connected  # the bounded capture always ends disconnected
@@ -460,6 +466,7 @@ def lag_report(trade_age, *, at):
         view = source.inspect(at)
         source.disconnect("CAPTURE_COMPLETE")
         return dict(stop_reason="CAPTURE_COMPLETE", observations=[view], requests=2, attempts=1,
+                    final_attempt=dict(attempt=1, generation=view["generation"], outcome="CAPTURE_COMPLETE"),
                     connected_after_capture=False)
     client, _ = client_fixture(dict(data=stock()))
     client.clock = lambda: at

@@ -336,7 +336,7 @@ Checkpoint 3 remain pending.** Step 09 remains paused. No trading activation.
 | Existing host TLS/CA | [H] Taz's 2026-10-03 report: SSL_CERT_FILE set/existing/matches certifi, certificate and hostname required, Webull sandbox and Massive TLS PASS. | Accepted unaffected baseline evidence; new tastytrade HTTPS/WSS host check pending |
 | Massive dividend/split observations | [H] Taz's 2026-10-04 00:28–00:41Z reports in `/Users/taz/Desktop/g5-volume-urzfS2`: SPY/QQQ two dividends each; NFLX 2025-11-17 10:1 event, 50 post-split sessions PASS and crossing window EXPECTED_REFUSAL. One unrelated AXIAp identity issue isolated. SPY ex-date daily/minute volume disagreement was measured, not explained or waived. | Accepted scoped observations; no universal action completeness/volume claim |
 | Child 2 quote implementation | [S] Astra's `78da588`: `tastytrade_quotes`, `tastytrade_transport`, `quote_risk`, `quote_check`; provider identity/times, caller-source check, per-symbol failures, health/price final fence, closed-market evidence limit; no Candle volume. Child 3 review found F1–F10 (below). | Implemented by Astra; defects repaired in child 3 |
-| Child 3 code review and repairs | [S] Claude's independent review of `78da588` (13 synthetic probes, 18 targeted mutations, 1475 strict on Python 3.12.3 and 3.13.14) found F1–F10; Astra reproduced F1–F8. Claude implemented the repairs (`checkpoints/G5a-cp3-child3-quote-repairs.md`); dispositions in the table below. | Implemented by Claude; **independent sign-off pending Astra's audit** |
+| Child 3 code review and repairs | [S] Claude's independent review of `78da588` found F1–F10; Claude repaired them in `12705aa`. Astra's re-audit of `12705aa` (1566 strict on Python 3.12.14) withheld sign-off for R1–R4 (mapping writer outside the final fence, classification not checked against current identities, halt forgotten after a Profile fault, earlier-connection prices in the recovery summary); Claude repaired R1–R4 in the follow-up commit (`checkpoints/G5a-cp3-child3-quote-repairs.md`). | Implemented by Claude; **independent sign-off pending Astra's re-audit** |
 | Child 4 current-commit iMac | Pull reviewed quote commit, install `.[dev,quotes]`, strict suite, private credentials and read-only diagnostic; see quote handoff. | Pending |
 | Child 5 actual regular-session quotes/recovery | SPY/QQQ/NVDA and real SPY call/put metadata; source times versus simultaneous independent observations; quote side freshness, updates, missing fields, disconnect/recovery. | Pending; closed-session data cannot close it |
 | Child 6 actual Friday 16:40 build | Latest Friday price session; prior Thursday finalized SIP liquidity. Existing deterministic calendar/cutoff tests are reused. | Deterministic tests only; actual scheduled-time read-only build pending |
@@ -362,6 +362,15 @@ calls were made. Details and test names: `checkpoints/G5a-cp3-child3-quote-repai
 | F8 quote session per CLI command | Diagnostic-closed: actionable "quote session changed" refusal; generation binding kept | Long-lived shared quote service (future design, not built) |
 | F9 halts | Code-closed for known HALTED via optional Profile on a separate channel; UNDEFINED/missing is unknown | Profile delivery for this account (child 5); final `security_tradable` wiring |
 | F10 heartbeat recovery | Code-closed: bounded recovery with fresh token/generation/events; denial/schema/429/expiry stop | Live reconnect (child 5); token renewal for an all-day service |
+
+### Child 3 re-audit items (R1–R4)
+
+| Item | Disposition | Still pending |
+| --- | --- | --- |
+| R1 mapping writer outside the final fence | Code-closed: shared sidecar flock held from before the final clock to COMMIT; writers (review command) take it exclusively; thread and separate-process races wait or refuse | — |
+| R2 classification not checked against current identities | Code-closed: tastytrade `is-etf` in the instrument identity and the mapping digest; pinned Webull sub-category compared; missing/corrupt is unavailable; v1 mappings refused and preserved | Webull reclassification seen at the next vendor fetch (no network in the fence); no operational mapping |
+| R3 halt forgotten after a Profile fault | Code-closed: per-symbol halt latch cleared only by ACTIVE; halted prices refused | Profile delivery for this account (child 5); latch is in-process only |
+| R4 earlier connection's prices in the recovery summary | Diagnostic-closed: status/coverage/lag from the final generation; history labelled; recovery by symbol and component | Live reconnect (child 5) |
 
 The referenced iMac/cloud artifacts are not available in this implementation
 checkout. That is an access limitation, not a failed provider check or a claim that

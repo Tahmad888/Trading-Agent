@@ -84,6 +84,19 @@ class VendorHistoryStore:
                 raise BarDataError("SECURITY_IDENTITY_ALIAS")
             db.execute("INSERT OR IGNORE INTO identities VALUES (?,?,?)", (host,metadata.symbol,identity))
 
+    def pinned(self, host, symbol) -> dict | None:
+        """The pinned identity for host/symbol (local read, no network), or None."""
+        with closing(sqlite3.connect(self.path)) as db:
+            row = db.execute("SELECT identity FROM identities WHERE host=? AND symbol=?", (host, symbol)).fetchone()
+        if row is None:
+            return None
+        try:
+            instrument_id, currency, exchange_code, sub_category = json.loads(row[0])
+        except (ValueError, TypeError):
+            return None
+        return {"instrument_id": instrument_id, "currency": currency, "exchange_code": exchange_code,
+                "sub_category": sub_category}
+
     @staticmethod
     def _content_digest(basis):
         content = {k:v for k,v in basis.model_dump(mode="json").items() if k not in {"verified_at", "basis_session"}}

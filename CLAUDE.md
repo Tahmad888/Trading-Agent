@@ -11,8 +11,10 @@ the repairs (`docs/checkpoints/G5a-cp3-child3-quote-repairs.md`): lazy/changed/p
 DXLink field maps, reviewed Webull↔tastytrade identity mappings verified before any
 signal-state change (`src/desk/quote_mapping.py`; no operational mapping exists yet),
 reserved `tastytrade-dxlink` label, ambiguous-quote withholding, clock-lead evidence,
-optional Profile status, bounded heartbeat recovery. Child 3 sign-off is pending Astra's
-audit. Read the child-3 record and `docs/TASTYTRADE_QUOTES.md` before quote work. Historical Webull prices and Alpaca SIP decision volume are
+optional Profile status, bounded heartbeat recovery (`12705aa`). Astra's re-audit found
+R1–R4; Claude repaired them (mapping fence held to ticket COMMIT, bound ETF/common
+classification with v2 mapping schema, halt latch cleared only by ACTIVE, final-attempt
+diagnostic coverage). Child 3 sign-off is pending Astra's re-audit. Read the child-3 record and `docs/TASTYTRADE_QUOTES.md` before quote work. Historical Webull prices and Alpaca SIP decision volume are
 unchanged; immediate consolidated intraday volume remains unresolved. The adapter
 does not supply a complete live RiskInputs factory or a long-lived quote service (the
 ticket CLI's separate commands cannot share one quote session). Child 3 sign-off, child 4

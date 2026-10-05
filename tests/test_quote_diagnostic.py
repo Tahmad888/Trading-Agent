@@ -68,6 +68,7 @@ def test_closed_market_never_claims_live_even_with_fresh_fixture_events():
         view = source.inspect(closed)
         source.disconnect("CAPTURE_COMPLETE")
         return dict(stop_reason="CAPTURE_COMPLETE", observations=[view], requests=2,
+                    final_attempt=dict(attempt=1, generation=view["generation"], outcome="CAPTURE_COMPLETE"),
                     attempts=1, connected_after_capture=False)
     result = diagnostic(client, QuoteService(), ["SPY"], capture_fn=captured, clock=lambda:closed)
     assert result["LIVE_TIMING"] == "NOT_TESTED_MARKET_CLOSED"

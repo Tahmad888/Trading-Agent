@@ -81,10 +81,13 @@ each event type is decoded only with the server's accepted map for that type.
 A heartbeat timeout or socket failure clears observations at once. Within the same
 bounded attempt count (0–2 reconnects), duration (1–600 s) and REST budget, the capture
 gets a fresh token and generation and needs new events. Denial, protocol/schema,
-rate-limit (429) and token-expiry faults stop. The report lists `faults` and
-`recoveries` (fresh events per recovered attempt) and keeps a capture deadline
-(`CAPTURE_COMPLETE`, `deadline_reached`) distinct from a provider fault. Token renewal
-for an all-day service is **not implemented** (`token_renewal` says so).
+rate-limit (429) and token-expiry faults stop. The report lists `faults`, an
+`attempt_log` (each attempt's generation, outcome and per-symbol Quote/Trade/Profile
+receipt), `final_attempt`, and `recoveries` by symbol and component. A recovery counts
+as `recovered` only when every subscribed symbol received both Quote and Trade in the new
+generation; Profile alone or one healthy peer is not recovery (re-audit R4). A capture
+deadline (`CAPTURE_COMPLETE`, `deadline_reached`) stays distinct from a provider fault.
+Token renewal for an all-day service is **not implemented** (`token_renewal` says so).
 
 ## Interfaces and refusal behavior
 
@@ -130,11 +133,37 @@ cannot disturb a newer one. No live cache survives process restart.
 Webull's metadata has its own instrument ID, name, exchange, sub-category and currency,
 but no CUSIP/FIGI (`evidence/step06-native-channels.md`); tastytrade has a CUSIP. With
 no shared identifier, no mapping is derived automatically. `desk.quote_mapping` keeps
-reviewed records in one JSON file (`DESK_QUOTE_MAPPINGS`, mode 0600, atomic writes):
+reviewed records in one JSON file (`DESK_QUOTE_MAPPINGS`, schema
+`desk-quote-mappings-v2`, mode 0600, atomic writes):
 
-- Bound (digest): desk symbol; Webull host, instrument ID, currency; tastytrade
-  environment, provider symbol, streamer symbol and identifier (the CUSIP when supplied).
-- Supporting evidence (not bound): names, exchange/listed market, capture digests.
+- Bound (digest): desk symbol; Webull host, instrument ID, currency and sub-category
+  (COMMON_STOCK/ETF); tastytrade environment, provider symbol, streamer symbol,
+  identifier (the CUSIP when supplied) and `is-etf` (re-audit R2).
+- Supporting evidence (not bound): names, descriptions, exchange/listed market, review
+  time and capture digests. Changing these never needs a new review.
+- Classification is checked against the *current* identities on every verification:
+  tastytrade `is-etf` (part of the instrument identity digest; only a real JSON boolean
+  counts, so missing, `null`, `"false"` or other values are
+  `QUOTE_MAPPING_CLASSIFICATION_UNAVAILABLE`) and the Webull identity the vendor path has
+  pinned for the host and symbol (`[instrument_id, currency, exchange_code,
+  sub_category]`, refused by the vendor path if it ever changes; read locally).
+  Disagreement is `QUOTE_MAPPING_CLASSIFICATION_MISMATCH`; no pin is
+  `QUOTE_MAPPING_WEBULL_IDENTITY_UNAVAILABLE`. Limits: Webull has no CUSIP/FIGI;
+  tastytrade `instrument-sub-type` values are not enumerated in its OpenAPI, so only
+  `is-etf` is bound; a Webull reclassification shows at the next vendor fetch, not inside
+  the no-network final fence.
+- Migration: v1 records (no classification binding) are kept verbatim under
+  `legacy_unverified` and refused (`QUOTE_MAPPING_REVIEW_REQUIRED`) until re-reviewed;
+  invalid peer records are never erased by a write. None existed operationally.
+- Fence (re-audit R1): verification takes a shared `fcntl.flock` on `<store>.lock`, a
+  stable sidecar (the JSON itself is atomically replaced, so locking it would be
+  bypassed by the rename); `add` (the review command) takes an exclusive lock after the
+  reviewer confirms. Each acquisition opens its own descriptor, so threads and
+  processes exclude each other ([flock(2)](https://man7.org/linux/man-pages/man2/flock.2.html)).
+  Waits are bounded (10 s); a busy, unreadable or unlockable store refuses
+  (`QUOTE_MAPPING_STORE_BUSY`, `…_STORE_UNREADABLE`, `…_LOCK_UNAVAILABLE`). With no store
+  file nothing is created and nothing verifies. There is no removal command; a review
+  replaces that symbol's record.
 - Automatic checks a review cannot override: both providers' symbols equal the desk
   symbol including share class (`BRK.B` ↔ `BRK/B`), the ETF flag agrees, the bound
   tastytrade identifier is the supplied CUSIP. They are necessary, not proof of issuer.
@@ -147,7 +176,8 @@ reviewed records in one JSON file (`DESK_QUOTE_MAPPINGS`, mode 0600, atomic writ
 change: healthy tastytrade identity → reviewed mapping against the signal's own stored
 Webull basis (`host`, `security_id`, `currency`, `symbol`; only the G3 vendor basis
 records the host, so a legacy reviewed-ledger basis gives
-`QUOTE_MAPPING_WEBULL_HOST_UNKNOWN`) → Profile not HALTED → fresh same-generation trade.
+`QUOTE_MAPPING_WEBULL_HOST_UNKNOWN`) and its pinned Webull identity → no retained halt →
+fresh same-generation trade.
 Failures are per-symbol `QUOTE_MAPPING_*`/`SECURITY_HALTED`/quote codes, shown on the
 ticket; the signal's state, levels, expiry and revision evidence are untouched. Only a
 verified quote reaches scanner revalidation, where the unchanged rules apply (a verified
@@ -167,11 +197,26 @@ close comparison or name similarity is used as issuer proof.
 - Binding includes the provenance (source, environment, instrument, streamer, identity
   digest, mapping digest, generation), not receipt times. Fresh prices in the same
   generation do not create versions.
-- Final transaction lock order: ticket → signal → volume/identity (when required) →
-  local quote health (in-process lock; the mapping file is read here, no network) →
-  account. The fence re-verifies identity, mapping, halt status and the latest
-  same-generation trade, and reruns the existing risk rules on that price: normal
-  allowed movement needs no new version; a stop/chase/entry failure refuses.
+- Final transaction lock order: ticket (`BEGIN EXCLUSIVE`) → signal → volume/identity
+  (when required) → mapping (shared sidecar lock, held until COMMIT) → quote health
+  (in-process lock) → account. All waits happen before the final clock; no network
+  under any of them. A mapping writer takes only the exclusive mapping lock, so no
+  cycle exists. The fence re-verifies identity, mapping and classification, halt status
+  and the latest same-generation trade, and reruns the existing risk rules on that
+  price: normal allowed movement needs no new version; a stop/chase/entry failure
+  refuses. A writer arriving after the final check waits until COMMIT.
+- Halts (re-audit R3): a HALTED Profile is latched per symbol. A Profile channel error
+  or closure, an invalid map or row, UNDEFINED, a reconnect, a fresh Trade or an accepted
+  map never clear it; only an ACTIVE Profile for that symbol in the current session
+  does. No timer. While latched, `trade()` and `quote()` refuse with `SECURITY_HALTED`, so
+  no halted price serves as current evidence, and the bridge refuses before revalidation
+  and in the final fence. A superseded session cannot clear it. No Profile ever received
+  stays UNKNOWN (never ACTIVE) and does not block Quote/Trade; tradability still comes
+  from the separate required status input, which has not been verified against this
+  account. The latch is in-process: a restarted process starts with no quotes and no
+  latch, and approvals never carry across sessions. Exchange halts have no fixed length
+  and end on an explicit resumption, which is why no timer clears the latch; the latch
+  itself is this desk's engineering contract, not something the dxFeed enum prescribes.
 
 ### Quote sessions and the ticket CLI (F8)
 
@@ -204,27 +249,35 @@ fabricate account/risk snapshots, market regime, option deliverables/increments,
 interest, exit valuation, broker funding or tradability. Missing required inputs stay
 blocking under existing risk checks.
 
-## Read-only host commands — run only after Astra's review of this commit
+## Read-only host commands — run only after Astra's review of the reviewed commit
 
-From the updated clean iMac checkout, with the existing private env file. Credentials
-are entered privately (`python tools/setup_tastytrade_env.py`, hidden input, mode 0600,
-other settings preserved); never paste keys into chat or a command line.
+Run these one line at a time on the iMac. Stop at any line whose output is not as
+described. Replace `REVIEWED_SHA` with the exact commit Astra signed off. Credentials are
+a separate, earlier step (`python tools/setup_tastytrade_env.py`: hidden input, mode
+0600, other saved settings preserved); never paste keys into chat or a command line.
 
 ```sh
 cd "$HOME/Trading-Agent"
+git status --porcelain --untracked-files=no
+git branch --show-current
+git fetch origin codex/repair-step-01-baseline
+git merge --ff-only origin/codex/repair-step-01-baseline
+git rev-parse HEAD
+test "$(git rev-parse HEAD)" = "REVIEWED_SHA" && echo SHA_OK || echo SHA_MISMATCH_STOP
 source .venv/bin/activate
 source "$HOME/.config/trading-desk/env"
-sntp time.apple.com                      # read-only offset check; record the result
+python --version
 python -m pip install -e '.[dev,quotes]'
 python -m pytest -q -W error
+sntp time.apple.com
 desk_quote_report_dir=$(mktemp -d "$HOME/Desktop/g5-quotes-XXXXXX")
-python -m desk.quote_check --environment production --symbols SPY QQQ NVDA \
-  --option-underlying SPY --seconds 120 --reconnects 1 --max-requests 20 \
-  --output "$desk_quote_report_dir/quotes.json"
-python -m desk.quote_check --environment production --symbols SPY --profile \
-  --seconds 30 --reconnects 0 --max-requests 6 \
-  --output "$desk_quote_report_dir/profile.json"
+python -m desk.quote_check --environment production --symbols SPY QQQ NVDA --option-underlying SPY --seconds 120 --reconnects 1 --max-requests 20 --output "$desk_quote_report_dir/quotes.json"
+python -m desk.quote_check --environment production --symbols SPY --profile --seconds 30 --reconnects 0 --max-requests 6 --output "$desk_quote_report_dir/profile.json"
 ```
+
+Expected: `git status` prints nothing; the branch is `codex/repair-step-01-baseline`;
+`merge --ff-only` succeeds; `SHA_OK`; the suite passes; `sntp` only prints the offset
+(no clock-setting flags are used). The diagnostics write only to the new scratch folder.
 
 Option pair: the nearest non-expired Standard expiry on the ET market date (today's
 only before today's close), at the listed strike nearest the observed SPY trade
@@ -234,7 +287,11 @@ median listed strike, labelled `NOT_REPRESENTATIVE_MEDIAN_STRIKE`. This is diagn
 selection, not a recommendation. The report separates stocks and options, socket
 liveness, identity capture (for a later mapping review), receipt times, signed
 receipt-minus-source lag, trade age, side-change ages, trading status, faults and
-recoveries. `lag_evidence` is `AVAILABLE_WITHIN_QUOTE_POLICY`,
+recoveries. Stock/option status, coverage and `lag_evidence` come from the final
+attempt's generation only (`final_attempt`); earlier connections' observations appear
+under `historical_observations` (ineligible), and `status` is
+`NO_FINAL_ATTEMPT_OBSERVATIONS` when the last connection delivered nothing (re-audit
+R4). `lag_evidence` is `AVAILABLE_WITHIN_QUOTE_POLICY`,
 `INCONSISTENT_WITH_QUOTE_POLICY`, `UNAVAILABLE` or (closed session)
 `CLOSED_SESSION_AGES_ONLY_NOT_LIVE_EVIDENCE`. Exit 0 means observations were recorded;
 it is never a live-trading sign-off. No scan, scheduler, ticket, mapping write, broker

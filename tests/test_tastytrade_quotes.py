@@ -17,7 +17,7 @@ AGE = timedelta(seconds=60)
 
 def stock(symbol="SPY", **changes):
     row = {"symbol": symbol, "streamer-symbol": symbol, "instrument-type": "Equity",
-           "active": True, "cusip": "synthetic:"+symbol}
+           "active": True, "cusip": "synthetic:"+symbol, "is-etf": False}
     row.update(changes)
     return row
 

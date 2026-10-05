@@ -93,7 +93,13 @@ def diagnostic(client, service, equities, *, option_underlying=None, option_stri
     finished = clock()
     in_session = session_label(started) == session_label(finished) == "RTH"
     observations = result["observations"]
-    latest = observations[-1] if observations else None
+    final = result.get("final_attempt") or {}
+    # Status, coverage and lag come from the final attempt's generation only (R4).
+    # Earlier connections' observations are kept, labelled historical and ineligible.
+    final_views = [view for view in observations if final.get("generation")
+                   and view.get("generation") == final["generation"]]
+    latest = final_views[-1] if final_views else None
+    earlier = [view for view in observations if view not in final_views]
     rows = (latest or {}).get("checks", [])
     if option.get("status") == "WAITING_FOR_UNDERLYING_TRADE":
         option["status"] = "NOT_TESTED_NO_UNDERLYING_TRADE"
@@ -112,9 +118,15 @@ def diagnostic(client, service, equities, *, option_underlying=None, option_stri
                 environment=client.environment, started_at=started.isoformat(), finished_at=finished.isoformat(),
                 LIVE_TIMING="OBSERVATIONS_REQUIRE_REVIEW" if in_session else "NOT_TESTED_MARKET_CLOSED",
                 lag_evidence=_lag_evidence([r for r in rows if r["kind"] == "Equity"], in_session),
-                status=("OBSERVATIONS_ONLY" if observations and result["stop_reason"] == "CAPTURE_COMPLETE"
-                        else "UNAVAILABLE"), identity_issues=issues,
-                stocks=groups["stocks"], options=groups["options"], capture=result,
+                status=("OBSERVATIONS_ONLY" if final_views and result["stop_reason"] == "CAPTURE_COMPLETE"
+                        else "NO_FINAL_ATTEMPT_OBSERVATIONS" if observations else "UNAVAILABLE"),
+                identity_issues=issues, stocks=groups["stocks"], options=groups["options"],
+                final_attempt=dict(attempt=final.get("attempt"), generation=final.get("generation"),
+                                   outcome=final.get("outcome"), components=final.get("components", {})),
+                historical_observations=dict(
+                    note="Earlier connections' observations: history only, never current or final-attempt evidence",
+                    eligible=False, latest=earlier[-1] if earlier else None),
+                capture=result,
                 clock=dict(host_offset="NOT_MEASURED_BY_THIS_COMMAND",
                            read_only_check="sntp time.apple.com (no clock-setting flags)",
                            tolerance_applied="NONE", future_source_time=clock_rows,

@@ -430,7 +430,13 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
         raise QuoteUnavailable("QUOTE_ENVIRONMENT_MISMATCH")
     end, attempts, reason, observations = monotonic()+seconds, 0, None, []
     authenticated, configured, levels, faults, recoveries = False, False, [], [], []
-    pending = None
+    pending, attempt_log = None, []
+
+    def coverage():
+        """Per symbol: which components were received in the current generation (R4)."""
+        seen = service.generation_events()
+        return {symbol: {kind: seen.get(symbol, {}).get(kind, 0) > 0 for kind in (*CORE, *OPTIONAL)}
+                for symbol in service.identities}
 
     def fail(code):
         service.disconnect(code)  # before any socket teardown wait
@@ -438,11 +444,12 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
 
     while monotonic() < end and attempts <= reconnects:
         attempts += 1
-        fault, before = None, sum(service.events.values())
+        fault, before, generation = None, sum(service.events.values()), None
         try:
             token = client.stream_token()
             levels.append(token.entitlement)
             session = Session(service, token, clock(), profile=profile)
+            generation = session.generation
             with connect(token.url) as ws:
                 ws.send(json.dumps(session.setup()))
                 started = last_message = last_send = monotonic()
@@ -500,8 +507,15 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
         finally:
             service.disconnect(fault or reason or "DISCONNECTED")
         fresh = sum(service.events.values()) - before
+        components = coverage() if generation is not None and generation == service.generation else {}
+        attempt_log.append(dict(attempt=attempts, generation=generation, outcome=fault or reason,
+                                fresh_events=fresh, components=components))
         if pending is not None:
-            recoveries.append(dict(after=pending, attempt=attempts, fresh_events=fresh, recovered=fresh > 0))
+            # Recovered only if every subscribed symbol received both Quote and Trade in
+            # the new generation; Profile alone or one healthy peer is not recovery.
+            recovered = bool(components) and all(c["Quote"] and c["Trade"] for c in components.values())
+            recoveries.append(dict(after=pending, attempt=attempts, generation=generation, fresh_events=fresh,
+                                   by_symbol=components, recovered=recovered))
             pending = None
         if fault is None:
             break
@@ -514,7 +528,8 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
     if reason is None:
         reason = faults[-1]["code"] if faults else "CAPTURE_DEADLINE"
     return dict(attempts=attempts, stop_reason=reason, deadline_reached=monotonic() >= end,
-                faults=faults, recoveries=recoveries, observations=observations,
+                faults=faults, recoveries=recoveries, attempt_log=attempt_log,
+                final_attempt=attempt_log[-1] if attempt_log else None, observations=observations,
                 requests=client.requests, connected_after_capture=service.connected,
                 rest_authentication_seen=client._access is not None,
                 streaming_authentication_seen=authenticated, field_schema_accepted=configured,
