@@ -323,7 +323,7 @@ BBO freshness contract; dayVolume units, odd-lot treatment, channel breadth and 
 exchange cutoff are not established; receipt brackets are not an RTH total; the host
 clock measurement is the iMac's only when run there; no provider call was made.
 
-**Status when saved (session limit):** Package 3 focused tests pass (33; mutations all
-killed). The final combined strict suites on Python 3.12.3 and 3.13.14 were still
-running when this commit was saved and have **not** been confirmed on it. Next: run both
-suites on this commit, record counts, then send the handoff and stop for Astra.
+**Final verification (combined strict suites, `-W error`, on `f95d1ff`'s code; the runs
+started before that commit and only its record text changed after):** Python 3.12.3:
+1744 passed (305.3 s); Python 3.13.14: 1744 passed (313.9 s). `git diff --check` over
+the three packages: clean. Next: Astra's audit of `e237309` and these three packages.
