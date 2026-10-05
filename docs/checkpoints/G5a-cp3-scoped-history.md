@@ -342,7 +342,8 @@ session omitted fails; (d) a healthy peer publishes PARTIAL without the clipped 
 (e) a sole failed candidate keeps the previous list as FAILED with its age; (f) a fresh
 complete reply recovers and a stale one is refused; (g) short history established by an
 uncapped full-history capture stays the "under a year" criterion; (h) a first-time short
-reply with no such evidence, or a capped one, is a source failure.
+reply with no such evidence, or a capped one, is a source failure. (Case (g) is withdrawn
+by the coverage-origin repair below: a reply's row count is not origin evidence.)
 F2: raw parser rejects booleans in each field and keeps numeric strings, numbers and zero
 volume; the integrated control that fails the Trend Template is not made a leader by a
 boolean low on either path; an outside-scope boolean is excluded and recorded, an
@@ -364,7 +365,8 @@ reads the earliest first session of every accepted (`CONSISTENT`/`REVISED`) capt
 same instrument ID in any scope from the append-only observations and snapshots, so a
 narrower later reply, a restart, a failed refresh or a window roll cannot erase it; new
 table `coverage_starts` records where an uncapped full-history capture (fewer than the
-1000 rows asked for) began. `VendorBasisSource._short_history` runs before a late-starting
+1000 rows asked for) began (superseded 2026-10-05: no longer written or trusted; see the
+coverage-origin repair). `VendorBasisSource._short_history` runs before a late-starting
 reply is recorded: earlier accepted coverage gives `SCOPED_HISTORY_INCOMPLETE`, otherwise
 no uncapped start at that session gives `SCOPED_COVERAGE_UNVERIFIED`; both are source
 failures and leave the last accepted pointer in place with an `UNAVAILABLE` observation.
@@ -404,9 +406,96 @@ flag always set.
 **Source limitation (documented, not resolved).** Webull's bounded reply cannot show where
 a listing begins. On a scoped-only desk a genuinely young listing is now a source failure
 until an uncapped full-history capture of it exists (for example after it has been on the
-watchlist). In the live preview at `9e43eeb`, 8 names were `under a year of bars`; under
+watchlist). (Superseded 2026-10-05: an uncapped capture no longer counts either; see the
+coverage-origin repair.) In the live preview at `9e43eeb`, 8 names were `under a year of bars`; under
 this repair they would be reported as unverified coverage instead (inferred, not re-run).
 No listing date is invented and no provider call is added.
+
+**Remaining acceptance.** Astra's re-audit; the iMac pull, strict suite and one read-only
+scoped build; a scheduled Friday 16:40 build; a regular-session check.
+
+## Coverage-origin repair (before-code record, 2026-10-05)
+
+Taz's prompt (00:04Z, relayed; verbatim at
+`research/ai-trading/g5/audits/g5a-cp3-coverage-origin-repair-prompt-2026-10-05-verbatim.md`)
+carries Astra's re-audit of `1dea7d4`: F1, F2 and D1 pass and stay. Baseline `1dea7d4`,
+no newer remote commit, clean tree (checked 00:06Z).
+
+**Defect.** `bars()` passed `uncapped_start=len(reply) < 1000`, and `coverage()` promoted
+that first session to the listing's origin. A reply cut short by the provider has the same
+shape as a genuinely short history (her reproduction: 1100 sessions available, 259
+returned, `established` = 2025-09-23, discovery published a healthy EMPTY).
+
+**Requirements (User policy).** Row count never creates origin evidence. The current
+integration has no supported identity-bound origin or completeness evidence (no
+provider guarantee was supplied; Astra's reading of the public route description found
+none), so every scoped reply that starts after the required start is a per-ticker source
+failure: `SCOPED_HISTORY_INCOMPLETE` when accepted evidence already covers earlier
+sessions (kept across scopes and restarts), else `SCOPED_COVERAGE_UNVERIFIED`. Complete
+260-session replies need no origin proof. Rows already in `coverage_starts` stay as audit
+history and are ignored; nothing is deleted and the ordinary pointers are unchanged. No
+new source, purchase, automatic full-history retry or per-ticker enrollment. The
+under-260 criterion stays for history that is independently evidenced short (today only
+the unchanged full-history fallback path reaches it).
+
+**Acceptance cases (real parser, wrapper, scanner and ScanLog).** (a) her reproduction:
+truncated count=1000 full reply on first observation, then the build is FAILED, not
+EMPTY; (b) a genuinely short and a truncated history with identical shapes get the same
+`SCOPED_COVERAGE_UNVERIFIED`; (c) a database with a count-derived marker persisted by
+`1dea7d4`, reopened: marker kept and ignored, the name stays a source failure (PARTIAL
+beside a healthy peer), again on a later run; (d) a
+complete 260-session reply recovers to READY; (e) healthy peers publish PARTIAL;
+(f) earlier accepted coverage from either scope still gives `SCOPED_HISTORY_INCOMPLETE`
+after restart; (g) an ordinary complete build stays READY; CP2 suites and the F2/D1
+cases unchanged.
+
+## Coverage-origin repair results (Claude, 2026-10-05)
+
+Code completion only; pending Astra's re-audit. No provider call was made. G5 is not
+complete.
+
+**What changed.** `vendor_basis.py`: `record()` no longer takes `uncapped_start` and
+`bars()` no longer writes `coverage_starts`. `coverage()` returns `earliest` (unchanged:
+first session of any accepted capture of the same instrument ID, any scope, append-only),
+`established: None` always, and `ignored_count_markers` (how many `coverage_starts` rows a
+`1dea7d4` build left; the table and its rows are kept, commented as audit history only).
+`_short_history` raises `SCOPED_HISTORY_INCOMPLETE` exactly as before when earlier
+accepted coverage exists, otherwise `SCOPED_COVERAGE_UNVERIFIED: the reply starts X, after
+the required start Y, and no supported evidence shows the listing starts there`. Full
+pointers, scoped pointers, observations and snapshots are untouched. The full-history
+fallback (an adapter without scoped requests) is unchanged and still reports
+`under a year of bars` for short histories.
+
+**Before / after** (same script, `1dea7d4` worktree vs this repair, Python 3.12.3;
+`research/ai-trading/g5a-cp3-scoped-history-2026-10-04/coverage-origin-repair/`):
+
+| Scenario | `1dea7d4` | After |
+| --- | --- | --- |
+| Astra's case: `cap["AAA"]=259`, `full("AAA")`, then a scoped build | 259 rows; coverage `established` 2025-09-23; AAA `under a year of bars`; EMPTY in process and after restart; watchlist published | coverage `established` None, `ignored_count_markers` 0; AAA `SCOPED_COVERAGE_UNVERIFIED …`; FAILED in process and after restart; nothing published |
+| YOUNG (259 sessions) beside CUT (1100, capped to 259), both after `full()` | READY, leader AAA; both `under a year of bars` | PARTIAL, leader AAA; both the same `SCOPED_COVERAGE_UNVERIFIED …` |
+
+The new and changed tests run against `1dea7d4`: 5 of 57 fail (the four new
+coverage-origin tests and the rewritten short-history test).
+
+**Tests (Checked).** See the handoff for the final table; 1410 = 1407 + 3 (four new tests
+in `tests/test_scoped_history_audit.py` replace one; one rewritten in
+`tests/test_scoped_history.py`; `test_discovery_evidence_cannot_arm…` now uses a complete
+260-session NEW listing instead of 250, keeping its intent). Mutation checks, all caught:
+a reply's own start taken as origin; `coverage_starts` trusted again; earlier accepted
+coverage ignored; short reply accepted without origin evidence; coverage read from full
+history only.
+
+**Source limitation (documented, not resolved).** The current integration has no
+supported origin or completeness evidence, so on the scoped path every ticker whose reply
+starts after the required start (a listing younger than 260 sessions, or a reply cut short)
+is individually unavailable as `SCOPED_COVERAGE_UNVERIFIED`, whatever earlier full
+captures returned. It never removes a leader silently: an all-failed build is FAILED with
+the previous list retained, and healthy peers publish PARTIAL. The under-260 criterion is
+reached today only on the unchanged full-history fallback. In the `9e43eeb` live preview, 8
+names were `under a year of bars`; they would now be unverified (inferred, not re-run).
+Plan B if Taz wants young listings ranked: a supported origin source (for example a
+provider listing date bound to the instrument ID) would have to be chosen and audited
+first; nothing is added here.
 
 **Remaining acceptance.** Astra's re-audit; the iMac pull, strict suite and one read-only
 scoped build; a scheduled Friday 16:40 build; a regular-session check.

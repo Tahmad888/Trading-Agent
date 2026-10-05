@@ -51,10 +51,13 @@ report says so (`history_scope.path`).
 
 After Astra's audit of that checkpoint, a reply that starts after the window's first
 session is never taken as a young listing by itself. If any earlier accepted capture of
-the same instrument (full or discovery) started earlier, the reply is incomplete; if no
-accepted uncapped full-history capture shows the history starts there, coverage is
-unverified. Both are per-ticker source failures, so a clipped reply cannot remove a
-leader by making it look new. When every candidate fails its source data, the build is
+the same instrument (full or discovery) started earlier, the reply is incomplete; otherwise
+coverage is unverified, because the current sources give no supported evidence of where a
+listing starts and a reply with fewer rows looks the same whether the history is young or
+was cut short. Both are per-ticker source failures, so a clipped reply cannot remove a
+leader by making it look new. The cost: on the scoped path a listing younger than 260
+sessions is individually unavailable rather than reported as short history; that
+criterion remains only on the unchanged full-history fallback. When every candidate fails its source data, the build is
 FAILED and the previous list stays, with its age shown. Boolean OHLCV values and
 duplicate rows are rejected inside the window and recorded outside it.
 

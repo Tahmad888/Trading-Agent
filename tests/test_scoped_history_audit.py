@@ -7,8 +7,10 @@ No provider is called. Nothing here is setup qualification or trade approval.
 """
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import date, datetime
 import json
+import sqlite3
 
 import pytest
 
@@ -124,17 +126,80 @@ def test_first_time_short_or_stopped_short_reply_is_unverified_coverage_not_a_yo
         assert outcome["reason"].startswith(f"SCOPED_COVERAGE_UNVERIFIED: the reply starts {first}"), name
 
 
-def test_capped_full_history_does_not_establish_a_listing_start(tmp_path):
+# ------------------------------------------------- coverage origin (2026-10-05) ----
+
+def test_a_truncated_full_reply_is_not_origin_evidence_and_never_certifies_empty(tmp_path):
+    # Astra's reproduction of 1dea7d4: 1100 sessions exist, every reply stops at 259.
     sim = world("AAA")
-    sim.add("OLD", series(FRIDAY, 1100, start=70))
-    sim.universe("AAA", "OLD")
+    sim.cap["AAA"] = 259
     desk = Desk(tmp_path, sim)
-    assert len(desk.full("OLD")["OLD"]) == 1000                           # capped: older rows may exist
-    assert desk.store.coverage(HOST, "OLD", "wb:OLD")["established"] is None
+    assert len(sim.world["AAA"]["rows"]) == 1100 and len(desk.full("AAA")["AAA"]) == 259
+    assert desk.store.coverage(HOST, "AAA", "wb:AAA") == {"earliest": WINDOW[1], "established": None,
+                                                          "ignored_count_markers": 0}
+    for attempt in ("first", "repeat", "restart"):
+        if attempt == "restart":
+            desk = Desk(tmp_path, sim)
+        rec, build = desk.build()
+        assert build["status"] == "FAILED", attempt                      # was a healthy EMPTY at 1dea7d4
+        assert build["reasons"]["AAA"] == (f"SCOPED_COVERAGE_UNVERIFIED: the reply starts {WINDOW[1]}, after the "
+                                           f"required start {WINDOW[0]}, and no supported evidence shows the "
+                                           f"listing starts there")
+        assert rec.discovery["watchlist_build"]["published_status"] is None
+    del sim.cap["AAA"]                                                    # a complete 260-session reply
+    _, build = Desk(tmp_path, sim).build()
+    assert build["status"] == "READY" and [l["symbol"] for l in build["leaders"]] == ["AAA"]
+
+
+def test_genuinely_short_and_truncated_histories_with_the_same_shape_are_treated_alike(tmp_path):
+    sim = world("AAA")
+    sim.add("YOUNG", series(FRIDAY, 259, start=60))                       # really 259 sessions
+    sim.add("CUT", series(FRIDAY, 1100, start=60))
+    sim.cap["CUT"] = 259                                                  # 1100 sessions, cut to 259
+    sim.universe("AAA", "YOUNG", "CUT")
+    desk = Desk(tmp_path, sim)
+    young, cut = desk.full("YOUNG")["YOUNG"], desk.full("CUT")["CUT"]
+    assert len(young) == len(cut) == 259 and young.index.equals(cut.index)
+    _, build = desk.build()
+    assert build["status"] == "PARTIAL" and [l["symbol"] for l in build["leaders"]] == ["AAA"]
+    assert build["outcomes"]["YOUNG"] == build["outcomes"]["CUT"]
+    assert build["outcomes"]["CUT"]["outcome"] == "source_failure"
+    assert build["outcomes"]["CUT"]["reason"].startswith("SCOPED_COVERAGE_UNVERIFIED")
+
+
+def test_a_count_derived_marker_persisted_by_1dea7d4_is_kept_but_ignored_after_upgrade(tmp_path):
+    sim = world("AAA")
     sim.add("YOUNG", series(FRIDAY, 259, start=60))
-    assert len(desk.full("YOUNG")["YOUNG"]) == 259                        # uncapped: the history starts here
-    assert desk.store.coverage(HOST, "YOUNG", "wb:YOUNG") == {"earliest": WINDOW[1], "established": WINDOW[1]}
-    assert desk.store.coverage(HOST, "YOUNG", "wb:OTHER") == {"earliest": None, "established": None}
+    sim.universe("AAA", "YOUNG")
+    desk = Desk(tmp_path, sim)
+    desk.full("YOUNG")
+    with closing(sqlite3.connect(desk.store.path)) as db, db:            # exactly what 1dea7d4's record() wrote
+        db.execute("INSERT INTO coverage_starts VALUES (?,?,?,?,?)",
+                   (HOST, "YOUNG", "wb:YOUNG", WINDOW[1].isoformat(), BUILD.isoformat()))
+    pointer = desk.store.current_snapshot(HOST, "YOUNG")
+    for attempt in ("restart", "later run"):
+        desk = Desk(tmp_path, sim)
+        assert desk.store.coverage(HOST, "YOUNG", "wb:YOUNG") == {"earliest": WINDOW[1], "established": None,
+                                                                  "ignored_count_markers": 1}
+        _, build = desk.build()
+        assert build["status"] == "PARTIAL" and build["outcomes"]["YOUNG"]["reason"].startswith(
+            "SCOPED_COVERAGE_UNVERIFIED"), attempt
+    with closing(sqlite3.connect(desk.store.path)) as db:
+        assert db.execute("SELECT COUNT(*) FROM coverage_starts").fetchone()[0] == 1   # audit history kept
+    assert desk.store.current_snapshot(HOST, "YOUNG") == pointer                       # full pointer untouched
+
+
+def test_earlier_full_history_coverage_still_proves_a_scoped_reply_incomplete_after_restart(tmp_path):
+    sim = world("AAA")
+    desk = Desk(tmp_path, sim)
+    full = desk.full("AAA")["AAA"]                                        # 1000 rows from 2022
+    start = full.index[0].tz_convert(ET).date()
+    clip(sim, "AAA", WINDOW[1])
+    _, build = Desk(tmp_path, sim).build()
+    assert build["status"] == "FAILED"
+    assert build["reasons"]["AAA"].startswith(f"SCOPED_HISTORY_INCOMPLETE: accepted evidence for this instrument "
+                                              f"starts {start}; the reply starts {WINDOW[1]}")
+    assert desk.store.coverage(HOST, "AAA", "wb:OTHER") == {"earliest": None, "established": None,
+                                                            "ignored_count_markers": 0}
 
 
 # ------------------------------------------------------------------ F2 ----

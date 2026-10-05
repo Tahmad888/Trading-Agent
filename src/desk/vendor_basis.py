@@ -58,6 +58,8 @@ class VendorHistoryStore:
                     row_index INTEGER, row_time TEXT, field TEXT, reason TEXT NOT NULL,
                     status TEXT NOT NULL CHECK(status IN ('EXCLUDED_OUTSIDE_SCOPE','REJECTED_REQUIRED_DATA')),
                     evidence_digest TEXT NOT NULL, row_json TEXT, observed_at TEXT NOT NULL);
+                -- Audit history only (written by 1dea7d4 from reply row counts); never read
+                -- as listing-origin authority (coverage-origin repair, 2026-10-05).
                 CREATE TABLE IF NOT EXISTS coverage_starts (
                     host TEXT NOT NULL, symbol TEXT NOT NULL, instrument_id TEXT NOT NULL,
                     session TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(host,symbol,instrument_id,session));
@@ -96,13 +98,8 @@ class VendorHistoryStore:
         after = {r[0]:list(r[1:]) for r in basis.daily_history}
         return old[1], sorted(d for d in before.keys() & after.keys() if before[d] != after[d])
 
-    def record(self, host, symbol, at, status, detail, basis=None, *, uncapped_start=False):
-        """Full-history evidence: the only writer of the ``current`` pointer.
-
-        ``uncapped_start``: the provider returned fewer rows than the full request asked
-        for, so nothing older exists there and the capture's first session is where this
-        instrument's history starts (audit F1; the only evidence of a short history).
-        """
+    def record(self, host, symbol, at, status, detail, basis=None):
+        """Full-history evidence: the only writer of the ``current`` pointer."""
         digest = None
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -117,9 +114,6 @@ class VendorHistoryStore:
                     status, detail = "REVISED", "Daily OHLCV revised on " + ",".join(changed)
                 db.execute("INSERT OR IGNORE INTO snapshots VALUES (?,?)", (digest,payload))
                 db.execute("INSERT OR REPLACE INTO current VALUES (?,?,?,?)", (host,symbol,digest,clock(at).isoformat()))
-                if uncapped_start:
-                    db.execute("INSERT OR IGNORE INTO coverage_starts VALUES (?,?,?,?,?)",
-                               (host,symbol,basis.security_id,basis.coverage_start.isoformat(),clock(at).isoformat()))
             db.execute("INSERT INTO observations(host,symbol,at,status,detail,digest,scope) VALUES (?,?,?,?,?,?,?)",
                        (host,symbol,clock(at).isoformat(),status,detail,digest,FULL_HISTORY))
         return {"status":status, "detail":detail, "snapshot":digest}
@@ -200,8 +194,11 @@ class VendorHistoryStore:
         ``earliest``: the first session of any accepted capture (full history or any
         scope; ``CONSISTENT`` or ``REVISED`` observations, append-only), so a later
         narrower reply cannot erase it across restarts, window rolls or failed refreshes.
-        ``established``: the session where an uncapped full-history capture showed the
-        history starts, when that is still the earliest accepted session; otherwise None.
+        ``established``: where the listing's history starts, from supported origin or
+        completeness evidence. The current integration has none (a reply with fewer rows
+        than requested has the same shape whether the history is young or the reply was
+        cut short), so it is always None. ``ignored_count_markers``: rows a ``1dea7d4``
+        build wrote to ``coverage_starts`` from row counts; kept as audit history only.
         Only the same instrument ID counts.
         """
         with closing(sqlite3.connect(self.path)) as db:
@@ -209,11 +206,10 @@ class VendorHistoryStore:
                 "SELECT MIN(json_extract(s.payload,'$.coverage_start')) FROM observations o JOIN snapshots s "
                 "ON s.digest=o.digest WHERE o.host=? AND o.symbol=? AND o.status IN ('CONSISTENT','REVISED') "
                 "AND json_extract(s.payload,'$.security_id')=?", (host,symbol,instrument_id)).fetchone()[0]
-            starts = {r[0] for r in db.execute("SELECT session FROM coverage_starts WHERE host=? AND symbol=? "
-                                               "AND instrument_id=?", (host,symbol,instrument_id))}
+            markers = db.execute("SELECT COUNT(*) FROM coverage_starts WHERE host=? AND symbol=? AND instrument_id=?",
+                                 (host,symbol,instrument_id)).fetchone()[0]
         earliest = date.fromisoformat(earliest) if earliest else None
-        established = earliest if earliest is not None and earliest.isoformat() in starts else None
-        return {"earliest": earliest, "established": established}
+        return {"earliest": earliest, "established": None, "ignored_count_markers": markers}
 
     def current_snapshot(self, host, symbol, scope=FULL_HISTORY):
         with closing(sqlite3.connect(self.path)) as db:
@@ -500,8 +496,7 @@ class VendorBasisSource:
                 frame = (clean[symbol].tail(count) if timespan == "D" else wanted[symbol]).copy()
                 _raw(frame,metadata[symbol],timespan,now,self.host)
                 frame.attrs["bar_provenance"] = self._provenance(basis, timespan)
-                self.store.record(self.host,symbol,now,"CONSISTENT","Vendor price consistency; action completeness unknown",basis,
-                                  uncapped_start=len(daily[symbol]) < 1000)
+                self.store.record(self.host,symbol,now,"CONSISTENT","Vendor price consistency; action completeness unknown",basis)
                 self._attach_volume(frame, symbol, metadata[symbol], timespan, now)
                 out[symbol] = frame
             except BarDataError as exc:
@@ -525,11 +520,12 @@ class VendorBasisSource:
         return out
 
     def _short_history(self, symbol, scope, first):
-        """A reply starting after the required start is short history only when accepted
-        evidence says so (audit F1). Earlier accepted evidence for the same instrument
-        proves the missing sessions exist; without an uncapped full-history capture that
-        starts at ``first``, where the listing begins is not established. Both are source
-        failures; no listing date is inferred from the reply's own shape."""
+        """A reply starting after the required start is a source failure (audit F1 and
+        the coverage-origin repair). Earlier accepted evidence for the same instrument
+        proves the missing sessions exist (``SCOPED_HISTORY_INCOMPLETE``). Otherwise the
+        listing's origin would need supported origin or completeness evidence, which the
+        current integration does not have; a reply's row count is not such evidence, so
+        coverage is unverified. No listing date is inferred."""
         try:
             known = self.store.coverage(self.host, symbol, scope.instrument_id)
         except sqlite3.Error:
@@ -539,9 +535,9 @@ class VendorBasisSource:
                 sessions(known["earliest"], first)[:-1]
             raise BarDataError(f"SCOPED_HISTORY_INCOMPLETE: accepted evidence for this instrument starts "
                                f"{known['earliest']}; the reply starts {first} (known sessions missing: {len(missing)})")
-        if known["established"] != first:
+        if known["established"] is None or known["established"] != first:
             raise BarDataError(f"SCOPED_COVERAGE_UNVERIFIED: the reply starts {first}, after the required start "
-                               f"{scope.required_start}, and no accepted uncapped history shows the listing starts there")
+                               f"{scope.required_start}, and no supported evidence shows the listing starts there")
 
     def discovery_bars(self, symbols, *, category, liquidity_through=None):
         """Daily bars for the weekly leader build only, on an explicit discovery scope.

@@ -267,17 +267,21 @@ def test_missing_session_or_suspension_is_refused_never_filled(tmp_path):
     assert desk.vendor.last_errors["ONE"].startswith(f"MISSING_OR_STALE_DAILY_HISTORY: missing {WINDOW[100]};")
 
 
-def test_short_history_stays_an_eligibility_outcome_unless_evidence_shows_it_is_incomplete(tmp_path):
-    # CP3 audit F1: a short reply alone no longer proves a young listing. Here an
-    # uncapped full-history capture (259 rows for a 1000-row request) establishes it.
+def test_short_history_is_unverified_on_the_scoped_path_and_unchanged_on_the_full_fallback(tmp_path):
+    # Coverage-origin repair (2026-10-05): no supported origin evidence exists, so a short
+    # scoped reply is a source failure even after a broader full request returned the
+    # same 259 rows. The under-260 criterion stays on the unchanged full-history path.
     sim = world("AAA")
     sim.add("YOUNG", series(FRIDAY, 259, start=60))
     sim.universe("AAA", "YOUNG")
-    desk = Desk(tmp_path, sim)
+    desk = Desk(tmp_path / "scoped", sim)
     assert len(desk.full("YOUNG")["YOUNG"]) == 259
     _, build = desk.build()
-    assert build["outcomes"]["YOUNG"] == {"outcome": "criterion", "stage": "history", "reason": "under a year of bars"}
-    assert build["status"] == "READY"
+    assert build["status"] == "PARTIAL" and [l["symbol"] for l in build["leaders"]] == ["AAA"]
+    assert build["outcomes"]["YOUNG"]["reason"].startswith("SCOPED_COVERAGE_UNVERIFIED: the reply starts")
+    _, fallback = Desk(tmp_path / "full", sim, scoped=False).build()
+    assert fallback["history_scope"]["path"] == "full-history"
+    assert fallback["outcomes"]["YOUNG"] == {"outcome": "criterion", "stage": "history", "reason": "under a year of bars"}
     # A reply that is short only because the provider returned less: accepted evidence proves older rows.
     desk.full("AAA")
     sim.drop("AAA", *[d for d in list(sim.world["AAA"]["rows"]) if d < WINDOW[60]])
@@ -446,11 +450,11 @@ def test_revised_overlap_stays_visible_and_old_signals_cannot_use_it(tmp_path):
 
 def test_discovery_evidence_cannot_arm_feed_setups_or_revalidate_even_with_full_overlap(tmp_path):
     sim = world("AAA")
-    sim.add("NEW", series(FRIDAY, 250, start=60))
+    sim.add("NEW", series(FRIDAY, 260, start=60))                            # exactly the complete window
     desk = Desk(tmp_path, sim)
     armed = price_basis(completed_daily(desk.full("NEW")["NEW"], BUILD), BUILD).model_dump(mode="json")
     frame = desk.scoped("NEW")["NEW"]
-    assert len(frame) == 250 and price_basis(frame, BUILD).method == "webull-discovery-v1"
+    assert len(frame) == 260 and price_basis(frame, BUILD).method == "webull-discovery-v1"
     with pytest.raises(BarDataError, match="cannot arm or revalidate"):
         compatible_prices(armed, frame, BUILD, symbol="NEW")                    # every original row present
     with pytest.raises(BarDataError, match="cannot feed setup evaluation"):

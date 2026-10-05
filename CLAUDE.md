@@ -36,7 +36,10 @@ which Astra accepted for CP2. Checkpoint 3 (scoped discovery history; Friday bui
 asks for its 260 sessions, `src/desk/history_scope.py`, `docs/checkpoints/G5a-cp3-scoped-history.md`)
 is implemented; Astra's audit of `33256b3` found F1 (clipped coverage published a healthy
 EMPTY), F2 (boolean OHLCV accepted as 1.0) and D1 (excluded duplicates not stored), repaired
-and pending her re-audit. Every other consumer keeps 1000 strict rows.
+in `1dea7d4`. Her re-audit kept those and found row counts still trusted as listing origin;
+repaired (row count is never origin evidence; old `coverage_starts` rows are ignored, so
+young listings are unverified source failures on the scoped path) and pending her
+re-audit. Every other consumer keeps 1000 strict rows.
 Historical access does not prove real-time entitlement.
 
 Read `AGENTS.md` and `docs/REPAIR_PLAN.md` before repair implementation. Verify and
