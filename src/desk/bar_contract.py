@@ -6,7 +6,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from desk.bars import BarDataError, COLUMNS, validate
-from desk.calendar import ET, clock, latest_closed_session, session, sessions, trading_day
+from desk.calendar import ET, clock, latest_closed_session, previous_trading_day, session, sessions, trading_day
 from desk.data_basis import PriceEvidence, price_basis, compatible_prices
 
 
@@ -36,6 +36,11 @@ def provenance(df: pd.DataFrame, timeframe: str) -> BarProvenance:
     return meta
 
 
+# The expected latest completed session is absent while the history before it is
+# complete (e.g. the provider has not published today's daily bar yet).
+LATEST_NOT_READY = "LATEST_SESSION_NOT_YET_AVAILABLE"
+
+
 def completed_daily(df: pd.DataFrame, now: datetime, *, require_latest=True) -> pd.DataFrame:
     provenance(df, "D")
     validate(df)
@@ -56,7 +61,11 @@ def completed_daily(df: pd.DataFrame, now: datetime, *, require_latest=True) -> 
     if dates != sessions(dates[0], dates[-1]):
         raise BarDataError("Missing or non-session daily bars")
     if require_latest and dates[-1] != cutoff:
-        raise BarDataError(f"Stale daily data: expected completed session {cutoff}")
+        # Structured readiness evidence (live-run package 2): only an otherwise contiguous
+        # history that ends exactly one session before the required one is "not yet
+        # available"; anything older stays plain stale data.
+        ready = f" ({LATEST_NOT_READY})" if dates[-1] == previous_trading_day(cutoff) else ""
+        raise BarDataError(f"Stale daily data: expected completed session {cutoff}{ready}")
     price_basis(out, now)
     out.attrs["validated_at"] = stamp.isoformat()
     return out

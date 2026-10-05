@@ -104,6 +104,21 @@ class SignalStore:
                 CREATE TABLE IF NOT EXISTS transitions (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL,
                     state TEXT NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL);
+                -- Live-run package 2: one unfinished-close-preparation job per completed
+                -- source session; committed with the target's armed list in one transaction.
+                CREATE TABLE IF NOT EXISTS close_jobs (
+                    source_session TEXT PRIMARY KEY, target_session TEXT NOT NULL,
+                    status TEXT NOT NULL, coverage TEXT, universe TEXT NOT NULL, discovery TEXT NOT NULL,
+                    outcomes TEXT NOT NULL, market TEXT, published INTEGER NOT NULL DEFAULT 0,
+                    volume_pending TEXT NOT NULL DEFAULT '[]', attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL, last_attempt_at TEXT, next_attempt_at TEXT,
+                    claim_token TEXT, claim_until TEXT, blocked_reason TEXT, finished_at TEXT,
+                    history TEXT NOT NULL DEFAULT '[]');
+                -- Bars ending at or before start_after never feed this candidate (no replay
+                -- of crossings that happened before a mid-session publication).
+                CREATE TABLE IF NOT EXISTS armed_floors (
+                    day TEXT NOT NULL, candidate_id TEXT NOT NULL, start_after TEXT NOT NULL,
+                    PRIMARY KEY(day, candidate_id));
             ''')
             db.execute('BEGIN IMMEDIATE')
             columns = {r[1] for r in db.execute('PRAGMA table_info(events)')}
@@ -134,6 +149,150 @@ class SignalStore:
                 db.execute("INSERT INTO armed_history(day,market,payload,observed_at) VALUES (?,?,?,?)",
                            (day.isoformat(), market, encoded, _time(observed_at) if observed_at else None))
             db.execute("INSERT OR REPLACE INTO armed VALUES (?,?,?)", (day.isoformat(), market, encoded))
+
+    # ---- close-preparation jobs (live-run package 2) ---------------------------------
+    @staticmethod
+    def _job(row):
+        if row is None:
+            return None
+        job = dict(row)
+        for key in ("universe", "discovery", "outcomes", "volume_pending", "history"):
+            job[key] = json.loads(job[key])
+        return job
+
+    def close_job(self, source_session):
+        with self._db() as db:
+            return self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
+                                        (source_session.isoformat(),)).fetchone())
+
+    def close_jobs(self):
+        with self._db() as db:
+            return [self._job(r) for r in db.execute("SELECT * FROM close_jobs ORDER BY source_session")]
+
+    def create_close_job(self, source_session, target_session, universe, discovery, now):
+        """Freeze the job's sessions and universe once; a later call returns the original."""
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT OR IGNORE INTO close_jobs(source_session,target_session,status,universe,discovery,"
+                       "outcomes,created_at,next_attempt_at) VALUES (?,?,?,?,?,?,?,?)",
+                       (source_session.isoformat(), target_session.isoformat(), "PENDING", _json(universe),
+                        _json(discovery), _json({}), _time(now), _time(now)))
+            return self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
+                                        (source_session.isoformat(),)).fetchone())
+
+    def claim_close_job(self, source_session, now, token, lease_until):
+        """Atomically claim one attempt; returns (claimed, reason, job). No request is made here."""
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            job = self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
+                                       (source_session.isoformat(),)).fetchone())
+            if job is None:
+                return False, "NO_JOB", None
+            if job["status"] not in ("PENDING", "PARTIAL"):
+                return False, job["status"], job
+            stamp = clock(now)
+            if job["claim_until"] and stamp < clock(job["claim_until"]):
+                return False, "CLAIMED_BY_ANOTHER_ATTEMPT", job
+            if job["next_attempt_at"] and stamp < clock(job["next_attempt_at"]):
+                return False, "NOT_DUE", job
+            db.execute("UPDATE close_jobs SET claim_token=?, claim_until=?, attempts=attempts+1, last_attempt_at=? "
+                       "WHERE source_session=?", (token, _time(lease_until), _time(now), source_session.isoformat()))
+            job.update(claim_token=token, attempts=job["attempts"] + 1)
+            return True, "CLAIMED", job
+
+    def commit_close_job(self, source_session, token, now, *, outcomes, market, payload, volume_pending,
+                         status, coverage, next_attempt_at, blocked_reason, floor_after, record):
+        """Publish an attempt and its job progress together; False if the claim was lost.
+
+        Candidates are appended to the target's armed list (deduplicated by candidate ID),
+        never replacing committed candidates; the market is set only if none is
+        committed. A lost or superseded claim (an older delayed attempt) commits nothing.
+        """
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            job = self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
+                                       (source_session.isoformat(),)).fetchone())
+            if job is None or job["claim_token"] != token:
+                return False
+            day = date.fromisoformat(job["target_session"])
+            published = job["published"]
+            if market is not None:
+                old = db.execute("SELECT market,payload FROM armed WHERE day=?", (day.isoformat(),)).fetchone()
+                current = json.loads(old["payload"]) if old else []
+                merged_market = (old["market"] if old and old["market"] else None) or market
+                unique = {candidate_id(restore_signal(p), day): p for p in current + list(payload)}
+                encoded = _json(list(unique.values()))
+                if old is None or old["payload"] != encoded or old["market"] != merged_market:
+                    db.execute("INSERT INTO armed_history(day,market,payload,observed_at) VALUES (?,?,?,?)",
+                               (day.isoformat(), merged_market, encoded, _time(now)))
+                db.execute("INSERT OR REPLACE INTO armed VALUES (?,?,?)", (day.isoformat(), merged_market, encoded))
+                if floor_after is not None:
+                    db.executemany("INSERT OR IGNORE INTO armed_floors VALUES (?,?,?)",
+                                   [(day.isoformat(), candidate_id(restore_signal(p), day), _time(floor_after))
+                                    for p in payload])
+                published = 1
+            merged = {**job["outcomes"], **outcomes}
+            history = (job["history"] + [record])[-50:]  # bounded attempt history
+            db.execute("UPDATE close_jobs SET status=?, coverage=?, outcomes=?, market=COALESCE(market,?), "
+                       "published=?, volume_pending=?, next_attempt_at=?, blocked_reason=?, claim_token=NULL, "
+                       "claim_until=NULL, finished_at=?, history=? WHERE source_session=?",
+                       (status, coverage, _json(merged), market, published,
+                        _json(sorted(set(job["volume_pending"]) | set(volume_pending))),
+                        _time(next_attempt_at) if next_attempt_at else None, blocked_reason,
+                        _time(now) if status in ("FINISHED", "FAILED", "EXPIRED") else None, _json(history),
+                        source_session.isoformat()))
+            return True
+
+    def release_close_job(self, source_session, token, now, next_attempt_at, record):
+        """An attempt that raised: free its claim, keep everything committed before."""
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            job = self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
+                                       (source_session.isoformat(),)).fetchone())
+            if job is None or job["claim_token"] != token:
+                return False
+            db.execute("UPDATE close_jobs SET claim_token=NULL, claim_until=NULL, next_attempt_at=?, history=? "
+                       "WHERE source_session=?", (_time(next_attempt_at), _json((job["history"] + [record])[-50:]),
+                                                  source_session.isoformat()))
+            return True
+
+    def end_close_job(self, source_session, now, status, reason):
+        """Terminal state set without an attempt (EXPIRED); only an open job changes."""
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            job = self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
+                                       (source_session.isoformat(),)).fetchone())
+            if job is None or job["status"] not in ("PENDING", "PARTIAL", "BLOCKED"):
+                return job
+            record = {"at": _time(now), "status": status, "reason": reason}
+            db.execute("UPDATE close_jobs SET status=?, finished_at=?, claim_token=NULL, claim_until=NULL, history=? "
+                       "WHERE source_session=?", (status, _time(now), _json((job["history"] + [record])[-50:]),
+                                                  source_session.isoformat()))
+            return self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
+                                        (source_session.isoformat(),)).fetchone())
+
+    def resume_close_job(self, source_session, now, actor):
+        """Operator resume of a BLOCKED job once the provider issue is resolved."""
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            job = self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
+                                       (source_session.isoformat(),)).fetchone())
+            if job is None or job["status"] != "BLOCKED":
+                return job
+            status = "PARTIAL" if job["published"] else "PENDING"
+            record = {"at": _time(now), "status": status, "resumed_by": actor, "previous_block": job["blocked_reason"]}
+            # Eligible at the next runner invocation, whatever its clock.
+            db.execute("UPDATE close_jobs SET status=?, blocked_reason=NULL, next_attempt_at=NULL, history=? "
+                       "WHERE source_session=?", (status, _json((job["history"] + [record])[-50:]),
+                                                  source_session.isoformat()))
+            return self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
+                                        (source_session.isoformat(),)).fetchone())
+
+    def close_job_volume_pending(self, target_session):
+        with self._db() as db:
+            rows = db.execute("SELECT volume_pending FROM close_jobs WHERE target_session=?",
+                              (target_session.isoformat(),)).fetchall()
+        return set().union(*(json.loads(r["volume_pending"]) for r in rows)) if rows else set()
 
     def load_armed(self, day):
         with self._db() as db:
@@ -205,12 +364,15 @@ class SignalStore:
                 if peer["active_event"]:
                     self._transition(db, peer["active_event"], "invalidated", now, "setup evidence replaced")
                 db.execute("UPDATE candidates SET blocked=COALESCE(blocked,'setup evidence replaced') WHERE id=?", (peer["id"],))
+            floor = db.execute("SELECT start_after FROM armed_floors WHERE day=? AND candidate_id=?",
+                               (day.isoformat(), cid)).fetchone()
             db.execute('''INSERT OR IGNORE INTO candidates
                        (id,day,symbol,setup_id,direction,payload,card_version,expires_at,start_after)
                        VALUES (?,?,?,?,?,?,?,?,?)''',
                        (cid, day.isoformat(), sig.symbol, sig.setup_id, sig.direction,
                         _json(signal_payload(sig)), sig.setup_version, expiry,
-                        max((p["last_bar"] for p in peers if p["last_bar"]), default=None)))
+                        max([p["last_bar"] for p in peers if p["last_bar"]] + ([floor["start_after"]] if floor else []),
+                            default=None)))
             c = dict(db.execute("SELECT * FROM candidates WHERE id=?", (cid,)).fetchone())
             if c["blocked"]:
                 return []

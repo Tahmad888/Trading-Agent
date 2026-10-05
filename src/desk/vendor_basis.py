@@ -12,9 +12,9 @@ import sqlite3
 
 import pandas as pd
 
-from desk.bar_contract import BarProvenance
+from desk.bar_contract import LATEST_NOT_READY, BarProvenance
 from desk.bars import BarDataError, validate
-from desk.calendar import ET, clock, latest_closed_session, session, sessions
+from desk.calendar import ET, clock, latest_closed_session, previous_trading_day, session, sessions
 from desk.data_basis import VendorPriceBasis
 from desk.history_scope import (DISCOVERY_POLICY, FULL_HISTORY, MAX_DEFECTS, ScopeUnsupported, ScopeWindow,
                                 discovery_scope)
@@ -381,6 +381,12 @@ class VendorHistoryStore:
         return dict(zip(("snapshot","at"), row)) if row else None
 
 
+def provider_stop(exc) -> str | None:
+    """``PROVIDER_STOP_HTTP_<status>`` for a provider denial or rate limit, else None."""
+    status = getattr(exc, "status", None)
+    return f"PROVIDER_STOP_HTTP_{status}" if status in (401, 403, 429) else None
+
+
 def _identity(text) -> dict | None:
     try:
         instrument_id, currency, exchange_code, sub_category = json.loads(text)
@@ -474,9 +480,13 @@ def _daily(frame, metadata, now, host):
     if out.empty or len(out) > 1000:
         raise BarDataError("COMPLETED_DAILY_HISTORY_OUTSIDE_BOUNDS")
     dates = list(out.index.tz_convert(ET).date)
-    if dates[-1] != latest_closed_session(now):
-        raise BarDataError(f"MISSING_OR_STALE_DAILY_HISTORY: last session {dates[-1]}, "
-                           f"required {latest_closed_session(now)}")
+    required = latest_closed_session(now)
+    if dates[-1] != required:
+        # Live-run package 2: structured readiness evidence, only for an otherwise
+        # contiguous history ending exactly one session before the required one.
+        ready = (f" ({LATEST_NOT_READY})" if dates[-1] == previous_trading_day(required)
+                 and dates == sessions(dates[0], dates[-1]) else "")
+        raise BarDataError(f"MISSING_OR_STALE_DAILY_HISTORY: last session {dates[-1]}, required {required}{ready}")
     if dates != sessions(dates[0],dates[-1]):
         # G5a checkpoint 3: name the sessions (diagnostic only; the rejection is unchanged).
         raise BarDataError("MISSING_OR_STALE_DAILY_HISTORY: missing " + _missing_text(dates))
@@ -589,8 +599,13 @@ class VendorBasisSource:
         try:
             fetch = getattr(self.source,"bars_partial",self.source.bars)
             out = fetch(symbols, **kwargs)
-        except BarDataError:
-            # Do not retry a failed provider batch: quota/auth failures are shared.
+        except BarDataError as exc:
+            # Do not retry a failed provider batch: quota/auth failures are shared. A
+            # denial or rate limit is kept as a stop code (live-run package 2), so a
+            # recovery job blocks instead of retrying blindly.
+            stop = provider_stop(exc)
+            if stop:
+                self.last_fetch_errors = {s: {"reason": stop} for s in symbols}
             return {}
         errors = getattr(self.source, "last_partial_errors", None)
         self.last_fetch_errors = dict(errors) if isinstance(errors, dict) else {}
@@ -676,6 +691,8 @@ class VendorBasisSource:
             return f"{timeframe}_PROVIDER_UNAVAILABLE", None
         defect = error.get("defect")
         reason = str(error.get("reason") or "")
+        if reason.startswith("PROVIDER_STOP_"):
+            return f"{timeframe}_PROVIDER_UNAVAILABLE: {reason}", None
         if isinstance(defect, dict) and defect.get("reason"):
             code = reason.split(":")[0] if reason.startswith("SCOPED_") else f"{timeframe}_ROW_INVALID"
             return _defect_text(code, defect), defect

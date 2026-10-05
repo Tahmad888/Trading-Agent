@@ -64,6 +64,7 @@ MIN_DAILY_BARS = 260
 CLOSE_SCAN = time(16, 10)
 LEADER_SCAN = time(16, 40)        # Fridays: the weekly leader scan builds next week's watchlist
 EP_SCAN = time(10, 0)             # the first 30 minutes are in: check this morning's movers
+VOLUME_USAGE = "alpaca_volume"     # discovery key carrying the Alpaca request usage of a scan
 FIRST_INTRADAY, LAST_INTRADAY = time(9, 45), time(15, 45)
 
 class BarSource(Protocol):
@@ -271,7 +272,7 @@ def close_scan(source: BarSource, watchlist: Sequence[str], now: datetime, *, de
     rec.discovery["prepared"] = sorted(s for s in watchlist if s in feats)
     if provider:
         rec.discovery["volume_pending"] = volume_pending(rec.skipped)
-        rec.discovery["alpaca_volume"] = {"requests": provider.requests_used, "batches": list(provider.batches)}
+        rec.discovery[VOLUME_USAGE] = {"requests": provider.requests_used, "batches": list(provider.batches)}
     return rec, armed
 
 
@@ -963,11 +964,16 @@ def funnel(records: Sequence[Mapping], start: date, end: date) -> dict:
     scheduled = sum(len(scheduled_slots(start + timedelta(days=i))) for i in range((end - start).days + 1))
     ran = [r for r in records if r.get("slot") and start <= datetime.fromisoformat(r["slot"]).date() <= end]
     done = {r["slot"] for r in ran if not r.get("error")}
+    # Close-preparation recovery (live-run package 2) is not a scheduled scan: a failed
+    # close slot stays failed; its recovery attempts and the setups they armed are shown.
+    recovered = [r for r in records if r.get("kind") == "close_recovery" and r.get("at")
+                 and start <= datetime.fromisoformat(r["at"]).date() <= end]
     return {
         "scans_scheduled": scheduled,
         "scans_run": len(done),
         "scans_failed": sorted({r["slot"] for r in ran if r.get("error")} - done),
-        "setups_armed": sum(len(r.get("armed", [])) for r in ran),
+        "close_recovery_attempts": len(recovered),
+        "setups_armed": sum(len(r.get("armed", [])) for r in [*ran, *recovered]),
         "entries_triggered": len({t["event_id"] for r in ran for t in r.get("triggered", []) if t.get("event_id")})
             + sum(1 for r in ran for t in r.get("triggered", []) if not t.get("event_id")),
         "names_skipped": sorted({s for r in ran for s in r.get("skipped", {})}),
@@ -981,14 +987,35 @@ def due_slot(now: datetime) -> datetime | None:
     return past[-1] if past else None
 
 
+def _recover_close_job(source, log, now, decision_clock):
+    """Recovery of an unfinished close preparation; failures are recorded, never raised."""
+    from desk.close_jobs import recover
+    from desk.watchlist import ALWAYS
+    try:
+        removed = {canonical_symbol(s) for s in log.picks().get("remove", [])} - set(ALWAYS)
+        rec, write = recover(source, log, now, removed=removed, decision_clock=decision_clock)
+    except Exception as e:  # recovery must not suspend or block the normal slot jobs
+        rec, write = ScanRecord("close_recovery", clock(now).isoformat(), None, error=f"{type(e).__name__}: {e}"), True
+    if rec is not None and write:
+        log.write(rec)
+    return rec
+
+
 def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime, *, decision_clock: Callable[[], datetime] | None = None) -> ScanRecord | None:
     log.signals.expire(now)  # also runs outside scan slots and when no bars arrive
-    slot = due_slot(now)
-    if slot is None:
-        return None
-    if any(r.get("slot") == slot.isoformat() and not r.get("error") for r in log.records()):
-        return None                                   # this slot already ran
     from desk.watchlist import ALWAYS, bearish_candidates, movers, overlay_picks
+    slot = due_slot(now)
+    done = slot is not None and any(r.get("slot") == slot.isoformat() and not r.get("error") for r in log.records())
+    close_due = (slot is not None and not done
+                 and slot == session(slot.date())[1] + timedelta(minutes=10))
+    # Live-run package 2: an unfinished close preparation is retried by this same runner
+    # invocation (at most one attempt; none when not yet due) unless the close slot
+    # itself is about to attempt it. It never consumes or marks another slot.
+    recovered = None
+    if not close_due:
+        recovered = _recover_close_job(source, log, now, decision_clock)
+    if slot is None or done:
+        return recovered                              # no slot due, or this slot already ran
     closed = session(slot.date())[1]
     close_slot, leader_slot = closed + timedelta(minutes=10), closed + timedelta(minutes=40)
     try:
@@ -999,20 +1026,12 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
         if slot == leader_slot:
             rec = leader_scan_job(source, log, now, decision_clock=decision_clock)
         elif slot == close_slot:
-            discovery_errors = {}
-            moving = movers(source, discovery_errors)
-            declining = bearish_candidates(source, discovery_errors)
-            sources = {s: list(tags) for s, tags in watchlist.items()}
-            for label, names in (("mover", moving), ("bearish", declining)):
-                for symbol in names:
-                    if symbol not in removed:
-                        sources.setdefault(symbol, []).append(label)
-            rec, _ = close_scan(source, sources, now, decision_clock=decision_clock)
-            rec.discovery.update(sources=sources, source_errors=discovery_errors,
-                                 status="PARTIAL" if discovery_errors else "READY")
-            log.save_armed(next_trading_day(slot.date()), rec)
-            if rec.discovery.get("volume_pending"):
-                log.add_pending(next_trading_day(slot.date()), "volume", rec.discovery["volume_pending"])
+            # Live-run package 2: the close preparation is a persisted job for this
+            # completed session; a failed attempt never replaces committed preparation.
+            from desk.close_jobs import attempt, open_job
+            open_job(source, log, slot, now, watchlist, removed)
+            rec = attempt(source, log, slot.date(), now, removed=removed, kind="close",
+                          decision_clock=decision_clock)
         else:
             market, armed = log.load_armed(slot.date())
             armed = [s for s in armed if s.symbol not in removed]
@@ -1030,7 +1049,8 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
             # Volume setups whose Alpaca native daily was not final at the close scan run
             # here on the same completed session (same price terms); only those setups arm.
             volume_new: list[Signal] = []
-            vpending = sorted(log.pending(slot.date(), "volume") - log.prepared_users(slot.date(), "volume"))
+            vpending = sorted((log.pending(slot.date(), "volume") | log.signals.close_job_volume_pending(slot.date()))
+                              - log.prepared_users(slot.date(), "volume"))
             if vpending and provider_of(source):
                 vprep, detected = close_scan(source, vpending, now, decision_clock=decision_clock, preparing=True)
                 if not vprep.error:
