@@ -372,7 +372,7 @@ read), `src/desk/tastytrade_quotes.py` (strict `is_etf` in the instrument identi
 halt latch, per-generation event counts), `src/desk/tastytrade_transport.py`
 (`attempt_log`, `final_attempt`, per-symbol/component recoveries),
 `src/desk/quote_check.py` (final-generation status/coverage/lag, labelled history);
-tests `tests/test_quote_reaudit.py` (new, 43) and updated fixtures/expectations in
+tests `tests/test_quote_reaudit.py` (new, 47) and updated fixtures/expectations in
 `test_quote_risk.py`, `test_quote_repairs.py`, `test_quote_diagnostic.py`,
 `test_tastytrade_quotes.py` (`stock()` now carries `is-etf: false`); docs.
 
@@ -405,9 +405,9 @@ pydantic 2.13.5, pytest 9.1.1 (other versions as recorded above). Not the iMac.
 
 | Command | Result |
 | --- | --- |
-| `python -m pytest -q -W error` (3.12.3) | **1609 passed in 216.70s** |
-| `python -m pytest -q -W error` (3.13.14) | **1609 passed in 224.11s** |
-| `tests/test_quote_reaudit.py` | 43 passed |
+| `python -m pytest -q -W error` (3.12.3) | **1613 passed in 221.09s** |
+| `python -m pytest -q -W error` (3.13.14) | **1613 passed in 230.83s** |
+| `tests/test_quote_reaudit.py` | 47 passed |
 | `git diff --check` | Clean |
 | Astra's probe, unchanged, before (`12705aa`) / after (repair) | R1 approve/consume, R2, R3, R4: `defect_reproduced` true → false (outputs kept in the implementer's scratch area; key fields in the table above) |
 | Probe outputs and new test file scanned for credentials | No token/secret/bearer text; only labelled synthetic strings |
@@ -424,10 +424,28 @@ clearing it (Q3b), reconnect clearing it (Q3c), halted trade still served (Q3d),
 forgetting the latch (Q3e), summary from any generation (Q4), recovery by any event
 (Q4b), coverage not per generation (Q4c). Q2d first survived; a test was added.
 
-**Not completed:** the rerun of the first-round 30-mutation set (R0–R26) on this code
-was stopped after 2 of 31 runs (control passed; R1 lazy subscription detected by 16
-tests). Those 30 were all detected on `12705aa`; their detection on this commit is not
-re-established beyond those two.
+First-round set rerun on this code (the 30 mutations R1–R26 that were all detected on
+`12705aa`, plus controls; each in a scratch copy against the six quote test files):
+**30 of 30 detected**, controls R0/R27 pass. Three rows needed work first:
+
+- R7 (final check skips the mapping and only binds a digest) survived: no test changed
+  the pinned Webull identity between the recheck and COMMIT. Added
+  `::test_pinned_webull_identity_changed_between_recheck_and_commit_refuses[ETF, other
+  instrument]`; now detected by 2 tests.
+- R14 (bridge ignores HALTED) survived because `trade()` now refuses a latched halt
+  itself, so the mutant was equivalent. To keep the bridge's own check from going
+  unguarded if `trade()` changes, added
+  `::test_bridge_refuses_a_reported_halt_without_relying_on_the_trade_latch`; now
+  detected.
+- R24 (Webull record unchecked) no longer applied: after R2 the string occurs twice
+  (signal basis vs record, pinned identity vs record). Split into R24a/R24b. R24b was
+  detected; R24a survived because no test armed the signal on a different Webull
+  instrument than the reviewed record while the pin matched. Added
+  `::test_signal_armed_on_a_different_webull_instrument_than_the_review_refuses`; now
+  detected.
+
+The R-series (20) and first-round rows ran against unchanged source; only tests were
+added afterwards, so earlier detections stand.
 
 Unchanged pending acceptance: child 3 sign-off (Astra's re-audit), child 4 (iMac,
 Python 3.14.7, `sntp`, credentials), child 5 (regular-session timing, live config order,

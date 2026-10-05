@@ -397,6 +397,16 @@ def test_halt_then_profile_fault_between_recheck_and_commit_refuses(tmp_path, op
         act(q, tickets, tid, version, operation, replace(adapters, observe=halt_then_lose_profile))
 
 
+def test_bridge_refuses_a_reported_halt_without_relying_on_the_trade_latch(tmp_path, monkeypatch):
+    """Defence in depth: the bridge's own status check refuses even if trade() would serve."""
+    q = QuoteDesk(tmp_path)
+    live_session(q, halted=False)
+    q.source().resolve(q.event_id, q.at)  # control: ACTIVE, fresh trade
+    monkeypatch.setattr(q.quotes, "status", lambda symbol, at: ("HALTED", "PROFILE_HALTED"))
+    with pytest.raises(QuoteUnavailable, match="SECURITY_HALTED"):
+        q.source().resolve(q.event_id, q.at)
+
+
 def test_halt_survives_reconnect_and_fresh_trades_until_active(tmp_path):
     q = QuoteDesk(tmp_path)
     live_session(q)
@@ -576,3 +586,40 @@ def test_review_command_reports_a_busy_store_instead_of_crashing(tmp_path, monke
     finally:
         os.close(fd)
     assert code == 1 and "QUOTE_MAPPING_STORE_BUSY" in out.getvalue() and "Nothing was changed" in out.getvalue()
+
+
+@pytest.mark.parametrize("pinned,code", [(["id:LEAD", "USD", "TEST", "ETF"], "QUOTE_MAPPING_CLASSIFICATION_MISMATCH"),
+                                         (["id:OTHER", "USD", "TEST", "COMMON_STOCK"], "QUOTE_MAPPING_WEBULL_MISMATCH")])
+def test_pinned_webull_identity_changed_between_recheck_and_commit_refuses(tmp_path, pinned, code):
+    """The final fence re-verifies the mapping against the pinned Webull identity, not
+    only the bound digests. Synthetic: the pin is edited directly in the vendor store."""
+    from contextlib import closing
+    import sqlite3
+    q, tickets, tid, version = prepared(tmp_path)
+    adapters = q.inputs()
+    observe = adapters.observe
+
+    def repin(*args):
+        result = observe(*args)
+        with closing(sqlite3.connect(q.desk.vendor.store.path)) as db, db:
+            db.execute("UPDATE identities SET identity=? WHERE symbol='LEAD'", (json.dumps(pinned),))
+        return result
+    with pytest.raises(TicketError, match=code):
+        approve(tickets, tid, version, replace(adapters, observe=repin), now=q.at)
+    assert tickets.get(tid, version, now=q.at)["state"] == "pending"
+
+
+def test_signal_armed_on_a_different_webull_instrument_than_the_review_refuses(tmp_path):
+    """The signal's own stored Webull basis must match the review, even when the current
+    pin and the review agree with each other (the signal was armed on another instrument)."""
+    store = MappingStore(tmp_path / "m.json")
+    store.add(record())
+    identity = instrument("LEAD", stock("LEAD"), AT)
+    pinned = {"instrument_id": "id:LEAD", "currency": "USD", "sub_category": "COMMON_STOCK"}
+    armed_on_old = {"host": "api.sandbox.webull.com", "security_id": "id:OLD-LEAD", "currency": "USD", "symbol": "LEAD"}
+    with pytest.raises(QuoteUnavailable, match="QUOTE_MAPPING_WEBULL_MISMATCH"):
+        store.verify("LEAD", price_basis=armed_on_old, identity=identity, environment="production",
+                     webull_identity=pinned)
+    current = dict(armed_on_old, security_id="id:LEAD")
+    assert store.verify("LEAD", price_basis=current, identity=identity, environment="production",
+                        webull_identity=pinned).desk_symbol == "LEAD"
