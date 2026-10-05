@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
@@ -353,7 +353,7 @@ def binding(ticket_id: str, version: int, request: TicketRequest, proposal: Trad
             "contract_id": _contract_id(book, leg.symbol) if request.structure != "shares" else None,
             "expiry": built.expiry.isoformat() if built and built.expiry else None,
         })
-    return {
+    result = {
         "ticket_id": ticket_id, "version": version,
         "account_id": request.account_id, "environment": request.environment,
         "signal": {"event_id": request.event_id, "event_digest": terms.event_digest if terms else None,
@@ -377,6 +377,9 @@ def binding(ticket_id: str, version: int, request: TicketRequest, proposal: Trad
         "failed_checks": sorted(c.rule for c in (d.checks if d else []) if not c.passed),
         "warning_policy": warning_policy(limits),
     }
+    if terms and terms.quote_provenance is not None:
+        result["quote_provenance"] = terms.quote_provenance.model_dump(mode="json")
+    return result
 
 
 def ack_token(binding_sha256: str, warning: dict) -> str:
@@ -507,9 +510,23 @@ def final_problem(ticket_id: str, version: int, request: TicketRequest, inputs: 
                   stored: dict, status, account: AccountState, at: datetime) -> tuple[str | None, RiskDecision]:
     """Signal fence and full risk rerun at the final clock; returns (refusal, decision)."""
     event = status(at)
+    if (check.terms.quote_provenance is not None and event.quote_provenance == check.terms.quote_provenance
+            and event.quote_price is not None and event.quote_at is not None):
+        # The held adapter snapshot updates only current market evidence. Entry,
+        # stop, target, signal validity and the provenance approved by Taz stay fixed.
+        # Risk reruns against this latest price, without a network call or signal
+        # write under the fence. Ordinary price movement need not churn tickets.
+        terms = RiskTerms.model_validate({**check.terms.model_dump(),
+                                         "underlying_price": event.quote_price, "quote_at": event.quote_at})
+        check = replace(check, terms=terms)
     decision, bound = final_evaluation(ticket_id, version, request, inputs, check, account, at)
     if not event.eligible or event.event_digest != check.terms.event_digest:
         return EVENT_NOT_ELIGIBLE, decision
+    if (check.terms.quote_provenance is not None
+            and event.quote_provenance != check.terms.quote_provenance):
+        return "Quote identity or connection health changed; prepare a new version", decision
+    if check.terms.quote_provenance is not None and (event.quote_price is None or event.quote_at is None):
+        return "Quote health snapshot is incomplete; revalidate the ticket", decision
     if not decision.approved:
         failed = ", ".join(sorted(c.rule for c in decision.checks if not c.passed))
         return f"Final check at {at.isoformat()} failed: {failed}", decision
@@ -1037,6 +1054,10 @@ def render(view: dict) -> str:
             f"Budget entered: {usd(b['budget_usd'])}",
             f"Stop (structural, from the signal event): {price(b['stop']) if b['stop'] else 'unavailable'}",
             f"Target: {price(b['target']) if b['target'] else 'none set by the setup'}"]
+    if b.get("quote_provenance"):
+        proof = b["quote_provenance"]
+        out.append(f"Current quote source: {proof['source']} ({proof['environment']}); "
+                   f"verified instrument {proof['instrument_id']}")
     if not b["eligible"] and any(leg["ceiling_qty"] for leg in b["legs"]):
         ceiling = ", ".join(str(leg["ceiling_qty"]) for leg in b["legs"])
         at = []

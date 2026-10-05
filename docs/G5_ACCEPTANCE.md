@@ -322,3 +322,30 @@ Question 2 is open and 6 still needs the two host runs. The original wording fol
 
 No scheduled runner, paper orders or live orders are activated by G4/G5, and no
 operational trading-day count starts from these development tests.
+
+## Current reconciliation — G5a CP3 six child steps (2026-10-04)
+
+This section supersedes earlier "not yet on iMac" statements only for the exact
+evidence listed here. Historical audit rows retain their chronology. **G5 and parent
+Checkpoint 3 remain pending.** Step 09 remains paused. No trading activation.
+
+| Check | Current evidence and scope | Status |
+| --- | --- | --- |
+| Child 1 saved tastytrade/SIP first30 arithmetic and helper repair | [R/S] Astra independently recomputed 96 supplied rows; 11 standalone repair checks passed. Values unchanged; Tasty volume 42.8–55.8% below reported SIP totals. Raw FEED_DATA not retained; vendor cause unknown. User-relayed artifacts are outside this repo. | Accepted within offline scope; do not reopen |
+| CP3 iMac baseline/scoped preview | [H] Taz supplied b747904, Python 3.14.7, 1410 strict tests (200.15s); `/Users/taz/Desktop/g5a-cp3-imac-4nghj27p`: 379/379 accounted, 227 ranked, 48 leaders, PARTIAL, 81 disclosed source failures; Webull 54/70, Alpaca 3/6; 298 symbols, two native-daily SIP pages exhausted. Astra has not opened those iMac files. | Accepted for b747904 and historical Friday cutoff; new quote commit host check still pending |
+| Existing host TLS/CA | [H] Taz's 2026-10-03 report: SSL_CERT_FILE set/existing/matches certifi, certificate and hostname required, Webull sandbox and Massive TLS PASS. | Accepted unaffected baseline evidence; new tastytrade HTTPS/WSS host check pending |
+| Massive dividend/split observations | [H] Taz's 2026-10-04 00:28–00:41Z reports in `/Users/taz/Desktop/g5-volume-urzfS2`: SPY/QQQ two dividends each; NFLX 2025-11-17 10:1 event, 50 post-split sessions PASS and crossing window EXPECTED_REFUSAL. One unrelated AXIAp identity issue isolated. SPY ex-date daily/minute volume disagreement was measured, not explained or waived. | Accepted scoped observations; no universal action completeness/volume claim |
+| Child 2 quote implementation | [S] `tastytrade_quotes`, `tastytrade_transport`, `quote_risk`, `quote_check`; current checkpoint lists final strict result. Actual provider identity/times, caller-source check, per-symbol failures, health/price final fence, closed-market evidence limit; no Candle volume. | Implemented/offline verified, pending child 3 review |
+| Child 3 code review | This checkpoint is built and self-checked by Astra following Claude's pause. Self-review is not independent second-chair approval. | Pending |
+| Child 4 current-commit iMac | Pull reviewed quote commit, install `.[dev,quotes]`, strict suite, private credentials and read-only diagnostic; see quote handoff. | Pending |
+| Child 5 actual regular-session quotes/recovery | SPY/QQQ/NVDA and real SPY call/put metadata; source times versus simultaneous independent observations; quote side freshness, updates, missing fields, disconnect/recovery. | Pending; closed-session data cannot close it |
+| Child 6 actual Friday 16:40 build | Latest Friday price session; prior Thursday finalized SIP liquidity. Existing deterministic calendar/cutoff tests are reused. | Deterministic tests only; actual scheduled-time read-only build pending |
+| Child 6 overnight revisions/dividend integrated workflow | Existing production-component revision-versus-gap, dividend rebuild, restart/provider failure and final approval races reused in strict suite. | Automated evidence retained; required actual-host overnight comparison not supplied |
+| Human-facing actual ticket/full inputs | G4 fixtures are not a real ticket. Account/market context, full option ContractBook/open interest/valuation where required and planner dependencies are not fabricated by the quote adapter. | Pending; no real approval/order claim |
+| Immediate consolidated intraday volume | Existing historical SIP delivery remains delayed; tastytrade Candle volume excluded. Existing EP guards/50 sessions/0.5 unchanged. | Unresolved; quote support does not resolve it |
+
+The referenced iMac/cloud artifacts are not available in this implementation
+checkout. That is an access limitation, not a failed provider check or a claim that
+Taz supplied no evidence. New adapter live timing has made **zero provider calls**
+during implementation; every new automated provider/account/signal fixture is
+labelled synthetic. No actual Friday schedule or market-session result is inferred.

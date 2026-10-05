@@ -239,6 +239,10 @@ def evaluate(
                     and terms.setup_id == proposal.setup_id and terms.setup_version == proposal.setup_version
                     and bool(terms.event_digest))
         check("signal_identity", identity, float(identity), 1)
+        if terms.quote_provenance is not None:
+            quote_identity = (terms.quote_provenance.source == proposal.quote_source
+                              and terms.quote_provenance.symbol == terms.symbol)
+            check("quote_source_matches", quote_identity, float(quote_identity), 1)
         age = (now - terms.checked_at).total_seconds()
         quote_age = (now - terms.quote_at).total_seconds()
         fresh = (0 <= age <= limits.max_quote_age.total_seconds() and now < terms.valid_until

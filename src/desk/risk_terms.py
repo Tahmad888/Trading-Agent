@@ -15,6 +15,18 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 Positive = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 
 
+class QuoteProvenance(BaseModel):
+    """Independent adapter identity/health, excluding changing receipt times."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    source: str = Field(min_length=1)
+    environment: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
+    instrument_id: str = Field(min_length=1)
+    streamer_symbol: str = Field(min_length=1)
+    identity_digest: str = Field(min_length=1)
+    generation: str = Field(min_length=1)
+
+
 class RiskTerms(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     event_id: str
@@ -31,6 +43,7 @@ class RiskTerms(BaseModel):
     valid_until: AwareDatetime
     underlying_price: Positive
     quote_at: AwareDatetime
+    quote_provenance: QuoteProvenance | None = None
     # Independent conditional exit prices, not a valuation at the stock stop.
     # Empty on the standard scanner adapter: no option valuation model is implied.
     option_exit_prices: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]] = Field(default_factory=dict)
@@ -46,6 +59,10 @@ class EventStatus(NamedTuple):
     """The signal event as the final ticket transaction sees it."""
     eligible: bool
     event_digest: str | None
+    quote_provenance: QuoteProvenance | None = None
+    symbol: str | None = None
+    quote_price: float | None = None
+    quote_at: datetime | None = None
 
 
 class EventFence(Protocol):
@@ -121,7 +138,7 @@ class EventRiskSource:
                     state, _ = volume_status(self.source, restore_signal(event["candidate_signal"]), at,
                                              refresh=False)
                     eligible = state == "OK"
-                return EventStatus(eligible, event["terms_digest"])
+                return EventStatus(eligible, event["terms_digest"], symbol=event["signal"]["symbol"])
             yield status
 
     def resolve(self, event_id, now):

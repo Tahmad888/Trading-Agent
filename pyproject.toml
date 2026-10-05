@@ -7,6 +7,7 @@ dependencies = ["pydantic>=2.7", "numpy>=1.26", "pandas>=2.2", "TA-Lib==0.8.1", 
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+quotes = ["websockets==17.1"]
 
 [build-system]
 requires = ["setuptools>=68"]

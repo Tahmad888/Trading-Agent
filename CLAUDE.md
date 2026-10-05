@@ -2,7 +2,19 @@
 
 ## Active repair work
 
-Current priority (2026-10-01): gap repairs G1–G5 in `docs/GAP_REPAIR_PLAN.md`,
+Latest scope (2026-10-04): G5 → G5a parent Checkpoint 3 → six child steps.
+Child 1 saved-volume audit is accepted. Child 2 tastytrade quote implementation is
+recorded in `docs/checkpoints/G5a-cp3-child2-tastytrade-quotes.md`; Astra took over
+after Claude's usage pause at b747904. Read this record and `docs/TASTYTRADE_QUOTES.md`
+before quote work. Historical Webull prices and Alpaca SIP decision volume are
+unchanged; immediate consolidated intraday volume remains unresolved. The adapter
+does not supply a complete live RiskInputs factory. Child 3 review, child 4 current
+commit iMac setup/checks, child 5 regular-session stock/option timing, and child 6
+remaining G5 acceptance stay pending. Step 09 and activation remain paused. The
+reconciliation at the end of `docs/G5_ACCEPTANCE.md` carries Taz's accepted b747904
+iMac evidence without claiming it verifies this new quote implementation.
+
+Historical status (2026-10-01, superseded by the latest scope above): gap repairs G1–G5 in `docs/GAP_REPAIR_PLAN.md`,
 then resume unfinished Step 09. Read `docs/checkpoints/G5-combined-verification.md`
 for the active checkpoint and `docs/G5_ACCEPTANCE.md` for the matrix. G5 acceptance
 is pending Astra's check of the policy-snapshot commit after `5e24e02` (her two re-audit
