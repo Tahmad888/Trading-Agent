@@ -29,7 +29,8 @@ from desk.calendar import clock, latest_closed_session, next_trading_day, sessio
 
 LEASE = timedelta(minutes=10)
 DEFAULT_SPACING_MINUTES = 5
-RECOVERABLE = frozenset({"WAITING_LATEST_SESSION", "TRANSIENT_UNAVAILABLE", "WAITING_MARKET_REFERENCE"})
+RECOVERABLE = frozenset({"WAITING_LATEST_SESSION", "TRANSIENT_UNAVAILABLE", "WAITING_MARKET_REFERENCE",
+                         "RETRY_AFTER_OPERATOR_RESUME"})
 OPEN = ("PENDING", "PARTIAL")
 
 
@@ -121,6 +122,7 @@ def attempt(source, log, source_session: date, now: datetime, *, removed: set[st
     """One bounded attempt for a job; returns its ScanRecord (written by the caller)."""
     from desk.scanner import VOLUME_USAGE, ScanRecord, close_scan
     rec = ScanRecord(kind, clock(now).isoformat(), None)
+    started = clock(now)
     job = log.signals.close_job(source_session)
     why = _expired(job, now)
     if why:
@@ -145,6 +147,9 @@ def attempt(source, log, source_session: date, now: datetime, *, removed: set[st
                 for s in universe if s in removed and done.get(s, {}).get("status") != "PREPARED"}
     try:
         scan, _ = close_scan(source, todo, now, decision_clock=decision_clock, preparing=True)
+        now = clock(scan.at)  # evaluated after provider work, not the invocation's old clock
+        if now < started:
+            raise ValueError("Close evaluation clock precedes the attempt start")
         market_ok = scan.error is None
         prepared = set(scan.discovery.get("prepared", []))
         for symbol in todo:
@@ -178,7 +183,8 @@ def attempt(source, log, source_session: date, now: datetime, *, removed: set[st
         target = date.fromisoformat(job["target_session"])
         next_at = clock(now) + spacing(env) if status in OPEN else None
         floor = now if clock(now) >= session(target)[0] else None  # no replay of earlier crossings
-        record = {"at": clock(now).isoformat(), "attempt": job["attempts"], "kind": kind, "requested": todo,
+        record = {"at": clock(now).isoformat(), "started_at": started.isoformat(),
+                  "evaluated_at": clock(now).isoformat(), "attempt": job["attempts"], "kind": kind, "requested": todo,
                   "symbols_requested": len(todo) + 2, "market": "EVALUATED" if market_ok else market_class,
                   "market_reason": market_reason and str(market_reason)[:300],
                   "prepared": sorted(s for s in todo if outcomes[s]["status"] == "PREPARED"),
@@ -189,7 +195,7 @@ def attempt(source, log, source_session: date, now: datetime, *, removed: set[st
             if market_ok else [], status=status, coverage=coverage, next_attempt_at=next_at,
             blocked_reason=", ".join(f"{s}: {merged[s].get('reason') or market_reason}" if s in merged
                                      else f"{s}: {market_reason}" for s in stops)[:500] or None,
-            floor_after=floor, record=record)
+            floor_after=floor, record=record, decision_clock=decision_clock)
     except Exception as exc:
         log.signals.release_close_job(source_session, token, now, clock(now) + spacing(env),
                                       {"at": clock(now).isoformat(), "attempt": job["attempts"],
@@ -197,13 +203,18 @@ def attempt(source, log, source_session: date, now: datetime, *, removed: set[st
         raise
     rec.scanned, rec.skipped, rec.at = scan.scanned, scan.skipped, scan.at
     rec.market, rec.market_why = scan.market, scan.market_why
+    final_job = log.signals.close_job(source_session)
     if not committed:
         rec.error = "CLOSE_JOB_CLAIM_LOST: this attempt's results were discarded"
+    elif record["status"] == "EXPIRED":
+        rec.error = f"CLOSE_JOB_EXPIRED: {record['reason']}"
     elif not market_ok:
         rec.error = f"close preparation pending: {scan.error}"
     else:
         rec.armed, rec.qualification = scan.armed, scan.qualification
-    rec.discovery["close_job"] = summary(log.signals.close_job(source_session))
+    if committed:
+        rec.at = clock(record["at"]).isoformat()
+    rec.discovery["close_job"] = summary(final_job)
     rec.discovery["requests"] = record["symbols_requested"]
     for key in ("prepared", "volume_pending", VOLUME_USAGE):
         if key in scan.discovery:

@@ -22,17 +22,25 @@ pins unverified until the next normal refresh; per-attempt terminal diagnostic v
 iMac checks as one terminating script). Astra's audit of `0ad7a1d` accepted H1/D1 and found
 O1 (an older identity check finishing late cleared a newer failure); Claude repaired it
 (outcomes ordered by check opening; a failure clears only by a check opened after it;
-iMac code update verified before the credential tool). Child 3 sign-off is pending Astra's audit.
+iMac code update verified before the credential tool). Astra accepted the bounded
+child-3 identity-ordering repair at `e237309` (1,666 strict tests on Python 3.12.14
+and the original overlap/recovery probes). That sign-off does not cover later code.
 Live-run repairs from Astra's audit of the 2026-10-05 live run (record
-`docs/checkpoints/G5a-cp3-live-run-repairs.md`, on top of the unreviewed O1 commit
+`docs/checkpoints/G5a-cp3-live-run-repairs.md`, on top of the accepted O1 commit
 `e237309`): package 1 share-class option chains (`0e38810`); package 2 recoverable close
 preparation (`35a321b`; `desk.close_jobs`, retried by the existing runner, no scheduler);
 package 3 diagnostic measurements (`desk.quote_measure`, `quote_check --measure
---host-clock`; evidence only, eligibility unchanged). All pending Astra's audit; the
+--host-clock`; evidence only, eligibility unchanged). Astra audited `c9cf026` (1,744
+strict tests), accepted packages 1/3 within offline scope and found two Package 2
+defects. Taz authorized Astra to repair them: final publication clock/floor after
+SQLite writer and reader waits, and explicit provider resume actually requeues the
+stopped names. Read `docs/checkpoints/G5a-cp3-close-recovery-audit-repairs.md` for
+the current implementation and verification; independent review is still required. The
 follow-up provider/iMac commands are in `docs/TASTYTRADE_QUOTES.md`. Read the child-3 record and `docs/TASTYTRADE_QUOTES.md` before quote work. Historical Webull prices and Alpaca SIP decision volume are
 unchanged; immediate consolidated intraday volume remains unresolved. The adapter
 does not supply a complete live RiskInputs factory or a long-lived quote service (the
-ticket CLI's separate commands cannot share one quote session). Child 3 sign-off, child 4
+ticket CLI's separate commands cannot share one quote session). The later Package 2
+repair's independent review, child 4
 current-commit iMac setup/checks, child 5 regular-session stock/option timing, and child 6
 remaining G5 acceptance stay pending. Step 09 and activation remain paused. The
 reconciliation at the end of `docs/G5_ACCEPTANCE.md` carries Taz's accepted b747904

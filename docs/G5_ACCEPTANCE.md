@@ -336,7 +336,7 @@ Checkpoint 3 remain pending.** Step 09 remains paused. No trading activation.
 | Existing host TLS/CA | [H] Taz's 2026-10-03 report: SSL_CERT_FILE set/existing/matches certifi, certificate and hostname required, Webull sandbox and Massive TLS PASS. | Accepted unaffected baseline evidence; new tastytrade HTTPS/WSS host check pending |
 | Massive dividend/split observations | [H] Taz's 2026-10-04 00:28–00:41Z reports in `/Users/taz/Desktop/g5-volume-urzfS2`: SPY/QQQ two dividends each; NFLX 2025-11-17 10:1 event, 50 post-split sessions PASS and crossing window EXPECTED_REFUSAL. One unrelated AXIAp identity issue isolated. SPY ex-date daily/minute volume disagreement was measured, not explained or waived. | Accepted scoped observations; no universal action completeness/volume claim |
 | Child 2 quote implementation | [S] Astra's `78da588`: `tastytrade_quotes`, `tastytrade_transport`, `quote_risk`, `quote_check`; provider identity/times, caller-source check, per-symbol failures, health/price final fence, closed-market evidence limit; no Candle volume. Child 3 review found F1–F10 (below). | Implemented by Astra; defects repaired in child 3 |
-| Child 3 code review and repairs | [S] Claude's independent review of `78da588` found F1–F10; Claude repaired them in `12705aa`. Astra's re-audit of `12705aa` (1566 strict on Python 3.12.14) withheld sign-off for R1–R4 (mapping writer outside the final fence, classification not checked against current identities, halt forgotten after a Profile fault, earlier-connection prices in the recovery summary); Claude repaired R1–R4 in `88391ab`/`318b877`. Astra's audit of `318b877` (1,613 strict on Python 3.12.14; R1–R4 probes all repaired) withheld sign-off for H1 (a committed Webull identity failure did not reach final approval/consumption) and D1 (the diagnostic summary missed changes after the last data message); Claude repaired both in `0ad7a1d`. Astra's audit of `0ad7a1d` (1,655 strict on Python 3.12.14) accepted H1/D1 and found O1 (an older identity check finishing after a newer failure cleared it); Claude repaired it in the follow-up commit (`checkpoints/G5a-cp3-child3-quote-repairs.md`). | Implemented by Claude; **independent sign-off pending Astra's audit** |
+| Child 3 code review and repairs | [S] Claude's independent review of `78da588` found F1–F10; Claude repaired them in `12705aa`. Astra's re-audit of `12705aa` (1566 strict on Python 3.12.14) withheld sign-off for R1–R4 (mapping writer outside the final fence, classification not checked against current identities, halt forgotten after a Profile fault, earlier-connection prices in the recovery summary); Claude repaired R1–R4 in `88391ab`/`318b877`. Astra's audit of `318b877` (1,613 strict on Python 3.12.14; R1–R4 probes all repaired) withheld sign-off for H1 (a committed Webull identity failure did not reach final approval/consumption) and D1 (the diagnostic summary missed changes after the last data message); Claude repaired both in `0ad7a1d`. Astra's audit of `0ad7a1d` (1,655 strict on Python 3.12.14) accepted H1/D1 and found O1 (an older identity check finishing after a newer failure cleared it); Claude repaired it in `e237309`. Astra accepted `e237309` after 1,666 strict tests, original overlap/recovery probes and ordering matrices. | **Accepted at `e237309` within bounded code scope**; later live-run repairs have their own review |
 | Child 4 current-commit iMac | Pull reviewed quote commit, install `.[dev,quotes]`, strict suite, private credentials and read-only diagnostic; see quote handoff. | Pending |
 | Child 5 actual regular-session quotes/recovery | SPY/QQQ/NVDA and real SPY call/put metadata; source times versus simultaneous independent observations; quote side freshness, updates, missing fields, disconnect/recovery. | Pending; closed-session data cannot close it |
 | Child 6 actual Friday 16:40 build | Latest Friday price session; prior Thursday finalized SIP liquidity. Existing deterministic calendar/cutoff tests are reused. | Deterministic tests only; actual scheduled-time read-only build pending |
@@ -389,22 +389,25 @@ labelled synthetic. No actual Friday schedule or market-session result is inferr
 
 ### Live-run repairs (2026-10-05 run; Astra's independent audit)
 
-Three packages on top of `e237309` (O1, **not yet reviewed by Astra**): share-class
+Three packages on top of `e237309` (O1, **accepted by Astra**): share-class
 option chains, recoverable close preparation, diagnostic measurements. Record:
-`checkpoints/G5a-cp3-live-run-repairs.md`. No provider call was made; child 3 is not
-signed off and G5/parent CP3 stay open. Labels: [O] offline code test in this batch,
+`checkpoints/G5a-cp3-live-run-repairs.md`. Astra accepted packages 1/3 within offline
+scope at `c9cf026`, but found Package 2 F1/F2; Taz authorized Astra's follow-up in
+`checkpoints/G5a-cp3-close-recovery-audit-repairs.md`. That follow-up still needs
+independent review. No provider call was made; G5/parent CP3 stay open.
+Labels: [O] offline code test in this batch,
 [C] prior cloud evidence as corrected by Astra, [P] new bounded provider check (after
 the code audit; commands in `TASTYTRADE_QUOTES.md`), [I] iMac acceptance.
 
 | Item | [O] Offline code tests | [C] Prior cloud evidence | [P] New provider check | [I] iMac acceptance |
 | --- | --- | --- | --- | --- |
 | BRK.B option chain | Package 1: 22 tests (10 failed on the base) | Defect reproduced by Astra's fixture | One bounded `BRK/B` chain lookup | On the reviewed commit |
-| Unfinished close preparation | Package 2: 23 tests, 10-05 replay (base wrote an empty Tuesday list; now `FINISHED`/`FULL` at 16:36) | Daily bars absent 16:16/16:26, present 16:36 (one day; not an SLA) | None (runner path) | Runner cadence configured on the host; a real close followed through `close_jobs status` |
+| Unfinished close preparation | Package 2's original 23 tests; follow-up F1/F2 regressions cover delayed publication, lock waits, expiry and real refetch after resume. See the follow-up record; independent review pending. | Daily bars absent 16:16/16:26, present 16:36 (one day; not an SLA) | None (runner path) | Runner cadence configured on the host; a real close followed through `close_jobs status` |
 | Bid/ask side times | Package 3: raw states, schema history; saved-frame replay shows zero values in an accepted map | All 30,000 retained Quote rows unavailable | Short active-session capture with `--measure` | Same command on the iMac |
 | Host clock | sntp parsing/failure states; never applied | QQQ 3.804 ms lead refused; offset not measured | — | `quote_measure clock` on the iMac |
 | Greeks ages | Own-time receipt/decision ages, negative kept, raw flags | Delivery only; earlier ages used the newest Trade time | Captured by the BBO run | — |
 | Immediate intraday volume | Transitions, brackets, compare without tolerance | dayVolume includes ETH; cumulative is not RTH30 | 09:25 ET 2400 s capture, then explicit-bound Alpaca probe and `compare` | iMac run |
-| Overlapping identity checks (O1) | `e237309` tests | — | — | **Astra's audit pending** |
+| Overlapping identity checks (O1) | Astra's accepted `e237309` re-audit: 1,666 strict tests and independent overlap/recovery/ordering probes | — | — | Current quote-commit host acceptance pending; code sign-off is already accepted |
 
 Deferred, not claimed: Step 09 estimated earnings calendar and catalyst work; an
 all-day quote service with token renewal; operational Webull↔tastytrade mappings;

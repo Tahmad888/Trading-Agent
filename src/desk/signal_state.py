@@ -15,7 +15,7 @@ import sqlite3
 
 import pandas as pd
 
-from desk.calendar import clock, session
+from desk.calendar import clock, latest_closed_session, session
 from desk.data_basis import dependency_terms
 from desk.playbook.cards import CARDS
 from desk.playbook.triggers import Signal
@@ -201,24 +201,48 @@ class SignalStore:
             return True, "CLAIMED", job
 
     def commit_close_job(self, source_session, token, now, *, outcomes, market, payload, volume_pending,
-                         status, coverage, next_attempt_at, blocked_reason, floor_after, record):
+                         status, coverage, next_attempt_at, blocked_reason, floor_after, record,
+                         decision_clock=None):
         """Publish an attempt and its job progress together; False if the claim was lost.
 
         Candidates are appended to the target's armed list (deduplicated by candidate ID),
         never replacing committed candidates; the market is set only if none is
-        committed. A lost or superseded claim (an older delayed attempt) commits nothing.
+        committed. A lost or superseded claim commits nothing. Expiry commits only
+        terminal job progress. The final clock is read after all SQLite lock waits;
+        explicit clocks without a callback support deterministic offline replays.
+        ``record`` receives this attempt's final time/status even if another attempt
+        changes the job after this transaction returns.
         """
         with self._db() as db:
-            db.execute("BEGIN IMMEDIATE")
+            db.execute("BEGIN EXCLUSIVE")  # rollback-journal readers cannot delay COMMIT after the clock
             job = self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
                                        (source_session.isoformat(),)).fetchone())
             if job is None or job["claim_token"] != token:
                 return False
             day = date.fromisoformat(job["target_session"])
+            final = clock(decision_clock() if decision_clock else now)
+            if final < clock(now):
+                raise SignalStateError("Close publication clock precedes the evaluation clock")
+            record.update(at=final.isoformat(), status=status)
+            expiry = ("TARGET_SESSION_ENDED" if final >= session(day)[1] else
+                      "SOURCE_SESSION_NO_LONGER_LATEST" if latest_closed_session(final) != source_session else None)
+            if expiry:
+                record.update(status="EXPIRED", reason=expiry, prepared=[],
+                              discarded_prepared=record.get("prepared", []))
+                db.execute("UPDATE close_jobs SET status='EXPIRED', finished_at=?, claim_token=NULL, "
+                           "claim_until=NULL, next_attempt_at=NULL, history=? WHERE source_session=?",
+                           (_time(final), _json((job["history"] + [record])[-50:]), source_session.isoformat()))
+                return True
+            if next_attempt_at is not None:
+                next_attempt_at = final + (clock(next_attempt_at) - clock(now))
+            if final >= session(day)[0]:
+                floor_after = max(final, clock(floor_after)) if floor_after is not None else final
+            now = final
             published = job["published"]
             if market is not None:
                 old = db.execute("SELECT market,payload FROM armed WHERE day=?", (day.isoformat(),)).fetchone()
                 current = json.loads(old["payload"]) if old else []
+                existing_ids = {candidate_id(restore_signal(p), day) for p in current}
                 merged_market = (old["market"] if old and old["market"] else None) or market
                 unique = {candidate_id(restore_signal(p), day): p for p in current + list(payload)}
                 encoded = _json(list(unique.values()))
@@ -229,7 +253,7 @@ class SignalStore:
                 if floor_after is not None:
                     db.executemany("INSERT OR IGNORE INTO armed_floors VALUES (?,?,?)",
                                    [(day.isoformat(), candidate_id(restore_signal(p), day), _time(floor_after))
-                                    for p in payload])
+                                    for p in payload if candidate_id(restore_signal(p), day) not in existing_ids])
                 published = 1
             merged = {**job["outcomes"], **outcomes}
             history = (job["history"] + [record])[-50:]  # bounded attempt history
@@ -280,10 +304,14 @@ class SignalStore:
             if job is None or job["status"] != "BLOCKED":
                 return job
             status = "PARTIAL" if job["published"] else "PENDING"
-            record = {"at": _time(now), "status": status, "resumed_by": actor, "previous_block": job["blocked_reason"]}
+            stopped = {s: o for s, o in job["outcomes"].items() if o["status"] == "PROVIDER_STOP"}
+            outcomes = {**job["outcomes"], **{s: {**o, "status": "RETRY_AFTER_OPERATOR_RESUME"}
+                                             for s, o in stopped.items()}}
+            record = {"at": _time(now), "status": status, "resumed_by": actor,
+                      "previous_block": job["blocked_reason"], "previous_provider_stops": stopped}
             # Eligible at the next runner invocation, whatever its clock.
-            db.execute("UPDATE close_jobs SET status=?, blocked_reason=NULL, next_attempt_at=NULL, history=? "
-                       "WHERE source_session=?", (status, _json((job["history"] + [record])[-50:]),
+            db.execute("UPDATE close_jobs SET status=?, outcomes=?, blocked_reason=NULL, next_attempt_at=NULL, history=? "
+                       "WHERE source_session=?", (status, _json(outcomes), _json((job["history"] + [record])[-50:]),
                                                   source_session.isoformat()))
             return self._job(db.execute("SELECT * FROM close_jobs WHERE source_session=?",
                                         (source_session.isoformat(),)).fetchone())

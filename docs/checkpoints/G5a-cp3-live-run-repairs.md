@@ -10,8 +10,9 @@ with `G5_LIVE_CHAIN_REPRO_2026-10-05.json`), external attachments kept in the sc
 area. The live evidence was collected on `0ad7a1d` (cloud, Python 3.12.3; not the iMac).
 
 Base: `e2373098bbf0ba943c6a998834af7169e3cf349a` (parent `0ad7a1d`), Claude's
-overlapping-identity ordering repair (O1). **Astra has not yet reviewed `e237309`;
-child 3 is not approved.** That commit is preserved; each package below is a separate
+overlapping-identity ordering repair (O1). **Astra accepted that bounded child-3
+repair at `e237309` (1,666 strict tests on Python 3.12.14 and the original probes).**
+That sign-off does not approve subsequent commits. The commit is preserved; each package below is a separate
 commit on top of it. No provider calls are made in this batch; scratch fixtures only.
 
 Corrections Astra made to Claude's live report, accepted: the 16:14 close slot skipped
@@ -100,7 +101,9 @@ provider publication SLA, and the nominal close+10 slot is kept.
   code, missing minute anchor, identity store busy), `INVALID_HISTORY` (invalid rows,
   older gaps, out-of-bounds history), `IDENTITY_REFUSED`, `PROVIDER_STOP`
   (HTTP 401/403 denial or 429 rate limit), `REFUSED` (anything else), `REMOVED`. Only
-  `WAITING_LATEST_SESSION` and `TRANSIENT_UNAVAILABLE` are retried. The market reference
+  `WAITING_LATEST_SESSION`, `TRANSIENT_UNAVAILABLE` and `WAITING_MARKET_REFERENCE`
+  are retried. The audit follow-up adds `RETRY_AFTER_OPERATOR_RESUME` only after an
+  explicit operator resume of a stopped name. The market reference
   (SPY+QQQ) is its own dependency; nothing publishes until it is evaluated.
 - **Publication.** A successful attempt appends its newly prepared names' candidates to
   the target's armed list (dedupe by candidate ID, existing behaviour) and sets the
@@ -114,9 +117,10 @@ provider publication SLA, and the nominal close+10 slot is kept.
   requires the same token. A duplicate or second process sees the claim and reports
   pending without requests; a crash leaves the claim to expire; an older delayed attempt
   whose lease was superseded cannot commit. No network call inside a write lock.
-- **No backdating.** Candidates published once the target session has opened get an
-  observation floor at the commit time, so only bars ending after it can produce a
-  trigger (existing `start_after` mechanism); earlier crossings are never replayed.
+- **No backdating.** New candidates published once the target session has opened get
+  an observation floor at the final publication decision, after provider work and all
+  SQLite reader/writer waits. Earlier crossings are never replayed. The audit follow-up
+  also rechecks expiry inside that transaction; committed peers keep their prior floors.
 - **Status:** `PENDING` (nothing published), `PARTIAL` (published, recoverable names
   remain), `FINISHED` (nothing recoverable remains; coverage `FULL` only if every
   universe name prepared and discovery was complete, else `PARTIAL`), `BLOCKED`
@@ -140,7 +144,9 @@ provider publication SLA, and the nominal close+10 slot is kept.
 - Provider stop: `BLOCKED` with the reason, persisted; no further attempts. Resume
   condition: an operator runs `python -m desk.close_jobs resume` after the provider issue
   is resolved; no quota-reset time is assumed. Resume clears the block and makes the job
-  eligible at the next runner invocation (it makes no request itself). `python -m desk.close_jobs status` prints
+  eligible at the next runner invocation (it makes no request itself). The audit
+  follow-up requeues only stopped ticker outcomes and retains their prior failures
+  in history; it does not clear terminal integrity refusals. `python -m desk.close_jobs status` prints
   source/target, status, coverage, attempts, next attempt, usage, per-name outcomes.
 - Deployment prerequisite: the runner cadence and budgets must actually be configured
   on the host; this package installs no schedule.
@@ -326,4 +332,11 @@ clock measurement is the iMac's only when run there; no provider call was made.
 **Final verification (combined strict suites, `-W error`, on `f95d1ff`'s code; the runs
 started before that commit and only its record text changed after):** Python 3.12.3:
 1744 passed (305.3 s); Python 3.13.14: 1744 passed (313.9 s). `git diff --check` over
-the three packages: clean. Next: Astra's audit of `e237309` and these three packages.
+the three packages: clean.
+
+**Subsequent independent audit:** Astra reproduced 1,744 strict passes at `c9cf026`
+on Python 3.12.14, accepted packages 1/3 within offline scope, and withheld Package 2
+sign-off for F1 (invocation-start floor admitted earlier crossings) and F2 (resume
+never requeued the stopped ticker). Taz authorized Astra to implement those two
+repairs. Current record: `G5a-cp3-close-recovery-audit-repairs.md`. `e237309` was already
+accepted; provider, iMac and remaining parent/G5 acceptance stay open.
