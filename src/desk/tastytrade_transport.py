@@ -175,8 +175,9 @@ class ReadClient:
         from desk.tastytrade_quotes import canonical
         if service.environment != self.environment:
             raise QuoteUnavailable("QUOTE_ENVIRONMENT_MISMATCH")
+        from desk.tastytrade_quotes import equity_provider_symbol
         symbol = canonical(requested, kind)
-        provider_symbol = symbol.replace(".", "/") if kind == "Equity" else requested
+        provider_symbol = equity_provider_symbol(symbol) if kind == "Equity" else requested
         route = "equities" if kind == "Equity" else "equity-options"
         try:
             row = self._call("GET", f"/instruments/{route}/" + quote(provider_symbol, safe="")).get("data")
@@ -190,25 +191,44 @@ class ReadClient:
             raise
 
     def chain_options(self, underlying: str) -> list[tuple[date, Decimal, str, str]]:
-        """Actual listed Standard (expiry, strike, call, put) rows; no selection here."""
-        from desk.tastytrade_quotes import canonical, number
+        """Actual listed Standard (expiry, strike, call, put) rows; no selection here.
+
+        The request uses tastytrade's Equity symbol (``BRK/B``, one encoded path
+        component); returned underlyings are compared in canonical Equity form, so a
+        share class never matches another class or underlying. Option symbols are
+        returned exactly as listed.
+        """
+        from desk.tastytrade_quotes import canonical, equity_provider_symbol, number
         symbol = canonical(underlying, "Equity")
-        data = self._call("GET", "/option-chains/" + quote(symbol, safe="") + "/nested").get("data")
+        data = self._call("GET", "/option-chains/" + quote(equity_provider_symbol(symbol), safe="")
+                          + "/nested").get("data")
+
+        def same_underlying(value):
+            try:
+                return canonical(value, "Equity") == symbol
+            except QuoteUnavailable:
+                return False  # malformed or non-Equity underlying never matches
         try:
-            options = []
+            rows = {}
             for chain in data["items"]:
-                if chain.get("underlying-symbol") != symbol or chain.get("option-chain-type") != "Standard":
+                if not same_underlying(chain.get("underlying-symbol")) or chain.get("option-chain-type") != "Standard":
                     continue
                 for expiry in chain["expirations"]:
                     day = date.fromisoformat(expiry["expiration-date"])
                     for row in expiry["strikes"]:
                         if isinstance(row.get("call"), str) and isinstance(row.get("put"), str):
-                            options.append((day, number(row["strike-price"], positive=True), row["call"], row["put"]))
+                            key = (day, number(row["strike-price"], positive=True))
+                            if rows.setdefault(key, (row["call"], row["put"])) != (row["call"], row["put"]):
+                                raise QuoteUnavailable("OPTION_CHAIN_AMBIGUOUS")
+        except QuoteUnavailable as exc:
+            if str(exc) == "OPTION_CHAIN_AMBIGUOUS":
+                raise
+            raise QuoteUnavailable("OPTION_CHAIN_UNAVAILABLE") from None
         except (KeyError, TypeError, ValueError, AttributeError):
             raise QuoteUnavailable("OPTION_CHAIN_UNAVAILABLE") from None
-        if not options:
+        if not rows:
             raise QuoteUnavailable("OPTION_CHAIN_UNAVAILABLE")
-        return options
+        return [(day, strike, call, put) for (day, strike), (call, put) in rows.items()]
 
     def chain_pair(self, underlying: str, *, strike: Decimal | None = None, reference: Decimal | None = None,
                    median: bool = False, now: datetime | None = None) -> tuple[str, str]:

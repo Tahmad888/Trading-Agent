@@ -297,6 +297,14 @@ fabricate account/risk snapshots, market regime, option deliverables/increments,
 interest, exit valuation, broker funding or tradability. Missing required inputs stay
 blocking under existing risk checks.
 
+Share classes (live-run package 1): instrument and option-chain lookups use one
+conversion to tastytrade's Equity symbol (`BRK.B` → `BRK/B`, sent as the encoded path
+component `BRK%2FB`); a chain's returned underlying is compared in canonical form, so
+`BRK/A` or another underlying never satisfies `BRK.B`, and option OCC/streamer symbols
+are kept exactly as listed. Matching Standard chains that give one (expiry, strike) two
+different contracts refuse with `OPTION_CHAIN_AMBIGUOUS`. Checked offline only; a bounded
+real `BRK/B` lookup is still to be done.
+
 ## Read-only host commands — run only after Astra's review of the reviewed commit
 
 Order matters: the iMac's last accepted commit (`b747904`) does not contain

@@ -134,6 +134,15 @@ def canonical(value: str, kind: str) -> str:
     raise QuoteUnavailable("INSTRUMENT_TYPE_UNSUPPORTED")
 
 
+def equity_provider_symbol(value: str) -> str:
+    """tastytrade's Equity symbol for a desk symbol: a share class uses a slash (BRK/B).
+
+    The one provider-boundary conversion for Equity instrument and option-chain lookups
+    (Sourced: tastytrade instruments-and-symbology). Never applied to option symbols.
+    """
+    return canonical(value, "Equity").replace(".", "/")
+
+
 # Supporting tastytrade metadata kept for a reviewed mapping (not part of the digest).
 CAPTURE_FIELDS = ("symbol", "instrument-type", "streamer-symbol", "cusip", "id", "description",
                   "listed-market", "is-etf", "instrument-sub-type", "active")
