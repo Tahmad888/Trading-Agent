@@ -164,34 +164,47 @@ class VendorHistoryStore:
     def identity_state(self, host, symbol, *, db=None) -> dict:
         """The current identity health for host/symbol (one local read, no network).
 
-        ``VERIFIED`` only when the latest outcome verified exactly the current pin and
-        no newer check is still open. ``db`` is a caller-held connection (the ticket
-        fence); otherwise a read connection is opened. Raises ``sqlite3.Error``.
+        Outcomes are ordered by the check that produced them (``check_id``, the sequence
+        of its ``CHECK_OPENED``: when the observation was initiated), never by when they
+        were written (child 3, O1). The latest committed ``FAILED`` stays effective until
+        a ``VERIFIED`` arrives from a check opened after that failure was committed; an
+        older check's outcome cannot clear it, whichever finishes last. An outcome
+        without a check ID (a direct ``pin()`` call) is ordered by its own sequence and
+        can never clear a failure. ``VERIFIED`` then needs that outcome to verify exactly
+        the current pin with no later-opened check still open. ``db`` is a caller-held
+        connection (the ticket fence); otherwise a read connection is opened. Raises
+        ``sqlite3.Error``.
         """
         if db is None:
             with self._connect() as own:
                 return self.identity_state(host, symbol, db=own)
         pin = db.execute("SELECT identity FROM identities WHERE host=? AND symbol=?", (host, symbol)).fetchone()
-        last = db.execute("SELECT sequence,event,check_id,reason,identity,observed,at FROM identity_events "
-                          "WHERE host=? AND symbol=? AND event IN ('VERIFIED','FAILED') ORDER BY sequence DESC LIMIT 1",
-                          (host, symbol)).fetchone()
-        # Only checks opened after the one that produced the latest outcome matter.
-        after = 0 if last is None else (last[2] if last[2] is not None else last[0])
+        failed = db.execute("SELECT sequence,reason,observed,at FROM identity_events WHERE host=? AND symbol=? "
+                            "AND event='FAILED' ORDER BY sequence DESC LIMIT 1", (host, symbol)).fetchone()
+        # Only a check opened after the latest committed failure may verify again.
+        verified = db.execute(
+            "SELECT sequence,COALESCE(check_id,sequence),identity,observed,at FROM identity_events "
+            "WHERE host=? AND symbol=? AND event='VERIFIED' AND (? IS NULL OR check_id > ?) "
+            "ORDER BY COALESCE(check_id,sequence) DESC, sequence DESC LIMIT 1",
+            (host, symbol, failed and failed[0], failed and failed[0])).fetchone()
+        # Only checks opened after the one that produced the deciding outcome matter.
+        after = verified[1] if verified is not None else 0
         unresolved = db.execute("SELECT MAX(o.sequence) FROM identity_events o WHERE o.host=? AND o.symbol=? "
                                 "AND o.sequence>? AND o.event='CHECK_OPENED' AND NOT EXISTS "
                                 "(SELECT 1 FROM identity_events c WHERE c.check_id=o.sequence)",
                                 (host, symbol, after)).fetchone()[0]
         pinned = _identity(pin[0]) if pin else None
         out = {"state": None, "reason": None, "identity": pinned, "observed": None, "at": None}
-        if last is not None:
-            out.update(observed=_identity(last[5]), at=last[6])
-        if last is not None and last[1] == "FAILED":
-            out.update(state="FAILED", reason=last[3])
-        elif pin is None:
+        if failed is not None and verified is None:
+            out.update(state="FAILED", reason=failed[1], observed=_identity(failed[2]), at=failed[3])
+            return out
+        if verified is not None:
+            out.update(observed=_identity(verified[3]), at=verified[4])
+        if pin is None:
             out["state"] = "NOT_PINNED"
-        elif last is None:
+        elif verified is None:
             out["state"] = "UNVERIFIED"   # e.g. a pin written before identity health existed
-        elif last[4] != pin[0] or pinned is None:
+        elif verified[2] != pin[0] or pinned is None:
             out["state"] = "HEALTH_INCONSISTENT"
         elif unresolved is not None:
             out["state"] = "REFRESH_UNRESOLVED"

@@ -19,7 +19,10 @@ Webull identity failure still allowed final approval/consumption) and D1 (diagno
 summary from the last data message only); Claude repaired them (persisted Webull identity
 health checked before revalidation and under a vendor-store fence held to COMMIT; legacy
 pins unverified until the next normal refresh; per-attempt terminal diagnostic views;
-iMac checks as one terminating script). Child 3 sign-off is pending Astra's audit. Read the child-3 record and `docs/TASTYTRADE_QUOTES.md` before quote work. Historical Webull prices and Alpaca SIP decision volume are
+iMac checks as one terminating script). Astra's audit of `0ad7a1d` accepted H1/D1 and found
+O1 (an older identity check finishing late cleared a newer failure); Claude repaired it
+(outcomes ordered by check opening; a failure clears only by a check opened after it;
+iMac code update verified before the credential tool). Child 3 sign-off is pending Astra's audit. Read the child-3 record and `docs/TASTYTRADE_QUOTES.md` before quote work. Historical Webull prices and Alpaca SIP decision volume are
 unchanged; immediate consolidated intraday volume remains unresolved. The adapter
 does not supply a complete live RiskInputs factory or a long-lived quote service (the
 ticket CLI's separate commands cannot share one quote session). Child 3 sign-off, child 4

@@ -715,3 +715,106 @@ scan), child 5 (regular-session timing, live config order, Profile delivery, rec
 child 6 (remaining G5 rows), operational mappings and runtime inputs. Hierarchy G5 →
 G5a parent Checkpoint 3 → children 1–6; parent CP3 and G5 stay open; Step 09 stays
 paused. No provider calls, credentials, iMac changes, orders or schedules were used.
+
+## Follow-up repair O1 — overlapping identity checks (Astra's audit of `0ad7a1d`, 2026-10-05)
+
+Astra accepted the H1 and D1 scenarios within their tested scope (independent run:
+1,655 strict tests on Python 3.12.14) and withheld sign-off for one reproduced ordering
+defect. Her report, probe and three result files arrived with Taz's prompt as external
+attachments (probe SHA-256 `754c5cd4…6b59b53c`, kept unchanged in the scratch area).
+Base `0ad7a1db5c1a434507e1d98cc93b419bef7c900a`, branch head unchanged at fetch, clean
+tree. Before output on that commit, Python 3.12.3, matched hers exactly: approve and
+consume both succeeded after `FAILED` (check 14 / 16) was followed by an older check's
+`VERIFIED` (check 13 / 15); the later-recovery controls succeeded. This is a software
+ordering defect against the H1 contract, not a timing tolerance or trading-rule change.
+
+### Requirements (written before code)
+
+- **Ordering contract.** Identity outcomes are ordered by the check that produced them
+  (`check_id` = the sequence of its `CHECK_OPENED`), i.e. by when the observation was
+  initiated, not by when its outcome was written. A committed `FAILED` stays effective
+  until a `VERIFIED` arrives from a check **opened after that `FAILED` was committed**
+  (`check_id > FAILED.sequence`) and its identity is still the immutable pin. An older
+  check's outcome — whichever order it completes in — never clears a newer
+  contradiction. The rule is symmetric and fail-closed: a `FAILED` that completes late
+  from an older check also stands until a later-opened check verifies.
+- Among eligible `VERIFIED` outcomes, the one from the most recently opened check
+  decides; a check opened after it and still open is `REFRESH_UNRESOLVED` (unchanged
+  meaning). All events, the pin and the contradictory observations are kept.
+- **Events without a check ID** (`check_id` NULL: direct `pin()` calls outside the vendor
+  fetch path — tests and tooling; the fetch path always opens a check) are ordered by
+  their own sequence, but a NULL-check `VERIFIED` never clears a `FAILED`: its initiation
+  cannot be shown to follow the failure. A NULL-check `FAILED` counts as a failure.
+- **Writer:** `VendorBasisSource._usable` → `VendorHistoryStore.pin` (unchanged; it
+  already records the check). **Reader:** `VendorHistoryStore.identity_state` (the only
+  change). **Consumers** (unchanged): `verified_identity`/`event_identity` before
+  revalidation and in `EventRiskSource.held_event`'s final status under the vendor
+  fence, and the quote bridge. The fence through ticket COMMIT, per-host/symbol scope,
+  scoped/full-history separation and the rule that bar observations never touch
+  identity health are unchanged. No delay, tolerance, retry, background service or
+  pin change.
+- **Migration:** no schema change. `identity_events` exists only from `0ad7a1d`
+  (not on the iMac, which runs `b747904`); its fetch-path events all carry check IDs
+  and are read under the new rule directly. Legacy pins without events remain
+  `WEBULL_IDENTITY_UNVERIFIED` until a normal refresh, as before.
+- **Rollback:** revert the commit; stored events are read again by `0ad7a1d`'s rule.
+
+### Acceptance (written first)
+
+| Case | Expected |
+| --- | --- |
+| Older check A verifies after newer check B failed (ID change), approve / consume | refuse `WEBULL_IDENTITY_FAILED:SECURITY_IDENTITY_CHANGED`; state stays FAILED after reopening; a later generic bar observation does not clear it |
+| Same with a common→ETF contradiction | refuse |
+| Older check A fails after newer check B verified | FAILED (fail-closed) until a later-opened check verifies |
+| Later check opened after the failure verifies the original pin, approve / consume | succeeds; same reviewed mapping |
+| Overlapping healthy checks in either completion order | VERIFIED |
+| Newer check still open after the deciding outcome | REFRESH_UNRESOLVED |
+| NULL-check VERIFIED after a FAILED | does not clear it |
+| Healthy peer symbol during another symbol's failure | unaffected |
+| Mutation: permission chosen by latest completion again | caught |
+
+### O1 implementation record
+
+Changed: `src/desk/vendor_basis.py` (`VendorHistoryStore.identity_state` only: the
+latest committed `FAILED` is effective unless a `VERIFIED` from a check with
+`check_id > FAILED.sequence` exists; among eligible `VERIFIED` outcomes the most
+recently opened check decides; "unresolved" compares against that check), new
+`tests/test_identity_ordering.py` (11), docs. Writers, the vendor fence, consumers and
+the stored schema are unchanged.
+
+| Case (Astra's probe, unchanged; Python 3.12.3) | Before (`0ad7a1d`) | After |
+| --- | --- | --- |
+| approve, older check A verifies after newer B failed | succeeded; approved; state VERIFIED (events 13 open, 14 open, 15 FAILED/14, 16 VERIFIED/13) | refused `WEBULL_IDENTITY_FAILED:SECURITY_IDENTITY_CHANGED`; pending; state FAILED (same events) |
+| consume, same race | succeeded; consumed (15, 16, 17 FAILED/16, 18 VERIFIED/15) | refused, same code; approved; FAILED |
+| approve, later-opened recovery check (control) | succeeded | succeeded |
+| consume, later-opened recovery check (control, run with the probe's `--control`) | succeeded | succeeded |
+
+Focused regressions (`tests/test_identity_ordering.py`): the race for approve/consume ×
+ID/ETF contradiction (state still FAILED after reopening the store and after a generic
+`CONSISTENT` bar observation; resolution refuses), later-opened recovery for
+approve/consume, an older `FAILED` finishing after a newer `VERIFIED` (fail-closed, then
+recovered by a later check), overlapping healthy checks in both completion orders, a
+newer check still open (`REFRESH_UNRESOLVED`), an unchecked `VERIFIED` after a failure
+(still FAILED), a peer symbol unaffected.
+
+#### Verification (O1 commit)
+
+| Command | Result |
+| --- | --- |
+| `python -m pytest -q -W error` (3.12.3) | **1666 passed in 278.84s** |
+| `python -m pytest -q -W error` (3.13.14) | **1666 passed in 285.54s** |
+| `tests/test_identity_ordering.py` + `tests/test_identity_health.py` | 38 passed on both versions |
+| `git diff --check` | Clean |
+| iMac blocks, simulated against a local clone with a fake `HOME` | Part 1 and Part 3: wrong SHA, dirty tracked tree and wrong branch each STOP before install, suite or request; the reviewed SHA continues |
+
+Targeted mutations (quote files + identity/terminal/vendor/ordering tests): **4 of 4
+detected**, control passes — permission chosen by latest completion again (O1a, 27
+tests fail), an older check allowed to clear a failure (O1b, 27), an unchecked outcome
+allowed to clear one (O1c, 1), failure no longer preferred (O1d, 27). Earlier mutation
+batches were not rerun (unchanged code).
+
+The live-session evidence collected on `0ad7a1d` (2026-10-05, cloud) is kept for
+separate review; this offline repair did not rerun it. Unchanged pending acceptance:
+child 3 sign-off, child 4 (iMac: Part 1 update and suite, Part 2 credentials, Part 3
+diagnostics), child 5, child 6, operational mappings and runtime inputs. Parent CP3 and
+G5 stay open; Step 09 stays paused.

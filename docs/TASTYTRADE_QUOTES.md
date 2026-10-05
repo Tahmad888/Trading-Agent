@@ -209,8 +209,13 @@ with the contradictory observation kept beside the pin, or `NOT_OBSERVED` (metad
 missing, stale or unattributable). An outcome that cannot be committed leaves the check
 open.
 
-Current permission needs the latest outcome to be `VERIFIED` for exactly the current pin,
-with no newer open check, and the pin to be the instrument the signal was armed on.
+Outcomes are ordered by when their check was opened, not by when they were written
+(child 3, O1): a committed `FAILED` stays effective until a check opened after that
+failure verifies the original pin, so an older check that finishes late can never clear
+a newer contradiction (and a late older `FAILED` also stands until a later check
+verifies). An outcome without a check ID never clears a failure. Current permission
+needs the deciding outcome to be `VERIFIED` for exactly the current pin, with no
+later-opened check still open, and the pin to be the instrument the signal was armed on.
 Otherwise a signal armed on Webull vendor evidence refuses, before quote lookup and
 state-mutating revalidation and again in the final fence, with `WEBULL_IDENTITY_FAILED:
 <reason>`, `…_REFRESH_UNRESOLVED`, `…_UNVERIFIED`, `…_HEALTH_INCONSISTENT`,
@@ -294,18 +299,20 @@ blocking under existing risk checks.
 
 ## Read-only host commands — run only after Astra's review of the reviewed commit
 
-Credentials are a separate, earlier step, run on its own: `python
-tools/setup_tastytrade_env.py` (hidden input, mode 0600, other saved settings
-preserved). Never paste keys into chat or a command line.
+Order matters: the iMac's last accepted commit (`b747904`) does not contain
+`tools/setup_tastytrade_env.py`, so the reviewed code is pulled and verified first, the
+credential tool runs second, and the diagnostics run last.
 
-The checks run as one script so that a failed guard really stops everything after it
-(`set -e` plus an explicit `exit 1` per guard; printing STOP alone would not). Paste the
-three lines below. The middle line writes the script to a temporary file; the last line
-runs it with the exact commit Astra signed off in place of `REVIEWED_SHA`.
+Each part runs as its own script so that a failed guard really stops everything after it
+(`set -e` plus an explicit `exit 1` per guard; printing STOP alone would not). Paste each
+block as shown and replace `REVIEWED_SHA` with the exact commit Astra signed off. The
+scripts run in their own shell, so a STOP never closes the Terminal window.
+
+**Part 1: update and verify the reviewed code (no credentials, no provider request).**
 
 ```sh
-desk_checks=$(mktemp "${TMPDIR:-/tmp}/desk-child4-checks.XXXXXX")
-cat > "$desk_checks" <<'CHECKS'
+desk_update=$(mktemp "${TMPDIR:-/tmp}/desk-child4-update.XXXXXX")
+cat > "$desk_update" <<'UPDATE'
 set -eo pipefail
 test -n "${1:-}" || { echo "STOP: give the reviewed commit SHA"; exit 1; }
 cd "$HOME/Trading-Agent"
@@ -316,10 +323,40 @@ git merge --ff-only origin/codex/repair-step-01-baseline || { echo "STOP: fast-f
 test "$(git rev-parse HEAD)" = "$1" || { echo "STOP: HEAD is not the reviewed commit"; exit 1; }
 echo "SHA_OK $1"
 source .venv/bin/activate
-source "$HOME/.config/trading-desk/env"
 python --version
 python -m pip install -e '.[dev,quotes]' || { echo "STOP: install failed"; exit 1; }
 python -m pytest -q -W error || { echo "STOP: strict suite failed"; exit 1; }
+test -f tools/setup_tastytrade_env.py || { echo "STOP: credential tool missing"; exit 1; }
+echo "UPDATE_OK: run the credential tool next"
+UPDATE
+bash "$desk_update" REVIEWED_SHA
+```
+
+Expected: no STOP; `SHA_OK`, the suite passes, `UPDATE_OK`.
+
+**Part 2: credentials, only after `UPDATE_OK`, run on their own.** Hidden input, mode
+0600, other saved settings preserved. Never paste keys into chat or a command line.
+
+```sh
+cd "$HOME/Trading-Agent"
+.venv/bin/python tools/setup_tastytrade_env.py
+```
+
+**Part 3: read-only checks and diagnostics.** It re-checks the branch, the tree and the
+reviewed commit before any provider request.
+
+```sh
+desk_checks=$(mktemp "${TMPDIR:-/tmp}/desk-child4-checks.XXXXXX")
+cat > "$desk_checks" <<'CHECKS'
+set -eo pipefail
+test -n "${1:-}" || { echo "STOP: give the reviewed commit SHA"; exit 1; }
+cd "$HOME/Trading-Agent"
+test -z "$(git status --porcelain --untracked-files=no)" || { echo "STOP: tracked files have local changes"; exit 1; }
+test "$(git branch --show-current)" = "codex/repair-step-01-baseline" || { echo "STOP: wrong branch"; exit 1; }
+test "$(git rev-parse HEAD)" = "$1" || { echo "STOP: HEAD is not the reviewed commit"; exit 1; }
+echo "SHA_OK $1"
+source .venv/bin/activate
+source "$HOME/.config/trading-desk/env"
 sntp time.apple.com || echo "sntp failed: host clock offset not measured"
 desk_quote_report_dir=$(mktemp -d "$HOME/Desktop/g5-quotes-XXXXXX")
 python -m desk.quote_check --environment production --symbols SPY QQQ NVDA --option-underlying SPY --seconds 120 --reconnects 1 --max-requests 20 --output "$desk_quote_report_dir/quotes.json" || echo "quotes.json written; non-zero exit means status is not OBSERVATIONS_ONLY"
@@ -329,10 +366,9 @@ CHECKS
 bash "$desk_checks" REVIEWED_SHA
 ```
 
-Expected: no STOP line; `SHA_OK` with the reviewed commit; the suite passes; `sntp` only
-prints the offset (no clock-setting flags are used). Any STOP ends the script before the
-install, the suite or any provider request. The script runs in its own shell, so it never
-closes the Terminal window, and the diagnostics write only to the new scratch folder.
+Expected: no STOP line; `SHA_OK` with the reviewed commit; `sntp` only prints the offset
+(no clock-setting flags are used). Any STOP ends that script before any provider request,
+and the diagnostics write only to the new scratch folder.
 
 Option pair: the nearest non-expired Standard expiry on the ET market date (today's
 only before today's close), at the listed strike nearest the observed SPY trade
