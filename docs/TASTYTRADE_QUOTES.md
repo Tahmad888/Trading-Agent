@@ -15,12 +15,14 @@ timing and entitlement acceptance await child Step 5 on the independently review
 | Current equity last-trade price/time | tastytrade DXLink `Trade` | Independent signal revalidation through `TastytradeRiskSource`, only after a reviewed identity mapping is verified |
 | Stock/option bid/ask and sizes | tastytrade DXLink `Quote` | Separate side-change times, identity and freshness reads |
 | Trading status | tastytrade DXLink `Profile` (optional, separate channel) | Known HALTED refuses; UNDEFINED/missing is unknown, never ACTIVE |
-| Immediate consolidated intraday volume | Unresolved | No Candle/dayVolume substitution or threshold change |
+| Immediate consolidated intraday volume | Unresolved | No Candle/dayVolume substitution or threshold change; `dayVolume` is only observed by the opt-in diagnostic below |
 
 The accepted saved-volume audit found large differences between tastytrade first30
-volume and the reported SIP first30 volumes; their cause remains unknown. This adapter
-never requests Candle, Summary or dayVolume and cannot supply bars, decision volume
-or VWAP. The EP approved card, 50-session denominator and 0.5 threshold are unchanged.
+volume and the reported SIP first30 volumes; their cause remains unknown. The quote
+channel never requests Candle, Summary or dayVolume and cannot supply bars, decision
+volume or VWAP. The opt-in measurement channel (below) requests Trade `dayId`/
+`dayVolume` and option Greeks as diagnostic evidence only. The EP approved card,
+50-session denominator and 0.5 threshold are unchanged.
 
 ## Evidence and protocol
 
@@ -282,8 +284,12 @@ injected service only.
 ## Clock uncertainty
 
 No tolerance is adopted (Assumption E6). Future-dated events stay ineligible and are
-reported with their lead. Before the live run, measure the iMac offset (read-only):
-`sntp time.apple.com`. A calibration mechanism, if proposed later, needs a trusted time
+reported with their lead. Before the live run, measure the iMac offset (read-only) with
+`python -m desk.quote_measure clock --output FILE` (runs `sntp time.apple.com`, no
+clock-setting flags) and attach it with `quote_check --host-clock FILE`. The report
+carries it as measured on its own host and time: offset and `+/-` as printed, never
+applied, no tolerance; absent is `NOT_MEASURED`, a failed or unrecognized run is
+`UNAVAILABLE`. A cloud command on another host does not measure the iMac. A calibration mechanism, if proposed later, needs a trusted time
 source, units and sign convention, measured uncertainty, a validity period, handling of
 clock jumps, and the same adjustment in producer and risk checks; it is an open
 engineering decision for Astra/Taz, not part of this change.
@@ -304,6 +310,45 @@ component `BRK%2FB`); a chain's returned underlying is compared in canonical for
 are kept exactly as listed. Matching Standard chains that give one (expiry, strike) two
 different contracts refuse with `OPTION_CHAIN_AMBIGUOUS`. Checked offline only; a bounded
 real `BRK/B` lookup is still to be done.
+
+## Diagnostic measurements (live-run package 3)
+
+`desk.quote_measure` records evidence only; nothing in it is read by `risk`,
+`quote_risk`, `scanner`, `tickets` or a setup, and quote eligibility is unchanged.
+
+- **Bid/ask.** With `quote_check --measure`, each decoded Quote row records the
+  requested and server-accepted maps and their revision, environment, channel,
+  generation, symbol, the raw state of `bidTime`/`askTime` (`ZERO`, `NULL`, `NAN`,
+  `INVALID`, `FUTURE` with lead, or the value; a refused map keeps the offered fields),
+  UTC receipt time, decision time and the unchanged getter's verdict. Replaying the
+  saved 2026-10-05 raw frames: the accepted Quote map contained both side-time fields
+  and every Quote row carried `0`, so the cause is the data, not the schema; such rows
+  stay `QUOTE_TIME_UNAVAILABLE`. A timestamped alternative channel or a reviewed BBO
+  arrival-freshness contract is separate work.
+- **Measurement channel** (`MEASURE_CHANNEL` 7, own FEED channel like Profile; errors
+  withhold only the measurement): Trade `time`, `price`, `size`, `dayId`, `dayVolume`
+  for equities and Greeks `eventFlags`, `index`, `time`, `sequence`, `price`,
+  `volatility`, `delta`, `gamma`, `theta`, `rho`, `vega` for options. Its rows never
+  reach the quote service.
+- **Volume.** Per update: `dayId`, `dayVolume` state, the RTH Trade time (labelled as
+  such; it can stay fixed while day volume rises), local receipt and generation;
+  transitions (first, increase, unchanged, decrease/correction, day reset, unavailable,
+  reconnect snapshot with the unobserved gap). [dxFeed Trade](https://docs.dxfeed.com/dxfeed/api/com/dxfeed/event/market/Trade.html)
+  day volume includes extended hours; no RTH 09:30–10:00 total is derived.
+- **Greeks.** Raw observations: provider time, receipt and decision times, receipt age
+  and decision age from the Greeks' own time (negative kept), decoded event flags,
+  index and sequence. No snapshot/transaction reduction, so no "current" value; no age
+  cutoff. `Greeks.price` is market price; TheoPrice is not requested. The saved
+  2026-10-05 Greeks files have no receipt times, so their ages cannot be recomputed.
+- **Reports** are bounded (4000 records per record type, three raw samples per type,
+  complete counters) and refused with `REPORT_CREDENTIAL_MATCH` if a configured
+  credential value or a token/header marker appears.
+- **Opening window.** `python -m desk.quote_measure volume` runs consecutive capture
+  segments of at most 600 s (the unchanged `capture` bound), at most 3000 s and five
+  equities, and records each segment and the gap between them. `quote_measure compare`
+  puts it beside an explicit-bound `desk.alpaca_probe` result for the same session's
+  RTH30 intervals: definitions, bounds, the receipt-bracketed cumulative change
+  (labelled `NOT_AN_RTH_TOTAL`) and the raw difference. No tolerance.
 
 ## Read-only host commands — run only after Astra's review of the reviewed commit
 
@@ -365,18 +410,19 @@ test "$(git rev-parse HEAD)" = "$1" || { echo "STOP: HEAD is not the reviewed co
 echo "SHA_OK $1"
 source .venv/bin/activate
 source "$HOME/.config/trading-desk/env"
-sntp time.apple.com || echo "sntp failed: host clock offset not measured"
 desk_quote_report_dir=$(mktemp -d "$HOME/Desktop/g5-quotes-XXXXXX")
-python -m desk.quote_check --environment production --symbols SPY QQQ NVDA --option-underlying SPY --seconds 120 --reconnects 1 --max-requests 20 --output "$desk_quote_report_dir/quotes.json" || echo "quotes.json written; non-zero exit means status is not OBSERVATIONS_ONLY"
+python -m desk.quote_measure clock --output "$desk_quote_report_dir/clock.json" || echo "clock.json written; host clock offset UNAVAILABLE"
+python -m desk.quote_check --environment production --symbols SPY QQQ NVDA --option-underlying SPY --seconds 120 --reconnects 1 --max-requests 20 --measure --host-clock "$desk_quote_report_dir/clock.json" --output "$desk_quote_report_dir/quotes.json" || echo "quotes.json written; non-zero exit means status is not OBSERVATIONS_ONLY"
 python -m desk.quote_check --environment production --symbols SPY --profile --seconds 30 --reconnects 0 --max-requests 6 --output "$desk_quote_report_dir/profile.json" || echo "profile.json written; non-zero exit means status is not OBSERVATIONS_ONLY"
 echo "Reports in $desk_quote_report_dir"
 CHECKS
 bash "$desk_checks" REVIEWED_SHA
 ```
 
-Expected: no STOP line; `SHA_OK` with the reviewed commit; `sntp` only prints the offset
-(no clock-setting flags are used). Any STOP ends that script before any provider request,
-and the diagnostics write only to the new scratch folder.
+Expected: no STOP line; `SHA_OK` with the reviewed commit; `clock.json` with
+`status` `MEASURED` (offset and `+/-` as printed; no clock-setting flags are used). Any
+STOP ends that script before any provider request, and the diagnostics write only to the
+new scratch folder.
 
 Option pair: the nearest non-expired Standard expiry on the ET market date (today's
 only before today's close), at the listed strike nearest the observed SPY trade
@@ -402,6 +448,52 @@ account operation, dry-run or order endpoint is invoked.
 Outside the XNYS regular session the output says `LIVE_TIMING=NOT_TESTED_MARKET_CLOSED`;
 during it, `OBSERVATIONS_REQUIRE_REVIEW`. Source times must be reviewed against
 independent simultaneous observations before child Step 5 acceptance.
+
+## Live-run follow-up provider checks — after Astra's code audit, not run in this batch
+
+Run on the iMac from Part 3's shell state (reviewed commit verified, `.venv` active,
+credentials sourced, `$desk_quote_report_dir` created). Environment variable NAMES
+only: `TASTYTRADE_CLIENT_SECRET`, `TASTYTRADE_REFRESH_TOKEN` (tastytrade) and
+`APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` (Alpaca). Every command is read-only; a
+denial (`REST_HTTP_401`/`403`), rate limit (`REST_HTTP_429`) or budget stop
+(`REST_REQUEST_BUDGET`) ends it with status `UNAVAILABLE` and no retry.
+
+1. **Host clock** (no provider request; one NTP query):
+   `python -m desk.quote_measure clock --output "$desk_quote_report_dir/clock.json"`.
+   Expected `status` `MEASURED` with the printed offset and `+/-`; otherwise
+   `UNAVAILABLE` with `SNTP_NOT_FOUND`, `SNTP_TIMEOUT`, `SNTP_FAILED` or
+   `SNTP_OUTPUT_UNRECOGNIZED`. Nothing is applied.
+2. **One bounded share-class chain lookup** (regular session; at most 8 requests:
+   OAuth, `BRK/B` instrument, `/option-chains/BRK%2FB/nested`, quote token, two option
+   instruments):
+   `python -m desk.quote_check --environment production --symbols BRK.B --option-underlying BRK.B --seconds 30 --reconnects 0 --max-requests 8 --output "$desk_quote_report_dir/brkb-chain.json"`.
+   Expected: no `OPTION_CHAIN_UNAVAILABLE`/`OPTION_CHAIN_AMBIGUOUS`;
+   `options.selection.status` `SUBSCRIBED` with the call/put OCC symbols exactly as
+   listed. Off-hours add `--option-median-fallback` (labelled not representative).
+3. **Short active-session stock/option BBO capture** (regular session; at most 20
+   requests): the Part 3 `quotes.json` command, which carries `--measure` and
+   `--host-clock`. Expected: `measurements.schema_history` shows whether the accepted
+   Quote map contains `bidTime`/`askTime`; `measurements.counts.bbo_times` gives each
+   symbol's side-time states and `bbo_verdict` the unchanged getter's reasons (zero
+   times stay `QUOTE_TIME_UNAVAILABLE`); Greeks records carry receipt and decision ages
+   from their own time; `clock.host_clock` carries step 1's file.
+4. **Opening-window volume capture**, started at 09:25:00 ET on a regular session (at
+   most 20 requests: OAuth, two instruments, one quote token per 600-second segment
+   plus at most one recovery each):
+   `python -m desk.quote_measure volume --environment production --symbols SPY NVDA --seconds 2400 --max-requests 20 --host-clock "$desk_quote_report_dir/clock.json" --output "$desk_quote_report_dir/volume.json"`.
+   Expected: four segments with `stop_reason` `CAPTURE_COMPLETE`, `status`
+   `OBSERVATIONS_ONLY`, per-symbol transitions and `receipt_brackets` with four edges.
+   Segment changes fall near 09:35/09:45/09:55, away from the 09:30 and 10:00 edges.
+5. **Explicit-bound historical SIP for the same session**, after the close (at most six
+   requests; `split` is the policy adjustment and equals raw units on a session without
+   a split): `python -m desk.alpaca_probe --symbols SPY,NVDA --entry-session CAPTURE_DATE --daily-start DAILY_START --out "$desk_quote_report_dir/alpaca"`,
+   with `DAILY_START` on or before the first of the 50 prior sessions (the probe refuses
+   otherwise). Then, offline:
+   `python -m desk.quote_measure compare --capture "$desk_quote_report_dir/volume.json" --alpaca-result "$desk_quote_report_dir/alpaca/result.json" --output "$desk_quote_report_dir/compare.json"`.
+   Expected: the Alpaca RTH30 intervals and bounds beside the receipt-bracketed
+   cumulative change (`NOT_AN_RTH_TOTAL`), bracket widths and connections spanned; each
+   symbol `WITHIN_RECEIPT_BRACKETS_NOT_PROOF` or `OUTSIDE_RECEIPT_BRACKETS_UNRESOLVED`.
+   No tolerance; unexplained differences stay unresolved.
 
 Rollback: revert the child-3 commit to return to `78da588`; no host state is changed by
 the code. A mapping file, if one is later created, is ignored by older code, and so is

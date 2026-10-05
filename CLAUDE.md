@@ -22,7 +22,14 @@ pins unverified until the next normal refresh; per-attempt terminal diagnostic v
 iMac checks as one terminating script). Astra's audit of `0ad7a1d` accepted H1/D1 and found
 O1 (an older identity check finishing late cleared a newer failure); Claude repaired it
 (outcomes ordered by check opening; a failure clears only by a check opened after it;
-iMac code update verified before the credential tool). Child 3 sign-off is pending Astra's audit. Read the child-3 record and `docs/TASTYTRADE_QUOTES.md` before quote work. Historical Webull prices and Alpaca SIP decision volume are
+iMac code update verified before the credential tool). Child 3 sign-off is pending Astra's audit.
+Live-run repairs from Astra's audit of the 2026-10-05 live run (record
+`docs/checkpoints/G5a-cp3-live-run-repairs.md`, on top of the unreviewed O1 commit
+`e237309`): package 1 share-class option chains (`0e38810`); package 2 recoverable close
+preparation (`35a321b`; `desk.close_jobs`, retried by the existing runner, no scheduler);
+package 3 diagnostic measurements (`desk.quote_measure`, `quote_check --measure
+--host-clock`; evidence only, eligibility unchanged). All pending Astra's audit; the
+follow-up provider/iMac commands are in `docs/TASTYTRADE_QUOTES.md`. Read the child-3 record and `docs/TASTYTRADE_QUOTES.md` before quote work. Historical Webull prices and Alpaca SIP decision volume are
 unchanged; immediate consolidated intraday volume remains unresolved. The adapter
 does not supply a complete live RiskInputs factory or a long-lived quote service (the
 ticket CLI's separate commands cannot share one quote session). Child 3 sign-off, child 4
@@ -183,6 +190,8 @@ https://claude.ai/artifact/PttWVbAJ9tVDpRFKnhNewg
 - `src/desk/alpaca_volume.py`, `src/desk/alpaca_probe.py`: G5a opt-in Alpaca SIP volume evidence and its bounded probe; `alpaca_assets.py` (identity pins and identity health) and `alpaca_source.py` (consumers' provider and the final guard) wire it in (prices stay Webull).
 - `src/desk/bars.py`: parses and checks price bars; bad, short or stale bars raise `BarDataError` (no trade).
 - `src/desk/tastytrade_quotes.py`, `tastytrade_transport.py`, `quote_risk.py`, `quote_check.py`, `quote_mapping.py`: G5a CP3 read-only tastytrade quotes, DXLink transport, the identity-verified ticket bridge, the diagnostic and reviewed Webull↔tastytrade mappings (`docs/TASTYTRADE_QUOTES.md`).
+- `src/desk/close_jobs.py`: live-run package 2 persisted close-preparation jobs (one per completed session; `python -m desk.close_jobs status|resume`).
+- `src/desk/quote_measure.py`: live-run package 3 diagnostic-only measurements (raw BBO side-time states, separate volume/Greeks channel, host clock, opening-window capture, Alpaca comparison); never eligibility.
 - `src/desk/history_scope.py`: G5a CP3 typed discovery scope (260 sessions, cannot be shortened) and pre-parse row classification; only the Friday leader build uses it.
 - `src/desk/indicators.py`: the feature pack on TA-Lib 0.8.1, matched to TradingView; `tests/tv_reference.py` holds the Pine formulas it's tested against.
 - `src/desk/screen_check.py`: prints a ticker's latest daily values to compare with Taz's screen.

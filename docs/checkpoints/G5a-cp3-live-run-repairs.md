@@ -207,3 +207,123 @@ Limitations: discovery is not re-run after the close slot, so a mover-list outag
 16:14 stays `PARTIAL` coverage; a user addition made after the close slot is not added to
 the frozen universe (it is picked up at the next close, as before); one runner invocation
 per five minutes is a host prerequisite, not something this package installs.
+
+## Package 3 — measurements without changing eligibility (written before code)
+
+Trader-day step: analyze / approve (evidence for later decisions). Nothing here makes
+unavailable data eligible: `QuoteService` acceptance, the quote-age policy, the
+future-time refusal, the risk bridge, setups, the Alpaca volume role, the 50-day period
+and the EP 0.5 threshold are unchanged. The new measurement path is diagnostic only and
+is not imported by `risk`, `quote_risk`, `scanner`, `tickets` or any setup.
+
+- **Where (engineering choice).** New module `desk.quote_measure` holding a bounded
+  `Recorder`. It observes the existing core decoder (requested and server-accepted
+  Quote/Trade maps, revisions, raw `bidTime`/`askTime`) and owns a separate
+  measurement FEED channel (channel 7, like the Profile channel: its errors withhold
+  only the measurement) for Trade volume fields and option Greeks. The core channel's
+  requested fields are unchanged. Opt-in only: `quote_check --measure`, and the new
+  `quote_measure` commands; without them no extra channel is opened.
+- **Bid/ask.** Per decoded Quote row: environment, channel, generation, accepted-map
+  revision, wire and canonical symbol, raw state of `bidTime`/`askTime` (`ABSENT` from
+  the accepted map, `NULL`, `ZERO`, `NAN`, `INVALID`, `FUTURE` with its lead, or the
+  epoch value), UTC receipt time, decision time (the moment the existing getter was
+  asked) and the getter's verdict. Receipt time is never substituted for source time.
+  A changed bid/ask with zero times stays `QUOTE_TIME_UNAVAILABLE`.
+- **Schema history.** Each configuration per channel/type: requested map, accepted map
+  (or `WITHDRAWN` when the decoder rejected it), `ACCEPTED`/`CHANGED`/`RESTORED`
+  states and whether the side-time fields are in the accepted map — this separates a
+  schema cause from a data cause.
+- **Clock.** `python -m desk.quote_measure clock` runs `sntp <server>` (default
+  `time.apple.com`, no clock-setting flags) on the host it is run on and records
+  measurement start/finish, source, the printed offset and `+/-` value as text,
+  exit status and bounded raw output. `--host-clock FILE` attaches that result to a
+  quote diagnostic. Absent → `NOT_MEASURED`; failed/unparseable → `UNAVAILABLE` with
+  a code. The offset is never applied, no tolerance is added, future leads stay as
+  measured and refused. The sign is recorded as printed, not interpreted.
+- **Greeks.** Raw observations only (no current-state reduction; no tested
+  indexed-event helper exists in this repository): provider `time`, UTC receipt,
+  decision time, receipt age = receipt − source, decision age = decision − source
+  (negative kept), `eventFlags` decoded (TX_PENDING, REMOVE_EVENT, SNAPSHOT_BEGIN/
+  END/SNIP/MODE), `index`, `sequence`, decimal values as text. `Greeks.price` is
+  labelled market price; TheoPrice is not requested. No Greeks age cutoff.
+- **Volume.** Per Trade update on the measurement channel: `dayId`, `dayVolume` state,
+  the RTH Trade source time (labelled as such, never as the volume update time),
+  local receipt (observation time, not exchange cutoff), generation. Transitions per
+  symbol: first, increase, unchanged, decrease/correction, day reset, unavailable
+  (NaN/missing), reconnect snapshot with the unobserved gap; fixed Trade time with
+  changed volume flagged. No RTH 09:30–10:00 total is derived.
+- **Opening window (engineering bound).** `python -m desk.quote_measure volume` runs
+  consecutive capture segments of at most 600 s each through the unchanged
+  `capture` (its 600-second safeguard stays), up to 3000 s in total, 1–5 equities,
+  no options; the gap between segments is recorded as a reconnect gap.
+  `python -m desk.quote_measure compare` puts that capture beside an explicit-bound
+  `desk.alpaca_probe` result for the same session's RTH30 intervals: definitions,
+  units/adjustment, bounds, the receipt-bracketed cumulative change (labelled not an
+  RTH total) and the raw difference, `UNRESOLVED` unless equal. No tolerance.
+- **Reports.** Bounded: metadata, schema history, first raw samples per type,
+  streamed records up to a cap with a dropped count, complete per-symbol counters,
+  and the terminal eligibility view kept separate from historical observations. The
+  written text is scanned for the configured credential values and token/header
+  markers and refused (`REPORT_CREDENTIAL_MATCH`) if any appear.
+- **Acceptance (offline).** Zero/null/missing BBO times; reordered, withdrawn and
+  restored schemas; future events; Greeks ages where the latest Trade has another
+  time; transaction/removal markers; volume with fixed Trade time; day reset/NaN;
+  decreasing volume; reconnect snapshot with a gap; segment bounds; sntp parsing and
+  failure; credential refusal; core eligibility identical with and without the
+  recorder.
+- **Rollback.** Revert the commit; nothing is stored outside the report files.
+
+### Package 3 record
+
+Changed:
+- `src/desk/quote_measure.py` (new): field-state helpers, the bounded `Recorder`
+  (core-decoder observer and measurement-channel decoder), `measure_clock`/
+  `load_host_clock`, the credential guard, `volume_capture` segments, `compare`, CLI
+  (`clock`, `volume`, `compare`).
+- `src/desk/tastytrade_quotes.py`: `QuoteService.symbol_for`; `FeedDecoder` takes an
+  optional observer told about each map outcome and each decided row; an observer
+  fault ends recording and never reaches the quote path.
+- `src/desk/tastytrade_transport.py`: `MEASURE_CHANNEL`; `Session(measure=...)` requests
+  and decodes that channel separately (errors/closure withhold only the measurement);
+  `capture(measure=...)`.
+- `src/desk/quote_check.py`: `--measure`, `--host-clock`; the report adds
+  `measurements` (`NOT_REQUESTED` without the flag) and `clock.host_clock`
+  (`NOT_MEASURED` without a file); it is written through the credential guard. Its
+  600-second bound is unchanged.
+- `tests/test_quote_measure.py` (new, 33); `docs/TASTYTRADE_QUOTES.md`.
+
+Design change after the pre-code record: `compare` requires the same `dayId` at all four
+receipt edges, not one connection. `dayVolume` is the provider's cumulative counter, so a
+reconnect or segment change between edges does not break it; with 600-second segments a
+30-minute window always spans several connections. Connections spanned and both
+bracket widths are reported as context. `dayId` is requested but not required: a map
+without it records `ABSENT`, and `compare` then refuses (`NOT_COMPARABLE_DAY_ID_UNAVAILABLE`).
+Record caps are per record type, so a busy BBO stream cannot crowd out volume records.
+
+Offline replay of the saved 2026-10-05 `t1-raw-frames.json` (two lazy FEED_CONFIGs,
+then Trade and Quote data; synthetic identities, receipt = last Trade time + 50 ms):
+Trade map `ACCEPTED` without side times, Quote map `ACCEPTED` with
+`side_times_in_accepted_map` = both true; SPY 3 and NVDA 4 Quote rows all
+`bid=ZERO,ask=ZERO`, verdict `QUOTE_TIME_UNAVAILABLE`; Trade times `VALUE`. So the
+missing BBO time is in the data, not the schema; it stays unavailable. The saved Greeks
+files (`t1/r2–r5-greeks.json`) hold provider times but no receipt times, so their ages
+cannot be recomputed; a new bounded capture is required.
+
+Before: the base has no measurement path (the new test module cannot import). After: 33
+passed; the nine earlier quote test files plus these: 273 passed on Python 3.12.3.
+
+Focused mutations (each reverted; all killed): measurement rows fed into the quote
+service; Greeks age from receipt instead of their own time; a future time recorded as
+a value; an observer fault propagating; a measurement-channel error stopping the core;
+a `dayId` change ignored by `compare`; a segment longer than 600 s; decision time equal
+to receipt; the credential guard off; a restored map not distinguished.
+
+Limitations: raw Greeks only (no indexed-event reduction, so no current value); no
+BBO freshness contract; dayVolume units, odd-lot treatment, channel breadth and the
+exchange cutoff are not established; receipt brackets are not an RTH total; the host
+clock measurement is the iMac's only when run there; no provider call was made.
+
+**Status when saved (session limit):** Package 3 focused tests pass (33; mutations all
+killed). The final combined strict suites on Python 3.12.3 and 3.13.14 were still
+running when this commit was saved and have **not** been confirmed on it. Next: run both
+suites on this commit, record counts, then send the handoff and stop for Astra.

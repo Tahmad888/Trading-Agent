@@ -11,6 +11,7 @@ import subprocess
 
 from desk.tastytrade_quotes import CLOCK_NOTE, QuoteService, QuoteUnavailable, canonical, session_label
 from desk.tastytrade_transport import Credentials, ReadClient, capture, select_pair, utcnow
+from desk.quote_measure import Recorder, load_host_clock, write_report
 
 STOP_CODES = {"REST_HTTP_401", "REST_HTTP_403", "REST_HTTP_429", "REST_REQUEST_BUDGET"}
 
@@ -28,7 +29,8 @@ def _lag_evidence(rows, in_session):
 
 
 def diagnostic(client, service, equities, *, option_underlying=None, option_strike=None, option_median=False,
-               seconds=30, reconnects=1, profile=False, capture_fn=capture, clock=utcnow):
+               seconds=30, reconnects=1, profile=False, capture_fn=capture, clock=utcnow, measure=None,
+               host_clock=None):
     started = clock()
     issues = {}
     option = dict(status="NOT_REQUESTED")
@@ -85,7 +87,10 @@ def diagnostic(client, service, equities, *, option_underlying=None, option_stri
                 return []
             return session.add(identities)
 
-        result = capture_fn(client, service, seconds=seconds, reconnects=reconnects, extend=extend, profile=profile)
+        options = dict(seconds=seconds, reconnects=reconnects, extend=extend, profile=profile)
+        if measure is not None:  # opt-in diagnostic measurement channel (package 3)
+            options["measure"] = measure
+        result = capture_fn(client, service, **options)
     except QuoteUnavailable as exc:
         service.disconnect(str(exc))
         result = dict(stop_reason=str(exc), observations=[], requests=client.requests,
@@ -150,8 +155,11 @@ def diagnostic(client, service, equities, *, option_underlying=None, option_stri
                     note="Earlier connections' observations: history only, never current or final-attempt evidence",
                     eligible=False, latest=earlier[-1] if earlier else None),
                 capture=result,
+                measurements=measure.report() if measure is not None else {"status": "NOT_REQUESTED"},
                 clock=dict(host_offset="NOT_MEASURED_BY_THIS_COMMAND",
-                           read_only_check="sntp time.apple.com (no clock-setting flags)",
+                           host_clock=host_clock or load_host_clock(None),
+                           read_only_check="python -m desk.quote_measure clock (sntp time.apple.com, "
+                                           "no clock-setting flags), attached with --host-clock",
                            tolerance_applied="NONE", future_source_time=clock_rows,
                            explanation=CLOCK_NOTE if clock_rows else None),
                 identity_capture=[identity.capture() for identity in service.identities.values()],
@@ -181,6 +189,10 @@ def main(argv=None):
     parser.add_argument("--seconds", type=int, default=30)
     parser.add_argument("--reconnects", type=int, default=1)
     parser.add_argument("--max-requests", type=int, default=20)
+    parser.add_argument("--measure", action="store_true",
+                        help="Diagnostic only: raw BBO side-time states, Trade day volume and option Greeks")
+    parser.add_argument("--host-clock", type=Path,
+                        help="Attach a separately measured result of python -m desk.quote_measure clock")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if not 1 <= len(args.symbols) <= 10 or len(set(args.symbols)) != len(args.symbols):
@@ -198,7 +210,9 @@ def main(argv=None):
         service = QuoteService(environment=args.environment)
         report = diagnostic(client, service, args.symbols, option_underlying=args.option_underlying,
                             option_strike=args.option_strike, option_median=args.option_median_fallback,
-                            seconds=args.seconds, reconnects=args.reconnects, profile=args.profile)
+                            seconds=args.seconds, reconnects=args.reconnects, profile=args.profile,
+                            measure=Recorder(service) if args.measure else None,
+                            host_clock=load_host_clock(args.host_clock))
     except QuoteUnavailable as exc:
         report = dict(purpose="read-only quote observations; no signal/order activation", status="UNAVAILABLE",
                       reason=str(exc), LIVE_TIMING="NOT_TESTED", requests=0)
@@ -211,9 +225,8 @@ def main(argv=None):
     report["commit"] = commit
     report["tracked_working_tree_clean"] = clean
     report["python"] = platform.python_version()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps(report, indent=2))
+    report = write_report(report, args.output)  # refused if a credential value or marker appears
+    print(json.dumps(report, indent=2, default=str))
     return 0 if report["status"] == "OBSERVATIONS_ONLY" else 1
 
 

@@ -17,6 +17,7 @@ from desk.tastytrade_quotes import (CORE, FIELDS, OPTIONAL, UTC, FeedDecoder, Qu
 
 HOSTS = {"production": "https://api.tastyworks.com", "sandbox": "https://api.cert.tastyworks.com"}
 FEED_CHANNEL, PROFILE_CHANNEL = 3, 5
+MEASURE_CHANNEL = 7     # opt-in diagnostic measurements (desk.quote_measure); never eligibility
 HANDSHAKE_SECONDS = 10   # SETUP → channel open (engineering bound)
 SCHEMA_SECONDS = 10      # subscription → first accepted Quote/Trade map (engineering bound)
 # dxLink ErrorMessage types; anything else is reported as UNKNOWN, never echoed.
@@ -277,15 +278,21 @@ class Session:
     availability (an accepted per-type map). Subscribing never waits for a map: the
     dxLink specification lets the server send FEED_CONFIG lazily, before first data.
     """
-    def __init__(self, service: QuoteService, token: StreamToken, now: datetime, *, profile: bool = False):
+    def __init__(self, service: QuoteService, token: StreamToken, now: datetime, *, profile: bool = False,
+                 measure=None):
         self.service, self.token = service, token
-        self.decoder = FeedDecoder(service, CORE)
+        # ``measure`` (desk.quote_measure.Recorder) observes the core decoder and owns a
+        # separate measurement channel; its rows never reach the service (package 3).
+        self.measure = measure
+        self.decoder = FeedDecoder(service, CORE, observer=measure, channel=FEED_CHANNEL)
         self.profile = FeedDecoder(service, OPTIONAL) if profile else None
         self.profile_state = "REQUESTED" if profile else "NOT_REQUESTED"
         self.phase, self.keepalive, self.live = "SETUP", 30.0, False
         self.subscribed: set[tuple[int, str, str]] = set()
         service.begin(token.expires_at)
         self.generation = service.generation
+        if measure is not None:
+            measure.begin(self.generation, aware(now))
 
     @staticmethod
     def setup():
@@ -311,6 +318,8 @@ class Session:
             if channel == PROFILE_CHANNEL and identity.kind != "Equity":
                 continue
             for kind in kinds:
+                if channel == MEASURE_CHANNEL and not self.measure.wants(kind, identity.kind):
+                    continue
                 key = (channel, kind, identity.streamer_symbol)
                 if key not in self.subscribed:
                     self.subscribed.add(key)
@@ -327,11 +336,17 @@ class Session:
         out = self._subscription(FEED_CHANNEL, CORE, identities, reset=False) if self.phase == "STREAMING" else []
         if self.profile_state == "OPEN":
             out += self._subscription(PROFILE_CHANNEL, OPTIONAL, identities, reset=False)
+        if self.measure is not None and self.measure.state == "OPEN":
+            out += self._subscription(MEASURE_CHANNEL, self.measure.kinds, identities, reset=False)
         return out
 
     def _profile_down(self, code):
         self.profile_state = "UNAVAILABLE"
         self.service.withhold("Profile", code)
+        return []
+
+    def _measure_down(self, code, received):
+        self.measure.down(code, aware(received))
         return []
 
     @staticmethod
@@ -347,15 +362,20 @@ class Session:
             # Nothing (KEEPALIVE included) revives a session whose evidence was withdrawn.
             raise QuoteUnavailable("SESSION_NOT_CONNECTED")
         profile_channel = self.profile is not None and channel == PROFILE_CHANNEL
+        measure_channel = self.measure is not None and channel == MEASURE_CHANNEL
         if kind == "ERROR":
             code = message.get("error") if message.get("error") in ERROR_TYPES else "UNKNOWN"
             if profile_channel:
                 return self._profile_down("PROFILE_CHANNEL_ERROR_" + code)
+            if measure_channel:
+                return self._measure_down("MEASURE_CHANNEL_ERROR_" + code, received)
             # Informational in the protocol, but this desk withholds evidence on it.
             raise QuoteUnavailable("DXLINK_ERROR_" + code)
         if kind == "CHANNEL_CLOSED":
             if profile_channel:
                 return self._profile_down("PROFILE_CHANNEL_CLOSED")
+            if measure_channel:
+                return self._measure_down("MEASURE_CHANNEL_CLOSED", received)
             raise QuoteUnavailable("DXLINK_DENIED_OR_CLOSED")
         if aware(received) >= self.token.expires_at:
             raise QuoteUnavailable("QUOTE_TOKEN_EXPIRED")
@@ -384,6 +404,10 @@ class Session:
                 # Requested only now, so its snapshot cannot arrive before the service is ready.
                 out.append({"type": "CHANNEL_REQUEST", "channel": PROFILE_CHANNEL, "service": "FEED",
                             "parameters": {"contract": "AUTO"}})
+            if self.measure is not None:
+                self.measure.requested()
+                out.append({"type": "CHANNEL_REQUEST", "channel": MEASURE_CHANNEL, "service": "FEED",
+                            "parameters": {"contract": "AUTO"}})
             return out
         if kind == "CHANNEL_OPENED" and profile_channel and self.profile_state == "REQUESTED":
             self.profile_state = "OPEN"
@@ -407,6 +431,26 @@ class Session:
                     self.profile.data(message, received)
             except QuoteUnavailable as exc:
                 return self._profile_down(str(exc))
+            return []
+        if kind in {"FEED_CONFIG", "FEED_DATA", "CHANNEL_OPENED"} and measure_channel:
+            if kind == "CHANNEL_OPENED":
+                if self.measure.state != "REQUESTED":
+                    return []
+                self.measure.opened()
+                return [self.measure.setup_message()] + self._subscription(
+                    MEASURE_CHANNEL, self.measure.kinds, list(self.service.identities.values()), reset=True)
+            if self.measure.state != "OPEN":
+                return []  # withheld measurement channel: never disturbs Quote/Trade
+            try:
+                if kind == "FEED_CONFIG":
+                    self.measure.configure(message, aware(received))
+                else:
+                    self.measure.data(message, aware(received))
+            except QuoteUnavailable as exc:
+                return self._measure_down(str(exc), received)
+            except Exception as exc:  # a recorder fault ends the measurement only
+                self.measure.failed(type(exc).__name__)
+                return self._measure_down("RECORDER_FAULT", received)
             return []
         if kind == "FEED_DATA" and channel == FEED_CHANNEL and self.phase == "STREAMING":
             self.decoder.data(message, received)
@@ -461,7 +505,7 @@ def end_health(usable) -> str:
 
 def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects=1,
             connect=connect_ws, clock=utcnow, monotonic=time.monotonic, sleep=time.sleep,
-            on_observation=None, extend=None, profile=False) -> dict:
+            on_observation=None, extend=None, profile=False, measure=None) -> dict:
     """Finite synchronous capture; can run in a caller-owned thread.
 
     A heartbeat timeout or transport failure may be retried within the same bounded
@@ -508,7 +552,7 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
         try:
             token = client.stream_token()
             levels.append(token.entitlement)
-            session = Session(service, token, clock(), profile=profile)
+            session = Session(service, token, clock(), profile=profile, measure=measure)
             generation = session.generation
             with connect(token.url) as ws:
                 ws.send(json.dumps(session.setup()))

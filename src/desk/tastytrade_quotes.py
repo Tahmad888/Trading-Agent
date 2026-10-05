@@ -391,6 +391,11 @@ class QuoteService:
             raise QuoteUnavailable("IDENTITY_STALE")
         return identity
 
+    def symbol_for(self, streamer_symbol: str) -> str | None:
+        """The registered desk symbol for a wire symbol (diagnostic decoding)."""
+        with self._lock:
+            return self._streamers.get(streamer_symbol)
+
     def identity(self, symbol: str, now: datetime) -> Instrument:
         """The currently registered, healthy identity (for mapping verification)."""
         with self._lock:
@@ -683,8 +688,23 @@ class FeedDecoder:
     earlier values (E2). An invalid map for one type withholds that type only; the
     session stops when no Quote/Trade map remains usable or the format is unsupported.
     """
-    def __init__(self, service: QuoteService, kinds=CORE):
+    def __init__(self, service: QuoteService, kinds=CORE, *, observer=None, channel=None):
         self.service, self.kinds, self.fields = service, tuple(kinds), {}
+        # Optional diagnostic observer (desk.quote_measure, live-run package 3). It is
+        # told about maps and rows after each decision and can never change one.
+        self.observer, self.channel = observer, channel
+
+    def _observe(self, method: str, *args, **kwargs):
+        if self.observer is None:
+            return
+        try:
+            getattr(self.observer, method)(self.channel, *args, **kwargs)
+        except Exception as exc:  # a recorder fault ends recording, never the quote path
+            observer, self.observer = self.observer, None
+            try:
+                observer.failed(type(exc).__name__)
+            except Exception:
+                pass
 
     def configure(self, message: dict):
         fmt = message.get("dataFormat")
@@ -692,6 +712,7 @@ class FeedDecoder:
             for kind in self.kinds:
                 self.fields.pop(kind, None)
                 self.service.withhold(kind, "FEED_SCHEMA_UNSUPPORTED")
+                self._observe("schema", kind, None, "WITHDRAWN_UNSUPPORTED_FORMAT")
             if any(k in CORE for k in self.kinds):
                 raise QuoteUnavailable("FEED_SCHEMA_UNSUPPORTED")
             return
@@ -702,6 +723,7 @@ class FeedDecoder:
             for kind in self.kinds:
                 self.fields.pop(kind, None)
                 self.service.withhold(kind, "FEED_SCHEMA_UNSUPPORTED")
+                self._observe("schema", kind, None, "WITHDRAWN_INVALID_MAP")
             if any(k in CORE for k in self.kinds):
                 raise QuoteUnavailable("FEED_SCHEMA_UNSUPPORTED")
             return
@@ -715,13 +737,16 @@ class FeedDecoder:
                 # Withhold this type only; its old values are not decoded under a known-bad map.
                 self.fields.pop(kind, None)
                 self.service.withhold(kind, "FEED_SCHEMA_UNSUPPORTED")
+                self._observe("schema", kind, None, "WITHDRAWN_INVALID_MAP", offered=names)
                 rejected = True
                 continue
             names = tuple(names)
-            if kind in self.fields and self.fields[kind] != names:
+            changed = kind in self.fields and self.fields[kind] != names
+            if changed:
                 self.service.withhold(kind, "FEED_SCHEMA_CHANGED")  # earlier values need new events
             self.fields[kind] = names
             self.service.schema_accepted(kind)
+            self._observe("schema", kind, names, "CHANGED" if changed else "ACCEPTED")
         if rejected and any(k in CORE for k in self.kinds) and not self.ready():
             raise QuoteUnavailable("FEED_SCHEMA_UNSUPPORTED")  # no Quote/Trade map left to use
 
@@ -744,6 +769,9 @@ class FeedDecoder:
             if len(values) % len(names):
                 self.fields.pop(kind, None)
                 self.service.withhold(kind, "FEED_DATA_INVALID")
+                self._observe("schema", kind, None, "WITHDRAWN_DATA_INVALID")
                 raise QuoteUnavailable("FEED_DATA_INVALID")
             for j in range(0, len(values), len(names)):
-                self.service.feed(kind, dict(zip(names, values[j:j+len(names)], strict=True)), received)
+                row = dict(zip(names, values[j:j+len(names)], strict=True))
+                accepted = self.service.feed(kind, row, received)
+                self._observe("row", kind, row, received, accepted)

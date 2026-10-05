@@ -386,3 +386,28 @@ checkout. That is an access limitation, not a failed provider check or a claim t
 Taz supplied no evidence. New adapter live timing has made **zero provider calls**
 during implementation; every new automated provider/account/signal fixture is
 labelled synthetic. No actual Friday schedule or market-session result is inferred.
+
+### Live-run repairs (2026-10-05 run; Astra's independent audit)
+
+Three packages on top of `e237309` (O1, **not yet reviewed by Astra**): share-class
+option chains, recoverable close preparation, diagnostic measurements. Record:
+`checkpoints/G5a-cp3-live-run-repairs.md`. No provider call was made; child 3 is not
+signed off and G5/parent CP3 stay open. Labels: [O] offline code test in this batch,
+[C] prior cloud evidence as corrected by Astra, [P] new bounded provider check (after
+the code audit; commands in `TASTYTRADE_QUOTES.md`), [I] iMac acceptance.
+
+| Item | [O] Offline code tests | [C] Prior cloud evidence | [P] New provider check | [I] iMac acceptance |
+| --- | --- | --- | --- | --- |
+| BRK.B option chain | Package 1: 22 tests (10 failed on the base) | Defect reproduced by Astra's fixture | One bounded `BRK/B` chain lookup | On the reviewed commit |
+| Unfinished close preparation | Package 2: 23 tests, 10-05 replay (base wrote an empty Tuesday list; now `FINISHED`/`FULL` at 16:36) | Daily bars absent 16:16/16:26, present 16:36 (one day; not an SLA) | None (runner path) | Runner cadence configured on the host; a real close followed through `close_jobs status` |
+| Bid/ask side times | Package 3: raw states, schema history; saved-frame replay shows zero values in an accepted map | All 30,000 retained Quote rows unavailable | Short active-session capture with `--measure` | Same command on the iMac |
+| Host clock | sntp parsing/failure states; never applied | QQQ 3.804 ms lead refused; offset not measured | — | `quote_measure clock` on the iMac |
+| Greeks ages | Own-time receipt/decision ages, negative kept, raw flags | Delivery only; earlier ages used the newest Trade time | Captured by the BBO run | — |
+| Immediate intraday volume | Transitions, brackets, compare without tolerance | dayVolume includes ETH; cumulative is not RTH30 | 09:25 ET 2400 s capture, then explicit-bound Alpaca probe and `compare` | iMac run |
+| Overlapping identity checks (O1) | `e237309` tests | — | — | **Astra's audit pending** |
+
+Deferred, not claimed: Step 09 estimated earnings calendar and catalyst work; an
+all-day quote service with token renewal; operational Webull↔tastytrade mappings;
+broker account inputs; a complete option ContractBook; any BRK.B OHLC repair; SPY close
+reconciliation (Summary, last RTH Trade and daily bars stay separate fields); Alpaca
+volume in anchored VWAP.
