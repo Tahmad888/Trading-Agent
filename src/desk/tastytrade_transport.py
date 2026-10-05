@@ -411,6 +411,34 @@ def connect_ws(url, **kwargs):
                    max_size=2_000_000, max_queue=16, logger=logger, **kwargs)
 
 
+def usable_at_end(view, components) -> dict:
+    """Per symbol: whether each component was usable in the terminal view (D1).
+
+    Quote/Trade: the existing getters accepted the value (age, BBO, schema, halt and
+    identity rules unchanged). Profile: a live Profile in this session supplied the
+    status. Receipt counters (``components``) never decide this.
+    """
+    out = {}
+    for row in (view or {}).get("checks", []):
+        status = row.get("trading_status", {}).get("reason")
+        out[row["symbol"]] = {"Quote": row.get("quote", {}).get("status") == "AVAILABLE",
+                              "Trade": row.get("trade", {}).get("status") == "AVAILABLE",
+                              "Profile": status in {"PROFILE_ACTIVE", "PROFILE_HALTED"}}
+    for symbol in components:
+        out.setdefault(symbol, {"Quote": False, "Trade": False, "Profile": False})
+    return out
+
+
+def end_health(usable) -> str:
+    """Aggregate wording for one attempt's terminal view; never a live PASS."""
+    pairs = [u["Quote"] and u["Trade"] for u in usable.values()]
+    if pairs and all(pairs):
+        return "ALL_REQUESTED_QUOTE_AND_TRADE_USABLE_AT_END"
+    if any(u["Quote"] or u["Trade"] for u in usable.values()):
+        return "SOME_COMPONENTS_UNAVAILABLE_AT_END"
+    return "NO_QUOTE_OR_TRADE_USABLE_AT_END"
+
+
 def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects=1,
             connect=connect_ws, clock=utcnow, monotonic=time.monotonic, sleep=time.sleep,
             on_observation=None, extend=None, profile=False) -> dict:
@@ -438,13 +466,25 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
         return {symbol: {kind: seen.get(symbol, {}).get(kind, 0) > 0 for kind in (*CORE, *OPTIONAL)}
                 for symbol in service.identities}
 
+    def terminal():
+        """The attempt's terminal view (child 3, D1): the existing getters at its end.
+
+        Taken before a deliberate finite end closes anything, so values valid at that
+        moment stay visible; after a fault it runs once the service has withdrawn its
+        caches, so it reports the refusal and never revives a cleared value.
+        """
+        try:
+            return service.inspect(clock())
+        except Exception:  # a report must not hide the attempt's own outcome
+            return {"checks": [], "error": "TERMINAL_VIEW_UNAVAILABLE"}
+
     def fail(code):
         service.disconnect(code)  # before any socket teardown wait
         raise QuoteUnavailable(code)
 
     while monotonic() < end and attempts <= reconnects:
         attempts += 1
-        fault, before, generation = None, sum(service.events.values()), None
+        fault, before, generation, view = None, sum(service.events.values()), None, None
         try:
             token = client.stream_token()
             levels.append(token.entitlement)
@@ -499,6 +539,7 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
                         # Bounded diagnostic artifacts, not raw frames or historical storage.
                         if len(observations) > 500:
                             observations.pop(0)
+                view = terminal()  # deliberate end: before anything is closed
                 reason = "CAPTURE_COMPLETE"
         except QuoteUnavailable as exc:
             fault = str(exc)
@@ -506,16 +547,29 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
             fault = "DXLINK_TRANSPORT_FAILURE"
         finally:
             service.disconnect(fault or reason or "DISCONNECTED")
+        current = generation is not None and generation == service.generation
+        if fault is not None:
+            view = None  # e.g. the socket failed to close after the deadline: report the fault state
+        if view is None and current:
+            view = terminal()  # after the fault withdrew everything: the refusal state
         fresh = sum(service.events.values()) - before
-        components = coverage() if generation is not None and generation == service.generation else {}
+        components = coverage() if current else {}
+        usable = usable_at_end(view, components)
         attempt_log.append(dict(attempt=attempts, generation=generation, outcome=fault or reason,
-                                fresh_events=fresh, components=components))
+                                deliberate_end=fault is None, fresh_events=fresh, components=components,
+                                usable_at_end=usable, health=end_health(usable), terminal_view=view))
         if pending is not None:
-            # Recovered only if every subscribed symbol received both Quote and Trade in
-            # the new generation; Profile alone or one healthy peer is not recovery.
-            recovered = bool(components) and all(c["Quote"] and c["Trade"] for c in components.values())
+            # Receipt and current usability are separate facts. Recovered only if every
+            # subscribed symbol's Quote and Trade were usable at the attempt's end under
+            # the existing rules; Profile alone or one healthy peer is not recovery.
+            received = bool(components) and all(c["Quote"] and c["Trade"] for c in components.values())
+            ok = bool(usable) and all(u["Quote"] and u["Trade"] for u in usable.values())
+            outcome = ("USABLE_AT_ATTEMPT_END" if ok else "RECEIVED_BUT_NOT_USABLE_AT_ATTEMPT_END" if received
+                       else "PARTIALLY_RECEIVED" if any(c["Quote"] or c["Trade"] for c in components.values())
+                       else "NOT_RECEIVED")
             recoveries.append(dict(after=pending, attempt=attempts, generation=generation, fresh_events=fresh,
-                                   by_symbol=components, recovered=recovered))
+                                   by_symbol=components, received_by_symbol=components, usable_by_symbol=usable,
+                                   outcome=outcome, recovered=ok))
             pending = None
         if fault is None:
             break

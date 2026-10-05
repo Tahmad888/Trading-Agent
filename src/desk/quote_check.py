@@ -94,35 +94,58 @@ def diagnostic(client, service, equities, *, option_underlying=None, option_stri
     in_session = session_label(started) == session_label(finished) == "RTH"
     observations = result["observations"]
     final = result.get("final_attempt") or {}
-    # Status, coverage and lag come from the final attempt's generation only (R4).
-    # Earlier connections' observations are kept, labelled historical and ineligible.
+    # Status, coverage and lag come from the final attempt only (R4), and from its
+    # terminal view, not its last data message (D1): a schema, status, identity or
+    # transport change after the last data is reflected. The last data view and
+    # earlier connections' observations are kept, labelled ineligible history.
     final_views = [view for view in observations if final.get("generation")
                    and view.get("generation") == final["generation"]]
-    latest = final_views[-1] if final_views else None
     earlier = [view for view in observations if view not in final_views]
-    rows = (latest or {}).get("checks", [])
+    terminal = final.get("terminal_view") or {}
+    rows = terminal.get("checks", []) if final.get("generation") else []
+    received = {symbol for symbol, seen in (final.get("components") or {}).items()
+                if seen.get("Quote") or seen.get("Trade")}
     if option.get("status") == "WAITING_FOR_UNDERLYING_TRADE":
         option["status"] = "NOT_TESTED_NO_UNDERLYING_TRADE"
     groups = {}
     for kind, label in (("Equity", "stocks"), ("Equity Option", "options")):
         group = [row for row in rows if row["kind"] == kind]
         timing = ("NOT_TESTED_MARKET_CLOSED" if not in_session else
-                  "OBSERVATIONS_REQUIRE_REVIEW" if group else "NOT_TESTED_NO_OBSERVATIONS")
+                  "OBSERVATIONS_REQUIRE_REVIEW" if any(row["symbol"] in received for row in group)
+                  else "NOT_TESTED_NO_OBSERVATIONS")
         if label == "options" and option.get("method") == "MEDIAN_LISTED_NOT_REPRESENTATIVE":
             timing = "NOT_REPRESENTATIVE_MEDIAN_STRIKE"
         groups[label] = dict(checks=group, timing_status=timing)
     groups["options"]["selection"] = option
+    if final_views and result["stop_reason"] == "CAPTURE_COMPLETE":
+        status = "OBSERVATIONS_ONLY"
+    elif final_views:
+        status = "FINAL_ATTEMPT_FAILED_AFTER_OBSERVATIONS"  # data, then a fault: never "no observations"
+    elif observations:
+        status = "NO_FINAL_ATTEMPT_OBSERVATIONS"
+    else:
+        status = "UNAVAILABLE"
+    last_data = final_views[-1] if final_views else None
     clock_rows = {f"{row['symbol']}:{part}": row[part]["clock_uncertainty"] for row in rows
                   for part in ("trade", "quote") if "clock_uncertainty" in row.get(part, {})}
     return dict(purpose="read-only quote observations; no signal/order activation",
                 environment=client.environment, started_at=started.isoformat(), finished_at=finished.isoformat(),
                 LIVE_TIMING="OBSERVATIONS_REQUIRE_REVIEW" if in_session else "NOT_TESTED_MARKET_CLOSED",
                 lag_evidence=_lag_evidence([r for r in rows if r["kind"] == "Equity"], in_session),
-                status=("OBSERVATIONS_ONLY" if final_views and result["stop_reason"] == "CAPTURE_COMPLETE"
-                        else "NO_FINAL_ATTEMPT_OBSERVATIONS" if observations else "UNAVAILABLE"),
+                status=status,
                 identity_issues=issues, stocks=groups["stocks"], options=groups["options"],
-                final_attempt=dict(attempt=final.get("attempt"), generation=final.get("generation"),
-                                   outcome=final.get("outcome"), components=final.get("components", {})),
+                final_attempt=dict(
+                    attempt=final.get("attempt"), generation=final.get("generation"), outcome=final.get("outcome"),
+                    deliberate_end=final.get("deliberate_end"), components=final.get("components", {}),
+                    usable_at_end=final.get("usable_at_end", {}),
+                    health=final.get("health", "NO_QUOTE_OR_TRADE_USABLE_AT_END"),
+                    terminal_view_at=terminal.get("checked_at"),
+                    last_data_view=dict(
+                        note="The final attempt's last data message, as of its receipt: history only, superseded "
+                             "by the terminal view above, never current evidence",
+                        eligible=False, view=last_data,
+                        lag_evidence_then=_lag_evidence([r for r in (last_data or {}).get("checks", [])
+                                                         if r["kind"] == "Equity"], in_session))),
                 historical_observations=dict(
                     note="Earlier connections' observations: history only, never current or final-attempt evidence",
                     eligible=False, latest=earlier[-1] if earlier else None),

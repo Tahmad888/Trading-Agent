@@ -83,10 +83,19 @@ bounded attempt count (0–2 reconnects), duration (1–600 s) and REST budget, 
 gets a fresh token and generation and needs new events. Denial, protocol/schema,
 rate-limit (429) and token-expiry faults stop. The report lists `faults`, an
 `attempt_log` (each attempt's generation, outcome and per-symbol Quote/Trade/Profile
-receipt), `final_attempt`, and `recoveries` by symbol and component. A recovery counts
-as `recovered` only when every subscribed symbol received both Quote and Trade in the new
-generation; Profile alone or one healthy peer is not recovery (re-audit R4). A capture
-deadline (`CAPTURE_COMPLETE`, `deadline_reached`) stays distinct from a provider fault.
+receipt), `final_attempt`, and `recoveries` by symbol and component. Each attempt also
+keeps a **terminal view** (child 3, D1): the existing getters run once at the attempt's
+end, before anything is closed on a deliberate finite end, and after the service has
+withdrawn its caches on a fault (so a cleared value is never revived). Two facts stay
+separate per symbol: `components` (received in this generation) and `usable_at_end`
+(accepted by the existing age, BBO, schema, halt and identity rules at that moment), with
+an aggregate `health`. A schema withdrawal, status change, identity failure or transport
+fault after the last data message therefore shows. A recovery's `outcome` is
+`USABLE_AT_ATTEMPT_END`, `RECEIVED_BUT_NOT_USABLE_AT_ATTEMPT_END`, `PARTIALLY_RECEIVED` or
+`NOT_RECEIVED`, and `recovered` is true only for the first: every subscribed symbol's
+Quote and Trade usable at the end. Profile alone or one healthy peer is not recovery
+(re-audit R4). A capture deadline (`CAPTURE_COMPLETE`, `deadline_reached`,
+`deliberate_end`) stays distinct from a provider fault.
 Token renewal for an all-day service is **not implemented** (`token_renewal` says so).
 
 ## Interfaces and refusal behavior
@@ -144,11 +153,11 @@ reviewed records in one JSON file (`DESK_QUOTE_MAPPINGS`, schema
 - Classification is checked against the *current* identities on every verification:
   tastytrade `is-etf` (part of the instrument identity digest; only a real JSON boolean
   counts, so missing, `null`, `"false"` or other values are
-  `QUOTE_MAPPING_CLASSIFICATION_UNAVAILABLE`) and the Webull identity the vendor path has
-  pinned for the host and symbol (`[instrument_id, currency, exchange_code,
-  sub_category]`, refused by the vendor path if it ever changes; read locally).
-  Disagreement is `QUOTE_MAPPING_CLASSIFICATION_MISMATCH`; no pin is
-  `QUOTE_MAPPING_WEBULL_IDENTITY_UNAVAILABLE`. Limits: Webull has no CUSIP/FIGI;
+  `QUOTE_MAPPING_CLASSIFICATION_UNAVAILABLE`) and the Webull identity the vendor path
+  currently **verifies** for the host and symbol (`[instrument_id, currency,
+  exchange_code, sub_category]`; read locally). Disagreement is
+  `QUOTE_MAPPING_CLASSIFICATION_MISMATCH`. A pin alone is not current evidence (child 3,
+  H1): see "Webull identity health" below. Limits: Webull has no CUSIP/FIGI;
   tastytrade `instrument-sub-type` values are not enumerated in its OpenAPI, so only
   `is-etf` is bound; a Webull reclassification shows at the next vendor fetch, not inside
   the no-network final fence.
@@ -176,8 +185,8 @@ reviewed records in one JSON file (`DESK_QUOTE_MAPPINGS`, schema
 change: healthy tastytrade identity → reviewed mapping against the signal's own stored
 Webull basis (`host`, `security_id`, `currency`, `symbol`; only the G3 vendor basis
 records the host, so a legacy reviewed-ledger basis gives
-`QUOTE_MAPPING_WEBULL_HOST_UNKNOWN`) and its pinned Webull identity → no retained halt →
-fresh same-generation trade.
+`QUOTE_MAPPING_WEBULL_HOST_UNKNOWN`) and the Webull identity currently verified for it
+→ no retained halt → fresh same-generation trade.
 Failures are per-symbol `QUOTE_MAPPING_*`/`SECURITY_HALTED`/quote codes, shown on the
 ticket; the signal's state, levels, expiry and revision evidence are untouched. Only a
 verified quote reaches scanner revalidation, where the unchanged rules apply (a verified
@@ -185,6 +194,35 @@ price through the stop still invalidates the signal). No price-gap threshold, We
 close comparison or name similarity is used as issuer proof.
 
 **Operational mappings: none exist.** Tests use labelled fixture records only.
+
+### Webull identity health (child 3, H1)
+
+The vendor store (`VendorHistoryStore`, the G3 vendor-basis SQLite file) keeps each
+host/symbol's first accepted pin, never overwritten, and an append-only
+`identity_events` record. Every vendor fetch (`bars`, `discovery_bars`) commits a
+`CHECK_OPENED` per symbol before the metadata request is sent; if it cannot, nothing is
+requested. The check closes with exactly one outcome: `VERIFIED` (fresh metadata matched,
+or first pinned, the identity), `FAILED` (`SECURITY_IDENTITY_CHANGED` for another
+instrument ID, currency, exchange or common/ETF class, including metadata of the wrong
+bar category or an unsupported type that contradicts the pin; `SECURITY_IDENTITY_ALIAS`),
+with the contradictory observation kept beside the pin, or `NOT_OBSERVED` (metadata
+missing, stale or unattributable). An outcome that cannot be committed leaves the check
+open.
+
+Current permission needs the latest outcome to be `VERIFIED` for exactly the current pin,
+with no newer open check, and the pin to be the instrument the signal was armed on.
+Otherwise a signal armed on Webull vendor evidence refuses, before quote lookup and
+state-mutating revalidation and again in the final fence, with `WEBULL_IDENTITY_FAILED:
+<reason>`, `…_REFRESH_UNRESOLVED`, `…_UNVERIFIED`, `…_HEALTH_INCONSISTENT`,
+`…_NOT_PINNED`, `…_MISMATCH`, `…_STORE_UNAVAILABLE` or `…_STORE_BUSY`. This applies to the
+generic event source and the quote bridge alike, per host/symbol only (peers are
+unaffected). Bar observations, snapshots, scoped discovery evidence and history-row
+defects never change identity health. Recovery is a later check whose fresh metadata
+matches the original pin; the same reviewed mapping keeps working, no new review.
+
+Migration: stores written before H1 have pins and no identity events; such a pin reads
+`WEBULL_IDENTITY_UNVERIFIED` until the next normal vendor refresh of that symbol verifies
+it (the scan already sends that metadata request). No manual entry.
 
 ## Ticket binding, reserved label and final fence
 
@@ -197,11 +235,16 @@ close comparison or name similarity is used as issuer proof.
 - Binding includes the provenance (source, environment, instrument, streamer, identity
   digest, mapping digest, generation), not receipt times. Fresh prices in the same
   generation do not create versions.
-- Final transaction lock order: ticket (`BEGIN EXCLUSIVE`) → signal → volume/identity
-  (when required) → mapping (shared sidecar lock, held until COMMIT) → quote health
-  (in-process lock) → account. All waits happen before the final clock; no network
-  under any of them. A mapping writer takes only the exclusive mapping lock, so no
-  cycle exists. The fence re-verifies identity, mapping and classification, halt status
+- Final transaction lock order: ticket (`BEGIN EXCLUSIVE`) → signal → Alpaca
+  volume/identity (when required) → Webull vendor identity (`BEGIN IMMEDIATE` on the
+  vendor store, when the event names a vendor host; child 3, H1) → mapping (shared
+  sidecar lock, held until COMMIT) → quote health (in-process lock) → account. All waits
+  happen before the final clock; no network under any of them. Every writer of these
+  stores holds only its own lock (a vendor identity write is one transaction), so no
+  cycle exists. A contradictory identity outcome committed before the fence refuses; a
+  writer arriving during it waits until COMMIT (or times out and leaves its check open,
+  which refuses later uses). A busy fence (5 s), a missing store (never created) or an
+  unreadable one refuses without leaving a lock held. The fence re-verifies identity, mapping and classification, halt status
   and the latest same-generation trade, and reruns the existing risk rules on that
   price: normal allowed movement needs no new version; a stop/chase/entry failure
   refuses. A writer arriving after the final check waits until COMMIT.
@@ -251,33 +294,45 @@ blocking under existing risk checks.
 
 ## Read-only host commands — run only after Astra's review of the reviewed commit
 
-Run these one line at a time on the iMac. Stop at any line whose output is not as
-described. Replace `REVIEWED_SHA` with the exact commit Astra signed off. Credentials are
-a separate, earlier step (`python tools/setup_tastytrade_env.py`: hidden input, mode
-0600, other saved settings preserved); never paste keys into chat or a command line.
+Credentials are a separate, earlier step, run on its own: `python
+tools/setup_tastytrade_env.py` (hidden input, mode 0600, other saved settings
+preserved). Never paste keys into chat or a command line.
+
+The checks run as one script so that a failed guard really stops everything after it
+(`set -e` plus an explicit `exit 1` per guard; printing STOP alone would not). Paste the
+three lines below. The middle line writes the script to a temporary file; the last line
+runs it with the exact commit Astra signed off in place of `REVIEWED_SHA`.
 
 ```sh
+desk_checks=$(mktemp "${TMPDIR:-/tmp}/desk-child4-checks.XXXXXX")
+cat > "$desk_checks" <<'CHECKS'
+set -eo pipefail
+test -n "${1:-}" || { echo "STOP: give the reviewed commit SHA"; exit 1; }
 cd "$HOME/Trading-Agent"
-git status --porcelain --untracked-files=no
-git branch --show-current
-git fetch origin codex/repair-step-01-baseline
-git merge --ff-only origin/codex/repair-step-01-baseline
-git rev-parse HEAD
-test "$(git rev-parse HEAD)" = "REVIEWED_SHA" && echo SHA_OK || echo SHA_MISMATCH_STOP
+test -z "$(git status --porcelain --untracked-files=no)" || { echo "STOP: tracked files have local changes"; exit 1; }
+test "$(git branch --show-current)" = "codex/repair-step-01-baseline" || { echo "STOP: wrong branch"; exit 1; }
+git fetch origin codex/repair-step-01-baseline || { echo "STOP: fetch failed"; exit 1; }
+git merge --ff-only origin/codex/repair-step-01-baseline || { echo "STOP: fast-forward failed"; exit 1; }
+test "$(git rev-parse HEAD)" = "$1" || { echo "STOP: HEAD is not the reviewed commit"; exit 1; }
+echo "SHA_OK $1"
 source .venv/bin/activate
 source "$HOME/.config/trading-desk/env"
 python --version
-python -m pip install -e '.[dev,quotes]'
-python -m pytest -q -W error
-sntp time.apple.com
+python -m pip install -e '.[dev,quotes]' || { echo "STOP: install failed"; exit 1; }
+python -m pytest -q -W error || { echo "STOP: strict suite failed"; exit 1; }
+sntp time.apple.com || echo "sntp failed: host clock offset not measured"
 desk_quote_report_dir=$(mktemp -d "$HOME/Desktop/g5-quotes-XXXXXX")
-python -m desk.quote_check --environment production --symbols SPY QQQ NVDA --option-underlying SPY --seconds 120 --reconnects 1 --max-requests 20 --output "$desk_quote_report_dir/quotes.json"
-python -m desk.quote_check --environment production --symbols SPY --profile --seconds 30 --reconnects 0 --max-requests 6 --output "$desk_quote_report_dir/profile.json"
+python -m desk.quote_check --environment production --symbols SPY QQQ NVDA --option-underlying SPY --seconds 120 --reconnects 1 --max-requests 20 --output "$desk_quote_report_dir/quotes.json" || echo "quotes.json written; non-zero exit means status is not OBSERVATIONS_ONLY"
+python -m desk.quote_check --environment production --symbols SPY --profile --seconds 30 --reconnects 0 --max-requests 6 --output "$desk_quote_report_dir/profile.json" || echo "profile.json written; non-zero exit means status is not OBSERVATIONS_ONLY"
+echo "Reports in $desk_quote_report_dir"
+CHECKS
+bash "$desk_checks" REVIEWED_SHA
 ```
 
-Expected: `git status` prints nothing; the branch is `codex/repair-step-01-baseline`;
-`merge --ff-only` succeeds; `SHA_OK`; the suite passes; `sntp` only prints the offset
-(no clock-setting flags are used). The diagnostics write only to the new scratch folder.
+Expected: no STOP line; `SHA_OK` with the reviewed commit; the suite passes; `sntp` only
+prints the offset (no clock-setting flags are used). Any STOP ends the script before the
+install, the suite or any provider request. The script runs in its own shell, so it never
+closes the Terminal window, and the diagnostics write only to the new scratch folder.
 
 Option pair: the nearest non-expired Standard expiry on the ET market date (today's
 only before today's close), at the listed strike nearest the observed SPY trade
@@ -287,11 +342,14 @@ median listed strike, labelled `NOT_REPRESENTATIVE_MEDIAN_STRIKE`. This is diagn
 selection, not a recommendation. The report separates stocks and options, socket
 liveness, identity capture (for a later mapping review), receipt times, signed
 receipt-minus-source lag, trade age, side-change ages, trading status, faults and
-recoveries. Stock/option status, coverage and `lag_evidence` come from the final
-attempt's generation only (`final_attempt`); earlier connections' observations appear
-under `historical_observations` (ineligible), and `status` is
-`NO_FINAL_ATTEMPT_OBSERVATIONS` when the last connection delivered nothing (re-audit
-R4). `lag_evidence` is `AVAILABLE_WITHIN_QUOTE_POLICY`,
+recoveries. Stock/option rows, coverage and `lag_evidence` come from the final attempt's
+terminal view (`final_attempt`: `components` received, `usable_at_end`, `health`;
+re-audit R4 and child 3 D1). The final attempt's last data message is kept as
+`final_attempt.last_data_view` and earlier connections' observations as
+`historical_observations`, both ineligible. `status` is `OBSERVATIONS_ONLY` (deliberate
+end after final-attempt observations), `FINAL_ATTEMPT_FAILED_AFTER_OBSERVATIONS` (data,
+then a fault), `NO_FINAL_ATTEMPT_OBSERVATIONS` (the last connection delivered nothing) or
+`UNAVAILABLE`. `lag_evidence` is `AVAILABLE_WITHIN_QUOTE_POLICY`,
 `INCONSISTENT_WITH_QUOTE_POLICY`, `UNAVAILABLE` or (closed session)
 `CLOSED_SESSION_AGES_ONLY_NOT_LIVE_EVIDENCE`. Exit 0 means observations were recorded;
 it is never a live-trading sign-off. No scan, scheduler, ticket, mapping write, broker
@@ -302,4 +360,5 @@ during it, `OBSERVATIONS_REQUIRE_REVIEW`. Source times must be reviewed against
 independent simultaneous observations before child Step 5 acceptance.
 
 Rollback: revert the child-3 commit to return to `78da588`; no host state is changed by
-the code. A mapping file, if one is later created, is ignored by older code.
+the code. A mapping file, if one is later created, is ignored by older code, and so is
+the additive `identity_events` table in the vendor store.

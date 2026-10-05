@@ -83,6 +83,7 @@ class EventStatus(NamedTuple):
     quote_at: datetime | None = None
     price_basis: dict | None = None   # the signal's stored price evidence (identity source)
     reason: str | None = None         # fixed code when a quote fence refuses
+    webull_identity: dict | None = None  # verified under the identity fence (child 3, H1)
 
 
 class EventFence(Protocol):
@@ -119,6 +120,21 @@ def chase_reference(event: dict) -> float:
     return event["candidate_signal"]["trigger"]
 
 
+def stored_vendor_host(persisted: dict) -> str | None:
+    """The Webull vendor host the stored event's terms (else candidate) name, or None.
+
+    Read from the signal store's own row under its lock; nothing from a ticket request.
+    """
+    import json
+    try:
+        text = persisted["signal_terms"] or persisted["candidate_signal"]
+        basis = json.loads(text).get("price_basis") if text else None
+        host = basis.get("host") if isinstance(basis, dict) else None
+        return host if isinstance(host, str) and host else None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
 class EventRiskSource:
     """Resolve from SignalStore after fresh scanner revalidation.
 
@@ -131,25 +147,41 @@ class EventRiskSource:
 
     @contextmanager
     def held_event(self, event_id):
-        """Signal store lock, then the volume/identity store's writer reservation.
+        """Signal store lock, then the volume/identity and vendor identity reservations.
 
-        Both are held until the ticket's final write commits (audit F2), so a volume
-        STOP, failure, revision, mapping change or identity-health failure either
-        committed before and is seen by ``status`` or lands after the ticket commit.
-        Order: ticket -> signal -> volume/identity -> account (taken last by tickets).
-        The reservation is taken only when the stored event depends on Alpaca evidence
-        (re-audit R2): decided under the signal lock from the persisted candidate, before
-        the account lock and the final clock. Price-only events still run ``status``.
+        All are held until the ticket's final write commits (audit F2; child 3, H1), so
+        a volume STOP, failure, revision, mapping change or identity-health outcome
+        either committed before and is seen by ``status`` or lands after the commit.
+        Order: ticket -> signal -> Alpaca volume/identity -> Webull vendor identity ->
+        account (taken last by tickets). The Alpaca reservation is taken only when the
+        stored event depends on Alpaca evidence (re-audit R2), and the vendor identity
+        reservation only when the stored event names a Webull vendor host; both are
+        decided under the signal lock from the persisted row, before the account lock
+        and the final clock. Price-only events still run ``status``.
         """
         from desk.alpaca_source import needs_volume_guard, provider_of
+        from desk.vendor_basis import event_identity, vendor_store
         provider = provider_of(self.source)
         with self.log.signals.held_event(event_id) as view, ExitStack() as guards:
-            if provider is not None and needs_volume_guard(view.persisted()):
+            persisted = view.persisted()
+            held_paths = set()
+            if provider is not None and needs_volume_guard(persisted):
                 guards.enter_context(provider.held())
+                held_paths = set(provider.guard_paths())
+            host, identity_db, fence_problem = stored_vendor_host(persisted), None, None
+            if host is not None:
+                try:
+                    store = vendor_store(self.source, host)
+                    if str(store.path.resolve()) not in held_paths:  # one file is reserved once
+                        identity_db = guards.enter_context(store.held_identity())
+                except EvidenceUnavailable as exc:
+                    fence_problem = str(exc)  # refuse at status; never raise mid-transaction
 
             def status(at):
                 event = view(at)
                 eligible = bool(event["eligible"])
+                identity = None
+                basis = event["signal"].get("price_basis")
                 if eligible:
                     # G5a: saved volume qualification must still be current in the
                     # integrated cache (local read under the held reservation; no request).
@@ -158,15 +190,28 @@ class EventRiskSource:
                     state, _ = volume_status(self.source, restore_signal(event["candidate_signal"]), at,
                                              refresh=False)
                     eligible = state == "OK"
+                if eligible and isinstance(basis, dict) and basis.get("host"):
+                    try:
+                        if fence_problem or basis.get("host") != host:
+                            raise EvidenceUnavailable(fence_problem or "WEBULL_IDENTITY_FENCE_NOT_HELD")
+                        identity = event_identity(self.source, basis, event["signal"]["symbol"], db=identity_db)
+                    except EvidenceUnavailable as exc:
+                        return EventStatus(False, event["terms_digest"], symbol=event["signal"]["symbol"],
+                                           price_basis=basis, reason=str(exc))
                 return EventStatus(eligible, event["terms_digest"], symbol=event["signal"]["symbol"],
-                                   price_basis=event["signal"].get("price_basis"))
+                                   price_basis=basis, webull_identity=identity)
             yield status
 
     def resolve(self, event_id, now):
         from desk.playbook.cards import CARDS
         from desk.scanner import revalidate_signal
 
+        from desk.vendor_basis import event_identity
+
         event = self.log.signals.get(event_id, now)
+        # H1: a signal armed on Webull vendor evidence needs its verified identity
+        # before any quote lookup or state-mutating revalidation (local read).
+        event_identity(self.source, event["signal"].get("price_basis"), event["signal"]["symbol"])
         symbol, price, quote_at = self.quote_source(event["signal"]["symbol"])
         report = revalidate_signal(self.source, self.log, event_id, now,
                                    symbol=symbol, price=price, quote_at=quote_at)

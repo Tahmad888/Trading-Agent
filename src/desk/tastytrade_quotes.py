@@ -612,8 +612,8 @@ class QuoteService:
                         item[kind.lower()]["clock_uncertainty"] = dict(self._future[symbol, kind],
                                                                        code="FUTURE_SOURCE_TIME", explanation=CLOCK_NOTE)
                 checks.append(item)
-            return dict(source=SOURCE, environment=self.environment, connected=self.connected,
-                        health_reason=self.reason, generation=self.generation,
+            return dict(source=SOURCE, environment=self.environment, checked_at=now.isoformat(),
+                        connected=self.connected, health_reason=self.reason, generation=self.generation,
                         schema={k: self.kind_state(k) for k in FIELDS}, events=dict(self.events),
                         rejected=self.rejected, undecodable=dict(self.undecodable), checks=checks)
 

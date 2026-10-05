@@ -276,10 +276,14 @@ def test_invalid_profile_status_is_unknown_not_active():
 # ---- F10 and connection health: recovery, no revival, no retry loops -----------------------------
 def test_heartbeat_timeout_recovers_with_fresh_generation_and_new_events():
     server = Server(on_subscribe=[compact("Trade", trade_row()), compact("Quote", quote_row())])
-    result, source = run(server, seconds=200, reconnects=1)
+    # Heartbeat timeout at 60 s; the new connection then ends deliberately at the 100 s
+    # deadline, before its own heartbeat limit (child 3, D1: usable at the attempt's end).
+    result, source = run(server, seconds=100, reconnects=1)
     assert result["faults"][0]["code"] == "DXLINK_HEARTBEAT_TIMEOUT" and result["faults"][0]["recoverable"]
+    assert result["stop_reason"] == "CAPTURE_COMPLETE"
     recovery = result["recoveries"][0]
     assert recovery["recovered"] and recovery["fresh_events"] > 0
+    assert recovery["outcome"] == "USABLE_AT_ATTEMPT_END"
     assert recovery["by_symbol"]["SPY"]["Trade"] and recovery["by_symbol"]["SPY"]["Quote"]
     generations = {c["generation"] for view in result["observations"] for c in view["checks"]}
     assert len(generations) == 2 and server.connections == 2
@@ -465,8 +469,11 @@ def lag_report(trade_age, *, at):
         source.feed("Trade", trade_row(at=at - trade_age), at)
         view = source.inspect(at)
         source.disconnect("CAPTURE_COMPLETE")
+        # A deliberate end: the terminal view is taken before closing (child 3, D1).
         return dict(stop_reason="CAPTURE_COMPLETE", observations=[view], requests=2, attempts=1,
-                    final_attempt=dict(attempt=1, generation=view["generation"], outcome="CAPTURE_COMPLETE"),
+                    final_attempt=dict(attempt=1, generation=view["generation"], outcome="CAPTURE_COMPLETE",
+                                       deliberate_end=True, terminal_view=view,
+                                       components={"SPY": {"Quote": False, "Trade": True, "Profile": False}}),
                     connected_after_capture=False)
     client, _ = client_fixture(dict(data=stock()))
     client.clock = lambda: at

@@ -199,6 +199,12 @@ class AlpacaVolumeProvider:
             except (sqlite3.Error, AlpacaVolumeError):
                 self._asset_error = self._unrecorded = "IDENTITY_STORE_UNAVAILABLE"
 
+    def guard_paths(self) -> list[str]:
+        """The resolved files ``held`` reserves (none when the provider is unavailable)."""
+        if self.issue:
+            return []
+        return sorted({str(Path(self.client.cache.path).resolve()), str(Path(self.store.path).resolve())})
+
     @contextmanager
     def held(self):
         """Hold the volume/identity file's writer reservation (audit F2).
@@ -213,7 +219,7 @@ class AlpacaVolumeProvider:
         if self.issue:
             yield
             return
-        paths = sorted({str(Path(self.client.cache.path).resolve()), str(Path(self.store.path).resolve())})
+        paths = self.guard_paths()
         held = []
         try:
             for path in paths:

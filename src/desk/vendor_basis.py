@@ -3,7 +3,7 @@
 Native prices are never adjusted here. A mismatched ticker needs independent
 source evidence; a new adjusted history never repairs an already-armed signal.
 """
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import date, datetime, timezone
 import hashlib
 import json
@@ -18,9 +18,17 @@ from desk.calendar import ET, clock, latest_closed_session, session, sessions
 from desk.data_basis import VendorPriceBasis
 from desk.history_scope import (DISCOVERY_POLICY, FULL_HISTORY, MAX_DEFECTS, ScopeUnsupported, ScopeWindow,
                                 discovery_scope)
+from desk.risk_terms import EvidenceUnavailable
 from desk.security import securities
+from desk.symbols import canonical_symbol
 
 REFERENCE = "https://developer.webull.com/apis/docs/reference/historical-bars/"
+# Engineering bounds (child 3, H1). The fence waits as long as the G5a CP2
+# volume/identity guard, then refuses. Once held, it may also wait for the mapping lock
+# (10 s) and the account lock (5 s) before COMMIT, so writers wait longer than that
+# worst case instead of failing a scan.
+STORE_TIMEOUT_SECONDS = 30
+FENCE_TIMEOUT_SECONDS = 5
 
 
 class VendorHistoryStore:
@@ -30,16 +38,29 @@ class VendorHistoryStore:
     are full history). A scoped consumer (discovery) has its own ``scoped_current``
     pointer and observations, so its success never replaces full-history evidence or
     clears a full-history failure. Revisions seen by any scope stay visible.
+
+    Identity health (child 3, H1): ``identities`` holds each host/symbol's first
+    accepted pin and is never overwritten. ``identity_events`` is the append-only,
+    sequence-ordered record of identity checks: ``CHECK_OPENED`` is committed before
+    the metadata request is sent, and exactly one outcome closes it (``VERIFIED``,
+    ``FAILED`` with the contradictory observation kept, or ``NOT_OBSERVED``). Bar
+    observations, snapshots and history defects never change identity health.
     """
 
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with self._connect() as db, db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS identities (
                     host TEXT, symbol TEXT, identity TEXT NOT NULL,
                     PRIMARY KEY(host,symbol));
+                CREATE TABLE IF NOT EXISTS identity_events (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT NOT NULL, symbol TEXT NOT NULL,
+                    event TEXT NOT NULL CHECK(event IN ('CHECK_OPENED','VERIFIED','FAILED','NOT_OBSERVED')),
+                    check_id INTEGER, reason TEXT, identity TEXT, observed TEXT, at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS identity_events_symbol ON identity_events(host, symbol, sequence);
+                CREATE INDEX IF NOT EXISTS identity_events_check ON identity_events(check_id);
                 CREATE TABLE IF NOT EXISTS snapshots (
                     digest TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS current (
@@ -70,32 +91,146 @@ class VendorHistoryStore:
                     # Migration: existing rows keep NULL, read as full history.
                     db.execute(f"ALTER TABLE observations ADD COLUMN {column} TEXT")
 
-    def pin(self, host, metadata):
+    def _connect(self):
+        return closing(sqlite3.connect(self.path, timeout=STORE_TIMEOUT_SECONDS))
+
+    @staticmethod
+    def _identity_event(db, host, symbol, event, at, *, check=None, reason=None, identity=None, observed=None):
+        cur = db.execute("INSERT INTO identity_events(host,symbol,event,check_id,reason,identity,observed,at) "
+                         "VALUES (?,?,?,?,?,?,?,?)", (host, symbol, event, check, reason, identity, observed,
+                                                      clock(at).isoformat()))
+        return cur.lastrowid
+
+    def open_identity_checks(self, host, symbols, at) -> dict:
+        """Commit one open identity check per symbol before any metadata request (H1).
+
+        Raises ``sqlite3.Error`` when they cannot be committed: the caller then sends
+        nothing. A check that is never closed withholds identity eligibility.
+        """
+        with self._connect() as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            return {symbol: self._identity_event(db, host, symbol, "CHECK_OPENED", at) for symbol in symbols}
+
+    def close_identity_check(self, host, symbol, check, at, reason):
+        """No identity outcome was observed (metadata missing, stale or unattributable)."""
+        with self._connect() as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            self._identity_event(db, host, symbol, "NOT_OBSERVED", at, check=check, reason=reason)
+
+    def pin(self, host, metadata, *, check=None, accept=True):
+        """Compare fresh metadata with the pin and record the identity outcome (H1).
+
+        The first accepted identity is pinned and never overwritten. A different
+        identity or an alias commits ``FAILED`` (the contradictory observation kept as
+        evidence) and then raises. ``accept=False`` (metadata this request cannot use,
+        e.g. the wrong bar category or an unsupported security type) only compares
+        with an existing pin: it never creates one. The outcome and the check's
+        closure commit together; if they cannot, the check stays open.
+        """
         identity = json.dumps([metadata.instrument_id, metadata.currency, metadata.exchange_code,
                                metadata.sub_category], sort_keys=True)
-        with closing(sqlite3.connect(self.path)) as db, db:
+        at, outcome = metadata.observed_at, None
+        with self._connect() as db, db:
             db.execute("BEGIN IMMEDIATE")
             old = db.execute("SELECT identity FROM identities WHERE host=? AND symbol=?", (host,metadata.symbol)).fetchone()
-            if old and old[0] != identity:
-                raise BarDataError("SECURITY_IDENTITY_CHANGED")
-            aliases = db.execute("SELECT symbol FROM identities WHERE host=? AND identity=? AND symbol<>?",
-                                 (host,identity,metadata.symbol)).fetchall()
-            if aliases:
-                raise BarDataError("SECURITY_IDENTITY_ALIAS")
-            db.execute("INSERT OR IGNORE INTO identities VALUES (?,?,?)", (host,metadata.symbol,identity))
+            old = old[0] if old else None
+            if old is not None and old != identity:
+                outcome = "SECURITY_IDENTITY_CHANGED"
+            elif old is None and not accept:
+                if check is not None:
+                    self._identity_event(db, host, metadata.symbol, "NOT_OBSERVED", at, check=check,
+                                         reason="NOT_PINNED_UNUSABLE_METADATA", observed=identity)
+                return
+            elif old is None and db.execute("SELECT 1 FROM identities WHERE host=? AND identity=? AND symbol<>?",
+                                            (host,identity,metadata.symbol)).fetchone():
+                outcome = "SECURITY_IDENTITY_ALIAS"
+            elif old is None:
+                db.execute("INSERT INTO identities VALUES (?,?,?)", (host,metadata.symbol,identity))
+                old = identity
+            self._identity_event(db, host, metadata.symbol, "FAILED" if outcome else "VERIFIED", at, check=check,
+                                 reason=outcome, identity=old, observed=identity)
+        if outcome:
+            raise BarDataError(outcome)
 
     def pinned(self, host, symbol) -> dict | None:
-        """The pinned identity for host/symbol (local read, no network), or None."""
-        with closing(sqlite3.connect(self.path)) as db:
+        """The pinned identity for host/symbol (local read, no network), or None.
+
+        Evidence only: a pin is not current permission (see ``identity_state``).
+        """
+        with self._connect() as db:
             row = db.execute("SELECT identity FROM identities WHERE host=? AND symbol=?", (host, symbol)).fetchone()
-        if row is None:
-            return None
+        return _identity(row[0]) if row else None
+
+    def identity_state(self, host, symbol, *, db=None) -> dict:
+        """The current identity health for host/symbol (one local read, no network).
+
+        ``VERIFIED`` only when the latest outcome verified exactly the current pin and
+        no newer check is still open. ``db`` is a caller-held connection (the ticket
+        fence); otherwise a read connection is opened. Raises ``sqlite3.Error``.
+        """
+        if db is None:
+            with self._connect() as own:
+                return self.identity_state(host, symbol, db=own)
+        pin = db.execute("SELECT identity FROM identities WHERE host=? AND symbol=?", (host, symbol)).fetchone()
+        last = db.execute("SELECT sequence,event,check_id,reason,identity,observed,at FROM identity_events "
+                          "WHERE host=? AND symbol=? AND event IN ('VERIFIED','FAILED') ORDER BY sequence DESC LIMIT 1",
+                          (host, symbol)).fetchone()
+        # Only checks opened after the one that produced the latest outcome matter.
+        after = 0 if last is None else (last[2] if last[2] is not None else last[0])
+        unresolved = db.execute("SELECT MAX(o.sequence) FROM identity_events o WHERE o.host=? AND o.symbol=? "
+                                "AND o.sequence>? AND o.event='CHECK_OPENED' AND NOT EXISTS "
+                                "(SELECT 1 FROM identity_events c WHERE c.check_id=o.sequence)",
+                                (host, symbol, after)).fetchone()[0]
+        pinned = _identity(pin[0]) if pin else None
+        out = {"state": None, "reason": None, "identity": pinned, "observed": None, "at": None}
+        if last is not None:
+            out.update(observed=_identity(last[5]), at=last[6])
+        if last is not None and last[1] == "FAILED":
+            out.update(state="FAILED", reason=last[3])
+        elif pin is None:
+            out["state"] = "NOT_PINNED"
+        elif last is None:
+            out["state"] = "UNVERIFIED"   # e.g. a pin written before identity health existed
+        elif last[4] != pin[0] or pinned is None:
+            out["state"] = "HEALTH_INCONSISTENT"
+        elif unresolved is not None:
+            out["state"] = "REFRESH_UNRESOLVED"
+        else:
+            out["state"] = "VERIFIED"
+        return out
+
+    @contextmanager
+    def held_identity(self, *, timeout=None):
+        """Hold this file's single write reservation; yield the connection (H1).
+
+        ``BEGIN IMMEDIATE`` on a dedicated connection: no identity outcome (or other
+        vendor write) from any connection or process can commit until release, and
+        reads on the yielded connection see the last committed state. The file is
+        opened read-write only, so a missing store is never created. Busy, missing or
+        unreadable stores raise ``EvidenceUnavailable``; nothing stays locked.
+        """
         try:
-            instrument_id, currency, exchange_code, sub_category = json.loads(row[0])
-        except (ValueError, TypeError):
-            return None
-        return {"instrument_id": instrument_id, "currency": currency, "exchange_code": exchange_code,
-                "sub_category": sub_category}
+            db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=rw", uri=True, isolation_level=None,
+                                 timeout=FENCE_TIMEOUT_SECONDS if timeout is None else timeout)
+        except (sqlite3.Error, OSError):
+            raise EvidenceUnavailable("WEBULL_IDENTITY_STORE_UNAVAILABLE") from None
+        try:
+            try:
+                db.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as exc:
+                busy = "locked" in str(exc) or "busy" in str(exc)
+                raise EvidenceUnavailable("WEBULL_IDENTITY_STORE_BUSY" if busy
+                                          else "WEBULL_IDENTITY_STORE_UNAVAILABLE") from None
+            except sqlite3.Error:
+                raise EvidenceUnavailable("WEBULL_IDENTITY_STORE_UNAVAILABLE") from None
+            yield db
+        finally:
+            try:
+                if db.in_transaction:
+                    db.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            db.close()
 
     @staticmethod
     def _content_digest(basis):
@@ -114,7 +249,7 @@ class VendorHistoryStore:
     def record(self, host, symbol, at, status, detail, basis=None):
         """Full-history evidence: the only writer of the ``current`` pointer."""
         digest = None
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with self._connect() as db, db:
             db.execute("BEGIN IMMEDIATE")
             if basis is not None:
                 payload = json.dumps(basis.model_dump(mode="json"), sort_keys=True)
@@ -139,7 +274,7 @@ class VendorHistoryStore:
         ``latest_revision``); the full-history pointer is never written here.
         """
         digest, name = None, scope.policy
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with self._connect() as db, db:
             db.execute("BEGIN IMMEDIATE")
             if basis is not None:
                 payload = json.dumps(basis.model_dump(mode="json"), sort_keys=True)
@@ -174,28 +309,28 @@ class VendorHistoryStore:
                          d.get("index"), d.get("time"), d.get("field"), d["reason"], d["status"], evidence,
                          row_json, clock(at).isoformat()))
         if rows:
-            with closing(sqlite3.connect(self.path)) as db, db:
+            with self._connect() as db, db:
                 db.executemany("INSERT INTO history_defects(host,symbol,instrument_id,scope,scope_digest,timeframe,"
                                "received_at,requested,required,row_index,row_time,field,reason,status,"
                                "evidence_digest,row_json,observed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
     def defects(self, host, symbol, scope=None):
         query = "SELECT * FROM history_defects WHERE host=? AND symbol=?" + (" AND scope=?" if scope else "")
-        with closing(sqlite3.connect(self.path)) as db:
+        with self._connect() as db:
             db.row_factory = sqlite3.Row
             return [dict(r) for r in db.execute(query + " ORDER BY sequence",
                                                 (host, symbol, scope) if scope else (host, symbol))]
 
     def latest_revision(self, host, symbol):
         """Latest revision seen by ANY scope: a changed common session is a genuine change."""
-        with closing(sqlite3.connect(self.path)) as db:
+        with self._connect() as db:
             row = db.execute("SELECT at FROM observations WHERE host=? AND symbol=? AND status='REVISED' ORDER BY sequence DESC LIMIT 1",
                              (host,symbol)).fetchone()
         return clock(row[0]) if row else None
 
     def latest(self, host, symbol, scope=FULL_HISTORY):
         """Latest observation of one scope (legacy NULL rows are full history)."""
-        with closing(sqlite3.connect(self.path)) as db:
+        with self._connect() as db:
             row = db.execute("SELECT at,status,detail,digest,scope_digest FROM observations WHERE host=? AND symbol=? "
                              "AND COALESCE(scope,?)=? ORDER BY sequence DESC LIMIT 1",
                              (host,symbol,FULL_HISTORY,scope)).fetchone()
@@ -214,7 +349,7 @@ class VendorHistoryStore:
         build wrote to ``coverage_starts`` from row counts; kept as audit history only.
         Only the same instrument ID counts.
         """
-        with closing(sqlite3.connect(self.path)) as db:
+        with self._connect() as db:
             earliest = db.execute(
                 "SELECT MIN(json_extract(s.payload,'$.coverage_start')) FROM observations o JOIN snapshots s "
                 "ON s.digest=o.digest WHERE o.host=? AND o.symbol=? AND o.status IN ('CONSISTENT','REVISED') "
@@ -225,12 +360,67 @@ class VendorHistoryStore:
         return {"earliest": earliest, "established": None, "ignored_count_markers": markers}
 
     def current_snapshot(self, host, symbol, scope=FULL_HISTORY):
-        with closing(sqlite3.connect(self.path)) as db:
+        with self._connect() as db:
             row = (db.execute("SELECT digest,at FROM current WHERE host=? AND symbol=?", (host,symbol)).fetchone()
                    if scope == FULL_HISTORY else
                    db.execute("SELECT digest,at FROM scoped_current WHERE host=? AND symbol=? AND scope=?",
                               (host,symbol,scope)).fetchone())
         return dict(zip(("snapshot","at"), row)) if row else None
+
+
+def _identity(text) -> dict | None:
+    try:
+        instrument_id, currency, exchange_code, sub_category = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    return {"instrument_id": instrument_id, "currency": currency, "exchange_code": exchange_code,
+            "sub_category": sub_category}
+
+
+def vendor_store(source, host) -> VendorHistoryStore:
+    """The vendor store that pins identities for ``host``, or EvidenceUnavailable."""
+    try:
+        store, own = getattr(source, "store", None), getattr(source, "host", None)
+    except Exception:
+        store = own = None
+    if not isinstance(store, VendorHistoryStore) or own != host:
+        raise EvidenceUnavailable("WEBULL_IDENTITY_STORE_UNAVAILABLE")
+    return store
+
+
+def verified_identity(source, host, symbol, *, db=None) -> dict:
+    """The Webull identity currently verified for host/symbol (H1), else a fixed code.
+
+    A pin alone is not enough: a committed contradiction, a check whose outcome was
+    never committed, or a pin never verified since identity health existed refuses.
+    """
+    store = vendor_store(source, host)
+    try:
+        state = store.identity_state(host, symbol, db=db)
+    except sqlite3.Error:
+        raise EvidenceUnavailable("WEBULL_IDENTITY_STORE_UNAVAILABLE") from None
+    if state["state"] == "FAILED":
+        raise EvidenceUnavailable("WEBULL_IDENTITY_FAILED:" + str(state["reason"]))
+    if state["state"] != "VERIFIED":
+        raise EvidenceUnavailable("WEBULL_IDENTITY_" + state["state"])
+    return state["identity"]
+
+
+def event_identity(source, price_basis, symbol, *, db=None) -> dict | None:
+    """Identity required by a signal armed on Webull vendor evidence (H1).
+
+    None when the stored basis names no vendor host (no Webull identity was pinned for
+    it). Otherwise the verified identity, which must be the instrument the signal was
+    armed on; any other state raises EvidenceUnavailable with a fixed code.
+    """
+    basis = price_basis if isinstance(price_basis, dict) else {}
+    host = basis.get("host")
+    if not host:
+        return None
+    identity = verified_identity(source, host, symbol, db=db)
+    if str(basis.get("security_id")) != str(identity["instrument_id"]):
+        raise EvidenceUnavailable("WEBULL_IDENTITY_MISMATCH")
+    return identity
 
 
 # A frame that breaks the adapter contract (unparsable receipt time, missing
@@ -393,19 +583,77 @@ class VendorBasisSource:
         self.last_fetch_errors = dict(errors) if isinstance(errors, dict) else {}
         return out
 
-    def _usable(self, metadata, category):
-        usable = []
+    def _identity_metadata(self, symbols):
+        """Open identity checks, then request metadata; outcomes close them (H1).
+
+        Returns (metadata, checks, unsupported), or None when the checks cannot be
+        committed: then nothing is requested and nothing else is written.
+        """
+        names = set()
+        for symbol in symbols:
+            try:
+                names.add(canonical_symbol(symbol))
+            except (ValueError, TypeError):
+                pass
+        try:
+            checks = self.store.open_identity_checks(self.host, sorted(names), self._clock())
+        except sqlite3.Error:
+            for name in names:
+                self.last_errors[name] = "IDENTITY_STORE_UNAVAILABLE: nothing requested"
+            return None
+        unsupported = {}
+        return securities(self, symbols, self.last_errors, unsupported), checks, unsupported
+
+    def _usable(self, metadata, category, checks=None, unsupported=None):
+        """Symbols whose fresh metadata matches (or first pins) their identity.
+
+        Every compared observation closes its identity check with an outcome; metadata
+        that is missing, stale or unattributable closes it as ``NOT_OBSERVED``. An
+        outcome that cannot be committed leaves the check open (eligibility withheld).
+        """
+        checks = checks or {}
+        usable, closed = [], set()
+
+        def compare(meta, *, accept):
+            try:
+                self.store.pin(self.host, meta, check=checks.get(meta.symbol), accept=accept)
+            except sqlite3.Error:
+                closed.add(meta.symbol)  # not closable here: the check stays open
+                raise BarDataError("IDENTITY_STORE_UNAVAILABLE") from None
+            except BarDataError:
+                closed.add(meta.symbol)  # FAILED was committed with the check's closure
+                raise
+            closed.add(meta.symbol)
+
+        def fresh(meta):
+            age = (clock(self._clock())-clock(meta.observed_at)).total_seconds()
+            return 0 <= age <= 300
+
         for symbol, meta in metadata.items():
             try:
                 if meta.bar_category != category:
+                    if fresh(meta):
+                        compare(meta, accept=False)  # a contradiction of the pin still counts
                     raise BarDataError("WRONG_SECURITY_CATEGORY")
-                age = (clock(self._clock())-clock(meta.observed_at)).total_seconds()
-                if not 0 <= age <= 300:
+                if not fresh(meta):
                     raise BarDataError("SECURITY_METADATA_STALE")
-                self.store.pin(self.host,meta)
+                compare(meta, accept=True)
                 usable.append(symbol)
             except BarDataError as exc:
                 self.last_errors[symbol] = str(exc)
+        for symbol, meta in (unsupported or {}).items():
+            if str(self.last_errors.get(symbol, "")).startswith("unsupported security type") and fresh(meta):
+                try:
+                    compare(meta, accept=False)
+                except BarDataError as exc:
+                    self.last_errors[symbol] = str(exc)
+        for symbol, check in checks.items():
+            if symbol not in closed:
+                try:
+                    self.store.close_identity_check(self.host, symbol, check, self._clock(),
+                                                    str(self.last_errors.get(symbol, "NOT_REQUESTED"))[:200])
+                except sqlite3.Error:
+                    pass  # stays open: eligibility withheld until a later check
         return usable
 
     def _not_returned(self, symbol, errors, timeframe="DAILY"):
@@ -468,8 +716,11 @@ class VendorBasisSource:
         if timespan == "D" and kwargs:
             raise BarDataError("Bounded daily requests need a separate historical review")
         self.last_errors = {}
-        metadata = securities(self, symbols, self.last_errors)
-        usable = self._usable(metadata, category)
+        found = self._identity_metadata(symbols)
+        if found is None:
+            return {}
+        metadata, checks, unsupported = found
+        usable = self._usable(metadata, category, checks, unsupported)
         # Exclude today's forming daily bar at the provider, so it cannot displace
         # the oldest of the 1000 rows retained by yesterday's armed candidate.
         daily_end = session(latest_closed_session(self._clock()))[1]
@@ -566,8 +817,11 @@ class VendorBasisSource:
             raise ScopeUnsupported("DISCOVERY_SCOPE_UNSUPPORTED: the price adapter cannot bound history")
         self.last_errors, self.last_scope_report = {}, {}
         started = self._clock()
-        metadata = securities(self, symbols, self.last_errors)
-        usable = self._usable(metadata, category)
+        found = self._identity_metadata(symbols)
+        if found is None:
+            return {}
+        metadata, checks, unsupported = found
+        usable = self._usable(metadata, category, checks, unsupported)
         scopes = {}
         for symbol in list(usable):
             try:

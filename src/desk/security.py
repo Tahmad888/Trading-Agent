@@ -25,8 +25,12 @@ class SecurityMetadata(BaseModel):
         return "US_ETF" if self.sub_category == "ETF" else "US_STOCK"
 
 
-def securities(source, symbols, skipped):
-    """Resolve explicit US securities in batches; reject ambiguous or missing IDs."""
+def securities(source, symbols, skipped, unsupported=None):
+    """Resolve explicit US securities in batches; reject ambiguous or missing IDs.
+
+    ``unsupported`` (optional) receives well-formed metadata of an unsupported security
+    type, so an identity check can still compare it with an earlier pin (child 3, H1).
+    """
     names = sorted({canonical_symbol(s) for s in symbols})
     out = {}
     for i in range(0, len(names), 100):
@@ -61,6 +65,8 @@ def securities(source, symbols, skipped):
                 if metadata.sub_category not in {"COMMON_STOCK", "ETF"}:
                     skipped[symbol] = "unsupported security type: " + metadata.sub_category
                     bad.add(symbol)
+                    if unsupported is not None:
+                        unsupported[symbol] = metadata
                     continue
                 out[symbol] = metadata
             except (ValidationError, ValueError):

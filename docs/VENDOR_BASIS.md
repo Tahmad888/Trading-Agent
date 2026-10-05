@@ -10,6 +10,12 @@ The scanner is not activated by installing this change.
 - Resolve fresh Webull security metadata for requested tickers, in existing scanner
   batches. Persist the instrument/currency/exchange/type identity. An identity
   change or conflicting alias requires reconciliation, not a silent replacement.
+  Identity health (child 3, H1): each fetch commits an identity check before the
+  metadata request and closes it with `VERIFIED`, `FAILED` (contradiction kept beside
+  the unchanged pin) or `NOT_OBSERVED`. A signal armed on this basis needs the latest
+  outcome to be `VERIFIED` before revalidation and in the ticket's final fence, which
+  holds this store's write reservation until COMMIT. See
+  [TASTYTRADE_QUOTES.md](TASTYTRADE_QUOTES.md#webull-identity-health-child-3-h1).
 - Request up to 1,000 completed daily bars, ending at the latest completed session
   so a forming bar cannot displace the oldest retained row. Reject gaps and stale
   history. Require a complete RTH M15 session for that daily session, including

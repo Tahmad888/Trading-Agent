@@ -493,7 +493,12 @@ def test_empty_final_attempt_keeps_earlier_trade_as_history_only():
     out = report(Attempts([[compact("Trade", trade_row())], []], fail={1}))
     assert out["capture"]["stop_reason"] == "CAPTURE_COMPLETE"
     assert out["status"] == "NO_FINAL_ATTEMPT_OBSERVATIONS" and out["lag_evidence"] == "UNAVAILABLE"
-    assert out["stocks"]["checks"] == [] and out["final_attempt"]["components"]["SPY"]["Trade"] is False
+    assert out["final_attempt"]["components"]["SPY"]["Trade"] is False
+    # D1: rows are the final attempt's terminal view, which holds nothing earlier.
+    (row,) = out["stocks"]["checks"]
+    assert row["trade"]["status"] == row["quote"]["status"] == "UNAVAILABLE"
+    assert "age_seconds" not in row["trade"] and "bid" not in row["quote"]
+    assert out["stocks"]["timing_status"] in {"NOT_TESTED_NO_OBSERVATIONS", "NOT_TESTED_MARKET_CLOSED"}
     history = out["historical_observations"]
     assert history["eligible"] is False and history["latest"]["checks"][0]["trade"]["status"] == "AVAILABLE"
     assert out["capture"]["recoveries"][0]["recovered"] is False
@@ -588,11 +593,16 @@ def test_review_command_reports_a_busy_store_instead_of_crashing(tmp_path, monke
     assert code == 1 and "QUOTE_MAPPING_STORE_BUSY" in out.getvalue() and "Nothing was changed" in out.getvalue()
 
 
-@pytest.mark.parametrize("pinned,code", [(["id:LEAD", "USD", "TEST", "ETF"], "QUOTE_MAPPING_CLASSIFICATION_MISMATCH"),
-                                         (["id:OTHER", "USD", "TEST", "COMMON_STOCK"], "QUOTE_MAPPING_WEBULL_MISMATCH")])
-def test_pinned_webull_identity_changed_between_recheck_and_commit_refuses(tmp_path, pinned, code):
-    """The final fence re-verifies the mapping against the pinned Webull identity, not
-    only the bound digests. Synthetic: the pin is edited directly in the vendor store."""
+@pytest.mark.parametrize("pinned,verified,code", [
+    (["id:LEAD", "USD", "TEST", "ETF"], True, "QUOTE_MAPPING_CLASSIFICATION_MISMATCH"),
+    (["id:OTHER", "USD", "TEST", "COMMON_STOCK"], True, "WEBULL_IDENTITY_MISMATCH"),
+    (["id:LEAD", "USD", "TEST", "ETF"], False, "WEBULL_IDENTITY_HEALTH_INCONSISTENT")])
+def test_pinned_webull_identity_changed_between_recheck_and_commit_refuses(tmp_path, pinned, verified, code):
+    """The final fence re-verifies the mapping against the verified Webull identity, not
+    only the bound digests. Synthetic: the pin is edited directly in the vendor store
+    (the vendor path itself never re-pins). With ``verified`` a matching VERIFIED outcome
+    is appended, so the mapping (ETF) or the signal's own instrument (OTHER) refuses;
+    without it the raw edit is a pin no outcome verified (H1)."""
     from contextlib import closing
     import sqlite3
     q, tickets, tid, version = prepared(tmp_path)
@@ -602,7 +612,11 @@ def test_pinned_webull_identity_changed_between_recheck_and_commit_refuses(tmp_p
     def repin(*args):
         result = observe(*args)
         with closing(sqlite3.connect(q.desk.vendor.store.path)) as db, db:
-            db.execute("UPDATE identities SET identity=? WHERE symbol='LEAD'", (json.dumps(pinned),))
+            text = json.dumps(pinned)
+            db.execute("UPDATE identities SET identity=? WHERE symbol='LEAD'", (text,))
+            if verified:
+                db.execute("INSERT INTO identity_events(host,symbol,event,identity,observed,at) "
+                           "VALUES ('api.sandbox.webull.com','LEAD','VERIFIED',?,?,?)", (text, text, q.at.isoformat()))
         return result
     with pytest.raises(TicketError, match=code):
         approve(tickets, tid, version, replace(adapters, observe=repin), now=q.at)

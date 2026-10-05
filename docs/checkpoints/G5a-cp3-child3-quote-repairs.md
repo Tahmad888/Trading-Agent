@@ -452,3 +452,266 @@ Python 3.14.7, `sntp`, credentials), child 5 (regular-session timing, live confi
 Profile delivery, reconnect), child 6 (remaining G5 rows), operational mappings and
 runtime inputs. Hierarchy G5 → G5a parent Checkpoint 3 → children 1–6; parent CP3 and G5
 stay open; Step 09 stays paused.
+
+## Follow-up repairs H1 and D1 (Astra's audit of `318b877`, 2026-10-05)
+
+Astra accepted the R1–R4 repairs within their tested scope (original probes all
+`defect_reproduced: false`; 1,613 strict tests on Python 3.12.14) and withheld child-3
+sign-off for two reproduced cases. Her report, two probe scripts and their result JSON
+arrived with Taz's prompt as external attachments (kept unchanged in the scratch area;
+SHA-256 of the probe scripts: identity-health `02334c31…7241561`, recovery
+`cb9478ad…31eeae3b`). Base `318b877f4dfd19997476af808fe08fb0184e5f97`, branch head
+unchanged at fetch, clean tree. Before output on a scratch worktree of `318b877`, Python
+3.12.3, matched hers exactly: every contradictory-identity case approved or consumed;
+the withdrawn-map case reported Quote `AVAILABLE` and `recovered: true`; the
+transport-fault case reported `NO_FINAL_ATTEMPT_OBSERVATIONS` with two final views.
+These are demonstrated software failures against the approved evidence contracts. The
+locking design below is this desk's engineering contract, not a claimed universal
+retail-trading practice.
+
+### Evidence labels used here
+
+- *Sourced:* SQLite `BEGIN IMMEDIATE` takes the database's single write reservation;
+  other connections can still read committed data, and another writer waits up to its
+  busy timeout or fails with `SQLITE_BUSY`
+  ([transactions](https://www.sqlite.org/lang_transaction.html),
+  [locking](https://www.sqlite.org/lockingv3.html)). This is the same mechanism the G5a
+  CP2 volume/identity guard already uses (`AlpacaVolumeProvider.held`, accepted by Astra).
+- *Checked (synthetic):* both probes above, before the repair.
+- *Engineering choices* (not trading policy): bounded waits (fence acquisition 5 s,
+  like the CP2 guard; vendor-store writers 30 s, longer than the fence's worst-case hold
+  of mapping 10 s + account 5 s + local computation, so a scan waits rather than fails);
+  which outcomes count as identity observations; terminal-view wording.
+
+### H1 requirements (written before code)
+
+- **Persisted identity health per host/symbol** in the Webull vendor store
+  (`VendorHistoryStore`, same SQLite file as the pins), append-only and ordered by
+  sequence: `CHECK_OPENED` (committed before the metadata request is sent), then
+  exactly one closing outcome for that check: `VERIFIED` (fresh metadata matched or
+  first pinned the identity), `FAILED` (`SECURITY_IDENTITY_CHANGED` or
+  `SECURITY_IDENTITY_ALIAS`, with the contradictory observed identity kept as evidence)
+  or `NOT_OBSERVED` (no identity outcome: metadata missing, stale or of the wrong
+  category). The pin itself is never overwritten and no issuer is remapped.
+- **Current state** = the latest `VERIFIED`/`FAILED` outcome, plus any later check that
+  is still open. Eligible only when that outcome is `VERIFIED` for exactly the current
+  pin and no newer check is still open. Other states refuse with fixed codes:
+  `WEBULL_IDENTITY_FAILED:<reason>`, `WEBULL_IDENTITY_REFRESH_UNRESOLVED` (a check whose
+  outcome could not be committed, or a process that stopped mid-check),
+  `WEBULL_IDENTITY_UNVERIFIED` (a pin with no verified outcome, e.g. a legacy store),
+  `WEBULL_IDENTITY_HEALTH_INCONSISTENT` (verified identity differs from the pin),
+  `WEBULL_IDENTITY_NOT_PINNED`, `WEBULL_IDENTITY_STORE_UNAVAILABLE` (missing, corrupt or
+  unreadable store, wrong host, no vendor store) and `WEBULL_IDENTITY_STORE_BUSY` (fence
+  not acquired in time).
+- **Producers:** `VendorBasisSource._usable` (used by `bars` and `discovery_bars`) is
+  the only identity writer. It opens checks for the requested symbols before calling
+  the provider; if they cannot be committed, nothing is requested for that batch and
+  nothing else is written (`IDENTITY_STORE_UNAVAILABLE`). `pin()` writes its outcome
+  and closes the check in one transaction, then raises on a contradiction (today it
+  raises inside the transaction, so nothing is written). An outcome that cannot be
+  committed leaves the check open, which withholds eligibility.
+- **Recovery** is explicit and persisted: a later check whose fresh metadata matches
+  the original pin writes `VERIFIED`. Old snapshots, `CONSISTENT` bar observations,
+  scoped discovery evidence or defect rows never clear a failure. The same semantic
+  identity needs no new mapping review.
+- **Consumers:** `EventRiskSource.resolve` checks the stored event's host/symbol before
+  quote lookup and state-mutating revalidation, and `held_event`'s final status checks
+  it under the fence. The verified pin must also match the signal's stored
+  `security_id`. `TastytradeRiskSource` inherits both and passes the verified identity
+  (not the raw pin) to mapping verification. Required only for events whose stored
+  `price_basis` names a Webull vendor host; events with no vendor host keep today's
+  behaviour (no Webull identity existed for them).
+- **Scope:** identity health is per host/symbol. Bar quality stays separate: a failed
+  bar fetch, an excluded or rejected history row, or scoped versus full-history
+  evidence never changes identity health; peers are unaffected.
+
+### H1 fence and lock order
+
+`EventRiskSource.held_event` takes the vendor store's write reservation (a dedicated
+connection, `BEGIN IMMEDIATE`, `mode=rw` so a missing file is never created) when the
+stored event names a vendor host, and holds it until the ticket COMMIT. Any identity
+writer, in this or another thread or process, then waits until after COMMIT (or times
+out and leaves its check open, which refuses later uses). The final status reads the
+identity state on the fenced connection. A contradiction committed before acquisition
+refuses. No network operation happens under any of these locks.
+
+Final approve/consume order: ticket (`BEGIN EXCLUSIVE`) → signal (`BEGIN IMMEDIATE`)
+→ Alpaca volume/identity (when the event needs volume) → **Webull vendor identity**
+(when the event names a vendor host; skipped if it is the same file as an Alpaca path
+already held) → mapping (shared `flock`) → quote health (in-process lock) → account →
+final clock → COMMIT. Cycle check against actual writers: every vendor-store write
+(`pin`, check open/close, `record`, `record_scoped`, `record_defects`) is a single
+transaction holding no other lock; scanner revalidation and ticket preparation write
+signal and vendor stores in separate transactions, outside any ticket transaction;
+mapping, account and quote-health writers likewise hold no vendor lock. Only the ticket
+fence holds several locks, always in the order above, so no wait cycle exists.
+
+### H1 migration
+
+Old stores have pins (`identities`) and bar observations, but no identity-health
+record. The new table is created empty. A legacy pin is reported
+`WEBULL_IDENTITY_UNVERIFIED` and is not current evidence. The next normal bounded
+vendor refresh of that symbol (the scan's daily fetch, which already sends the metadata
+request) writes `VERIFIED` when the metadata matches. No manual crosswalk entry and no
+mapping re-review are needed. Old `SECURITY_IDENTITY_CHANGED` bar observations are not
+promoted to identity health (they recorded no observed identity); the next check
+re-observes.
+
+### D1 requirements (written before code)
+
+- Each capture attempt records a **terminal view**: `QuoteService.inspect` at the
+  attempt's end. For a deliberate finite end it runs before the socket is closed, so
+  the valid values seen just before shutdown stay visible. For a fault it runs after
+  the service has withdrawn its caches, so it reports the refusal and does not revive
+  cleared values. Schema withdrawals, status/halt changes, identity failures and
+  transport faults after the last data message all appear there.
+- Per attempt and symbol, two separate facts: `components` (received in this
+  generation; receipt counters, unchanged) and `usable_at_end` (the existing getters
+  accepted the value at the terminal view, under the existing age, BBO, schema,
+  halt and identity rules). Receipt alone never claims usability.
+- Recovery wording: each recovery entry gives `received_by_symbol`,
+  `usable_by_symbol` and `outcome` = `USABLE_AT_ATTEMPT_END`,
+  `RECEIVED_BUT_NOT_USABLE_AT_ATTEMPT_END` or `NOT_RECEIVED`. `recovered` is true only
+  for `USABLE_AT_ATTEMPT_END` (every requested symbol's Quote and Trade). One healthy
+  peer or Profile-only traffic is not recovery.
+- Diagnostic: stock/option rows, coverage and `lag_evidence` come from the final
+  attempt's terminal view. The last data-triggered view of the final attempt is kept
+  as `final_attempt.last_data_view`, labelled ineligible history. Aggregate `status`:
+  `OBSERVATIONS_ONLY` (deliberate end after final-attempt observations),
+  `FINAL_ATTEMPT_FAILED_AFTER_OBSERVATIONS` (new: data then a fault),
+  `NO_FINAL_ATTEMPT_OBSERVATIONS` (final attempt empty; earlier data history only) or
+  `UNAVAILABLE`. `final_attempt.health` states whether every requested Quote and Trade
+  was usable at the end. Only `OBSERVATIONS_ONLY` exits 0; none of these is a live PASS.
+- Unchanged: quiet time at the deadline uses the existing age checks against event
+  time (receipt time is never substituted); the 60-second policy; future-time refusal;
+  token expiry, denial, rate limit and exhausted retries keep distinct stop reasons;
+  closed-market runs say `NOT_TESTED_MARKET_CLOSED`; bounded artifacts; runtime getters.
+
+### Acceptance cases (written first)
+
+| Case | Expected |
+| --- | --- |
+| H1 contradiction (ID, then common→ETF) committed by a separate source before the final check | approve and consume refuse `WEBULL_IDENTITY_FAILED:SECURITY_IDENTITY_CHANGED`; ticket unchanged |
+| H1 writer thread / separate process starts during the fence | writer waits; ticket commits first; the next action refuses |
+| H1 fence busy / store missing / corrupt | refuse with a fixed code; no lock left held, no hang, no file created |
+| H1 reopen stores and processes after a failure | still refused |
+| H1 legacy pin, check left open, unpersistable outcome | refuse (`UNVERIFIED`, `REFRESH_UNRESOLVED`) |
+| H1 controls | unchanged refresh, healthy peer, recovery of the same identity (no new review) succeed; a `CONSISTENT` bar observation or discovery evidence does not clear a failure; a history-row defect does not touch identity |
+| D1 valid data → invalid Quote map, no more data | Quote `UNAVAILABLE` `FEED_SCHEMA_UNSUPPORTED`; Trade visible; not recovered |
+| D1 valid changed map, awaiting data; Profile status lost after data; identity failure after data | the terminal view shows the refusal |
+| D1 crossed quote, stale trade | received but not usable; `recovered` false |
+| D1 data then transport fault | `FINAL_ATTEMPT_FAILED_AFTER_OBSERVATIONS`; observations kept as ineligible history |
+| D1 controls | healthy recovery usable; empty final attempt `NO_FINAL_ATTEMPT_OBSERVATIONS`; deliberate end keeps valid values |
+
+### Rollback
+
+Revert the H1/D1 commit. The new `identity_events` table is additive and ignored by
+`318b877` code (old pins keep working as before); diagnostic output fields are
+additive. No mapping, ticket, signal or account data is rewritten.
+
+### H1/D1 implementation record
+
+Changed files: `src/desk/vendor_basis.py` (identity events, checks before the metadata
+request, outcome-committing `pin`, `identity_state`, `held_identity` fence,
+`verified_identity`/`event_identity`; writers wait 30 s), `src/desk/security.py`
+(optional `unsupported` metadata so a contradiction of an unsupported type is still
+compared), `src/desk/risk_terms.py` (identity check before revalidation; vendor
+identity fence and final check in `held_event`; `EventStatus.webull_identity`;
+`stored_vendor_host`), `src/desk/alpaca_source.py` (`guard_paths`, so one file is never
+reserved twice), `src/desk/quote_risk.py` (bridge uses the verified identity; final
+refuses on the base status's reason), `src/desk/tastytrade_transport.py` (per-attempt
+terminal view, `usable_at_end`, `health`, recovery `outcome`), `src/desk/quote_check.py`
+(rows/lag/coverage from the terminal view, `last_data_view`, new status),
+`src/desk/tastytrade_quotes.py` (`checked_at` on every view); tests
+`tests/test_identity_health.py` (new), `tests/test_quote_terminal.py` (new) and three
+updated expectations (below); docs.
+
+Choices made while implementing (recorded, not trading policy):
+
+- A common→ETF change reaches the vendor path as metadata of the wrong bar category
+  (`US_ETF`), which was rejected before any comparison; such metadata (and metadata of
+  an unsupported type) is now compared with an existing pin without ever creating one,
+  so the contradiction is recorded.
+- An alias failure applies to the symbol whose metadata contradicted (the observing
+  symbol), not to the other symbol already pinned to that instrument.
+- Ambiguous or unattributable metadata (duplicate rows, one instrument for two requested
+  symbols) is `NOT_OBSERVED`: it cannot be attributed to one symbol.
+- A deliberate end whose socket then fails to close is a transport fault: its pre-close
+  view is discarded and the withdrawn state reported.
+- `OBSERVATIONS_ONLY` (exit 0) keeps meaning "a deliberate end after final-attempt
+  observations"; `final_attempt.health` says whether every requested Quote and Trade was
+  usable at the end.
+
+Updated existing expectations (each a direct consequence of H1/D1, not a loosened check):
+`test_quote_reaudit::test_pinned_webull_identity_changed_between_recheck_and_commit_refuses`
+edits the pin with raw SQL; it now also appends a matching `VERIFIED` outcome (otherwise
+the new health check refuses first, `WEBULL_IDENTITY_HEALTH_INCONSISTENT`, kept as a
+third case), and the other-instrument case now refuses at the signal's own instrument
+(`WEBULL_IDENTITY_MISMATCH`). `::test_empty_final_attempt_keeps_earlier_trade_as_history_only`
+now finds terminal rows (UNAVAILABLE, no values) instead of no rows.
+`test_quote_repairs::test_heartbeat_timeout_recovers_with_fresh_generation_and_new_events`
+ran until the second connection also timed out, which receipt counters had called
+"recovered" (the D1 defect); it now ends deliberately at 100 s, and the unhealthy ending
+is covered by D1 tests. Its hand-built capture fixture (`lag_report`) gained the
+terminal view a real capture now returns.
+
+| Case (probe or test) | Before (`318b877`) | After |
+| --- | --- | --- |
+| H1 contradiction before final check, approve / consume (original probe) | SUCCEEDED / SUCCEEDED | REFUSED `WEBULL_IDENTITY_FAILED:SECURITY_IDENTITY_CHANGED`; ticket pending / approved |
+| H1 contradiction before COMMIT, approve / consume (original probe, writer runs synchronously on the fence-holding thread) | SUCCEEDED (failure committed first) | SUCCEEDED, correctly: the writer waited on its own caller's fence for 30 s and sent nothing (`IDENTITY_STORE_UNAVAILABLE: nothing requested`); no contradiction was committed before COMMIT |
+| H1 contradiction before COMMIT (adapted probe: separate writer thread) | — | writer still waiting at COMMIT (`true`), finishes after; ticket committed; then resolve REFUSED `WEBULL_IDENTITY_FAILED:SECURITY_IDENTITY_CHANGED`, a new ticket `blocked`, consume after approval refused |
+| H1 controls: unchanged refresh, recovered same identity | SUCCEEDED | SUCCEEDED (recovery without a new review) |
+| D1 healthy recovery control | OBSERVATIONS_ONLY, recovered true, AVAILABLE | unchanged |
+| D1 Quote map withdrawn after final data | Quote AVAILABLE, recovered true | Quote UNAVAILABLE `FEED_SCHEMA_UNSUPPORTED`, Trade AVAILABLE, recovered false |
+| D1 crossed quote / stale trade | recovered true (receipt) | recovered false; `RECEIVED_BUT_NOT_USABLE_AT_ATTEMPT_END` |
+| D1 final data then transport fault | `NO_FINAL_ATTEMPT_OBSERVATIONS`, Quote/Trade AVAILABLE | `FINAL_ATTEMPT_FAILED_AFTER_OBSERVATIONS`, rows UNAVAILABLE `DXLINK_TRANSPORT_FAILURE`, last data view kept as ineligible history |
+
+Why the identity probe was adapted: in the original before-COMMIT case the peer refresh
+runs synchronously inside the ticket's audit hook, i.e. on the thread that holds the new
+fence. Its writer can only wait for its own caller's transaction (a self-wait that ends
+at the writer's timeout), which shows the fence holds but cannot show the ordering
+between a real concurrent writer and COMMIT. The adapted copy changes only that hook (a
+separate writer thread, the same refresh) and adds the follow-up uses. Both copies and
+their outputs are preserved with the handoff.
+
+#### Verification (H1/D1 commit)
+
+Runtime: Linux container (Claude cloud), CPython 3.12.3 and 3.13.14 (same packages as
+the R1–R4 commit). Not the iMac.
+
+| Command | Result |
+| --- | --- |
+| `python -m pytest -q -W error` (3.12.3) | **1655 passed in 273.62s** |
+| `python -m pytest -q -W error` (3.13.14) | **1655 passed in 281.53s** |
+| `tests/test_identity_health.py`, `tests/test_quote_terminal.py` | 27 + 14 passed on both versions |
+| `git diff --check` | Clean |
+| Astra's two probes unchanged, before (`318b877`) / after | Table above; outputs kept with the handoff |
+| Adapted identity probe (thread writer), after | Table above |
+| Diff, new tests, probe outputs and adapted probe scanned for credentials | No token/secret/bearer text; only labelled synthetic strings |
+| iMac command block, simulated against a local clone with a fake `HOME` | wrong SHA, dirty tracked tree, wrong branch and missing SHA each print one STOP and end before install, suite or any request; the reviewed SHA prints `SHA_OK` and continues |
+
+Targeted mutations (each removes one new safeguard in a scratch copy; the six quote test
+files plus `test_identity_health`, `test_quote_terminal` and `test_vendor_basis` must
+then fail): **22 of 22 detected**, control passes. H1: final status skips identity (H1a),
+resolve skips it (H1b), no vendor identity fence (H1c), FAILED read as verified (H1d),
+failure raised inside the transaction so nothing is recorded (H1e), open check ignored
+(H1f), no check before the request (H1g), wrong-category metadata not compared (H1h),
+unusable metadata creates a pin (H1i), verified identity not matched to the pin (H1j),
+armed instrument unchecked (H1k), busy fence raises mid-transaction (H1l), missing store
+created (H1m), host unchecked (H1n). D1: rows from the last data view (D1a), recovery by
+receipt (D1b), deliberate-end view taken after closing (D1c), pre-fault view kept after a
+close failure (D1d; caught by the close-failure test added during self-review), failure
+labelled "no observations" (D1e), usability from receipt (D1f), timing label from any
+row (D1g), lag from the last data view (D1h).
+
+Self-review during this round: a vendor writer's 10 s wait could expire while a ticket
+fence waited for the mapping (10 s) and account (5 s) locks, failing a scan; raised to
+30 s. A close failure after a deliberate end kept the pre-close view; now discarded
+(test added). An unused constant and an overclaiming test name were removed.
+
+Unchanged pending acceptance: child 3 sign-off (Astra's audit), child 4 (iMac, Python
+3.14.7, `sntp`, credentials; existing vendor stores re-verify identities on their next
+scan), child 5 (regular-session timing, live config order, Profile delivery, reconnect),
+child 6 (remaining G5 rows), operational mappings and runtime inputs. Hierarchy G5 →
+G5a parent Checkpoint 3 → children 1–6; parent CP3 and G5 stay open; Step 09 stays
+paused. No provider calls, credentials, iMac changes, orders or schedules were used.

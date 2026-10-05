@@ -14,7 +14,12 @@ reserved `tastytrade-dxlink` label, ambiguous-quote withholding, clock-lead evid
 optional Profile status, bounded heartbeat recovery (`12705aa`). Astra's re-audit found
 R1–R4; Claude repaired them (mapping fence held to ticket COMMIT, bound ETF/common
 classification with v2 mapping schema, halt latch cleared only by ACTIVE, final-attempt
-diagnostic coverage). Child 3 sign-off is pending Astra's re-audit. Read the child-3 record and `docs/TASTYTRADE_QUOTES.md` before quote work. Historical Webull prices and Alpaca SIP decision volume are
+diagnostic coverage). Astra's audit of `318b877` accepted R1–R4 and found H1 (a committed
+Webull identity failure still allowed final approval/consumption) and D1 (diagnostic
+summary from the last data message only); Claude repaired them (persisted Webull identity
+health checked before revalidation and under a vendor-store fence held to COMMIT; legacy
+pins unverified until the next normal refresh; per-attempt terminal diagnostic views;
+iMac checks as one terminating script). Child 3 sign-off is pending Astra's audit. Read the child-3 record and `docs/TASTYTRADE_QUOTES.md` before quote work. Historical Webull prices and Alpaca SIP decision volume are
 unchanged; immediate consolidated intraday volume remains unresolved. The adapter
 does not supply a complete live RiskInputs factory or a long-lived quote service (the
 ticket CLI's separate commands cannot share one quote session). Child 3 sign-off, child 4
