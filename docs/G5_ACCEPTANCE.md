@@ -437,3 +437,14 @@ It can attach the existing read-only host-clock measurement.
 No report from this command is trade eligibility or an overall G5 PASS. Off-hours
 observations establish no regular-session freshness. Existing accepted evidence
 and the separate independent review of the close-recovery repairs keep their scope.
+
+Host update result, 2026-10-05: Taz's iMac Python 3.14.7 strict suite on `c0c5e67`
+returned **1 failed, 1,806 passed**. The existing tastytrade redirect-refusal test
+exposed a translated HTTPError response that was not explicitly closed. Astra
+reproduced it on local Python 3.14.6 and added the bounded cleanup and regressions
+in `checkpoints/G5a-cp3-quote-source-check.md`. Provider command block 2 is held
+until the repaired commit's strict suite passes on the iMac. This failure is not
+source access/freshness evidence and does not undo accepted historical evidence.
+The cleanup's full strict suites pass **1,813 tests** on local Python 3.12.14 and
+3.14.6; the repaired commit's iMac Python 3.14.7 result remains pending. No warnings
+were suppressed, and no provider call or quote-policy change was made.

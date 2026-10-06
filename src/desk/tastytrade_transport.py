@@ -70,6 +70,8 @@ def request_json(method, url, headers, payload, *, timeout=15, opener=None):
             return result
     except HTTPError as exc:
         # Neither the error body nor its URL is safe to echo.
+        # HTTPError also owns a response; dispose of it without reading the body.
+        exc.close()
         raise QuoteUnavailable(f"REST_HTTP_{exc.code}") from None
     except QuoteUnavailable:
         raise

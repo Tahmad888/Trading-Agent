@@ -102,3 +102,52 @@ Claude cloud diagnostic. Next: capture the host clock and the bounded snapshot
 report. Off-hours can establish access/shape only; regular-session observations
 and a verified BBO time/coverage contract precede adapter integration. No overall
 G5 acceptance or bid/ask eligibility follows from these offline results.
+
+## iMac strict-suite cleanup follow-up — requirements before code
+
+Base: `c0c5e673523a0b47c70ee0886135c6a46aabce2b`. Taz ran command block 1
+on Python 3.14.7: **1 failed, 1,806 passed**. Block 2 is held; no provider
+diagnostic follows a failed strict suite.
+
+- **Checked:** `test_redirect_is_refused_and_credentials_go_nowhere_else`
+  reproduces on local Python 3.14.6. Redirect refusal itself succeeds, but
+  `request_json` translates the raised HTTPError without closing its response.
+  Its destructor then emits a ResourceWarning, rejected by `-W error`.
+- **Sourced:** HTTPError is also a file-like response, not only an exception:
+  https://docs.python.org/3.14/library/urllib.error.html
+  The local CPython implementation owns a temporary-file wrapper and supports
+  explicit close. Existing Webull and Alpaca clients already close translated
+  HTTP errors; apply that ownership rule to tastytrade's REST transport too.
+- Producer: urllib's error response. Consumer: `tastytrade_transport.request_json`,
+  which returns only the existing safe HTTP status refusal. Do not read the error
+  body, expose its URL/headers/reason, follow a redirect, retry, or suppress warnings.
+- Acceptance: a real synthetic redirect cannot forward a Bearer header and its
+  response is closed; injected 302/401/403/429/500 errors and an absent body are
+  closed before returning the same safe refusal. Successful-response and transport
+  contracts stay unchanged. Run relevant quote/transport tests and the combined
+  strict suite on local Python 3.12 and 3.14 before pushing; iMac 3.14.7 remains
+  separately pending.
+- Rollback: revert only this resource cleanup and its regression/documentation.
+  Quote timing, rules, identity, volume, scanner state and source diagnostic scope
+  stay unchanged. No provider, account, schedule, iMac or order calls are needed.
+
+### Cleanup verification
+
+`request_json` now explicitly closes HTTPError before translating its status.
+Six new cases retain the error object so garbage collection cannot hide the leak;
+they check both body and wrapper closure, safe refusal text, no body reads and no
+retry. The existing synthetic redirect test also checks response closure and still
+proves the redirected destination is never contacted.
+
+| Actual check | Result |
+| --- | --- |
+| Original iMac failure reproduced, local Python 3.14.6 before repair | 1 failed with the same HTTPError 302 ResourceWarning |
+| Six new regressions before the production repair, Python 3.12.14 | 6 failed; existing redirect control passed |
+| Quote repairs, tastytrade quotes, Webull source probe and measurement tests; Python 3.12.14 and 3.14.6 | 185 passed on each |
+| Full strict suite, Python 3.12.14 | **1,813 passed in 201.78 s** |
+| Full strict suite, Python 3.14.6 | **1,813 passed in 175.77 s** |
+
+The combined runs use fake transports and make zero provider calls. Python 3.14.7
+on the iMac still needs its own repaired-commit result. Rerun command block 1 on
+the updated commit, then review that result before block 2. No source eligibility,
+clock evidence, regular-session acceptance or G5 closure is claimed.

@@ -9,6 +9,7 @@ from decimal import Decimal
 from email.message import Message
 import io
 import json
+from urllib.error import HTTPError
 from urllib.request import HTTPSHandler, build_opener
 from urllib.response import addinfourl
 
@@ -609,6 +610,7 @@ def test_forbidden_destination_never_receives_the_token(url):
 
 def test_redirect_is_refused_and_credentials_go_nowhere_else():
     seen = []
+    replies = []
 
     class Redirecting(HTTPSHandler):
         def https_open(self, request):
@@ -617,9 +619,59 @@ def test_redirect_is_refused_and_credentials_go_nowhere_else():
             headers["Location"] = "https://attacker.example/steal"
             response = addinfourl(io.BytesIO(b""), headers, request.full_url, 302)
             response.msg = "Found"
+            replies.append(response)
             return response
     opener = build_opener(_NoRedirect(), Redirecting())
     with pytest.raises(QuoteUnavailable, match="REST_HTTP_302"):
         request_json("GET", "https://api.tastyworks.com/api-quote-tokens",
                      {"Authorization": "Bearer secret-access"}, None, opener=opener)
     assert [url for url, _ in seen] == ["https://api.tastyworks.com/api-quote-tokens"]
+    assert len(replies) == 1 and replies[0].closed
+
+
+@pytest.mark.parametrize("status", [302, 401, 403, 429, 500])
+def test_translated_http_error_closes_body_without_reading_or_echoing(status):
+    class UnreadBody(io.BytesIO):
+        def read(self, *args):
+            raise AssertionError("HTTP error body must not be read")
+
+    body = UnreadBody(b"secret-error-body")
+    headers = Message()
+    headers["X-Secret"] = "secret-error-header"
+    failure = HTTPError("https://api.tastyworks.com/?secret-error-url", status,
+                        "secret-error-reason", headers, body)
+    calls = []
+
+    class ErrorOpener:
+        def open(self, request, timeout):
+            calls.append(request.full_url)
+            raise failure
+
+    try:
+        with pytest.raises(QuoteUnavailable) as caught:
+            request_json("GET", "https://api.tastyworks.com/api-quote-tokens",
+                         {"Authorization": "Bearer secret-access"}, None, opener=ErrorOpener())
+        assert str(caught.value) == f"REST_HTTP_{status}"
+        assert caught.value.__suppress_context__
+        assert calls == ["https://api.tastyworks.com/api-quote-tokens"]
+        assert body.closed
+        assert failure._closer.close_called
+    finally:
+        failure.close()  # also dispose of the deliberately broken baseline in this test
+
+
+def test_translated_http_error_without_body_closes_the_response_wrapper():
+    failure = HTTPError("https://api.tastyworks.com/api-quote-tokens", 503, "Unavailable", None, None)
+
+    class ErrorOpener:
+        def open(self, request, timeout):
+            raise failure
+
+    try:
+        with pytest.raises(QuoteUnavailable, match="^REST_HTTP_503$"):
+            request_json("GET", "https://api.tastyworks.com/api-quote-tokens", {}, None,
+                         opener=ErrorOpener())
+        assert failure.closed
+        assert failure._closer.close_called
+    finally:
+        failure.close()

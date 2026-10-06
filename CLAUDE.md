@@ -9,6 +9,10 @@ iMac clock measurement (`desk.webull_quote_check`;
 `docs/checkpoints/G5a-cp3-quote-source-check.md`). It supports children 4/5;
 it establishes no BBO/option/volume eligibility and changes no quote or risk policy.
 Source observations and actual-host verification precede any replacement adapter.
+Taz's iMac strict suite at `c0c5e67` had 1 failure / 1,806 passes: tastytrade's
+translated HTTPError response was not explicitly closed. The bounded cleanup
+follow-up is recorded in the same quote-source checkpoint. Hold provider command
+block 2 until the updated strict suite passes on the iMac; do not suppress warnings.
 Step 09's earnings work stays separate and paused.
 Child 1 saved-volume audit is accepted. Child 2 tastytrade quote implementation was
 built by Astra at `78da588` (record `docs/checkpoints/G5a-cp3-child2-tastytrade-quotes.md`);
