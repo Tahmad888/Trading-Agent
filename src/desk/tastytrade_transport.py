@@ -9,7 +9,7 @@ import logging
 import ssl
 import time
 from urllib.error import HTTPError
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from desk.tastytrade_quotes import (CORE, FIELDS, OPTIONAL, UTC, FeedDecoder, QuoteService, QuoteUnavailable,
@@ -119,14 +119,16 @@ class ReadClient:
         self.max_requests, self.requests = max_requests, 0
         self._access, self._expires = None, None
 
-    def _call(self, method, path, payload=None, authenticated=True):
+    def _call(self, method, path, payload=None, authenticated=True, *, query=None):
         # Private allowlist also protects future callers from accidental account use.
-        allowed = (path == "/api-quote-tokens" or path.startswith("/instruments/equities/")
+        allowed = (path in {"/api-quote-tokens", "/market-data/by-type"} or path.startswith("/instruments/equities/")
                    or path.startswith("/instruments/equity-options/")
                    or (path.startswith("/option-chains/") and path.endswith("/nested")))
         if not ((method == "POST" and path == "/oauth/token" and not authenticated)
                 or (method == "GET" and allowed and authenticated)):
             raise QuoteUnavailable("REST_ROUTE_REFUSED")
+        if query is not None and (path != "/market-data/by-type" or method != "GET"):
+            raise QuoteUnavailable("REST_QUERY_REFUSED")
         if authenticated and (self._expires is None or self.clock() >= self._expires - timedelta(seconds=10)):
             self.authenticate()
         if self.requests >= self.max_requests:
@@ -136,7 +138,8 @@ class ReadClient:
         if authenticated:
             headers["Authorization"] = "Bearer " + self._access
         try:
-            result = self.request(method, HOSTS[self.environment] + path, headers, payload)
+            suffix = "?" + urlencode(query) if query else ""
+            result = self.request(method, HOSTS[self.environment] + path + suffix, headers, payload)
             if not isinstance(result, dict) or "error" in result:
                 raise QuoteUnavailable("REST_ERROR")
             return result
@@ -144,6 +147,34 @@ class ReadClient:
             raise
         except Exception:
             raise QuoteUnavailable("REST_TRANSPORT_FAILURE") from None
+
+    def market_quotes(self, identities):
+        """One batched read-only snapshot; resolved instruments, never guessed options.
+
+        Dasherized REST fields are normalized separately in desk.snapshot_quotes.
+        No retry/cache and no QuoteService or trading-state mutation occurs here.
+        """
+        from desk.tastytrade_quotes import Instrument, canonical
+        if not isinstance(identities, (list, tuple)) or not 1 <= len(identities) <= 100:
+            raise QuoteUnavailable("SNAPSHOT_REQUEST_INVALID")
+        groups, seen = {}, set()
+        for identity in identities:
+            if not isinstance(identity, Instrument) or identity.kind not in {"Equity", "Equity Option"}:
+                raise QuoteUnavailable("SNAPSHOT_REQUEST_INVALID")
+            if (canonical(identity.provider_symbol, identity.kind) != identity.symbol
+                    or not identity.identity_digest or identity.symbol in seen):
+                raise QuoteUnavailable("SNAPSHOT_REQUEST_INVALID")
+            seen.add(identity.symbol)
+            key = "equity" if identity.kind == "Equity" else "equity-option"
+            groups.setdefault(key, []).append(identity.provider_symbol)
+        result = self._call("GET", "/market-data/by-type",
+                            query={key: ",".join(symbols) for key, symbols in groups.items()})
+        data = result.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            raise QuoteUnavailable("SNAPSHOT_REPLY_INVALID")
+        if result.get("pagination") not in (None, {}):
+            raise QuoteUnavailable("SNAPSHOT_PAGINATION_UNEXPECTED")
+        return data["items"]
 
     def authenticate(self):
         result = self._call("POST", "/oauth/token", {

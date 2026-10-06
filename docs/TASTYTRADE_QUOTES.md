@@ -498,3 +498,76 @@ denial (`REST_HTTP_401`/`403`), rate limit (`REST_HTTP_429`) or budget stop
 Rollback: revert the child-3 commit to return to `78da588`; no host state is changed by
 the code. A mapping file, if one is later created, is ignored by older code, and so is
 the additive `identity_events` table in the vendor store.
+
+## REST quote-update snapshot diagnostic (2026-10-05)
+
+`python -m desk.snapshot_quote_check` is separate from the DXLink service and
+`quote_check`. It fetches resolved stock/option snapshots through the existing
+read-only REST client. It does not connect any snapshot to signal or ticket approval.
+Source: `tastytrade-rest-snapshot`, never `tastytrade-dxlink`.
+
+The documented `updated-at` is when the provider quote was last updated. It is not
+either side's last-change time and is never replaced with local receipt. This is
+the contract under test, not a workaround that invents missing DXLink `bidTime` or
+`askTime`. Dasherized wire fields and the explicit camelCase reference aliases are
+supported; contradictions are refused. Prices/sizes retain decimal precision.
+Sizes are labelled `PROVIDER_UNITS_NOT_ATTESTED`; coverage is `NOT_ATTESTED`.
+Missing, zero, naive, invalid and future timestamps are refused. Old timestamps
+remain observations labelled outside the existing 60-second quote policy. No new
+clock allowance or policy change was added.
+
+The endpoint accepts at most 100 total symbols per call. The bounded diagnostic
+accepts 1–10 stock symbols, 1–3 rounds and a 0–30-second gap. These are diagnostic
+request bounds, not a universe limit or trading condition. Authentication counts
+toward the explicit request budget. Denial, rate limit, budget, transport and global
+response-shape failures stop without retries; missing/invalid individual symbols
+remain isolated. The last round is refreshed without a cache. Earlier rounds are
+history only, including when the final refresh fails.
+
+After updating and verifying the committed code on the host, activate the virtual
+environment and source the existing private env file. `TASTYTRADE_CLIENT_SECRET`
+and `TASTYTRADE_REFRESH_TOKEN` must already be configured. To set them up, use the
+existing hidden-input `python tools/setup_tastytrade_env.py` and source the file
+again; do not put keys into the command or report. No new dependency is needed.
+
+One stock schema/access check (works off-hours, does not prove live freshness;
+normally six requests: auth, three instruments, two snapshots):
+
+```sh
+desk_snapshot_report_dir=$(mktemp -d "$HOME/Desktop/g5-snapshot-XXXXXX")
+python -m desk.snapshot_quote_check --environment production \
+  --symbols SPY QQQ NVDA --rounds 2 --interval-seconds 5 --max-requests 8 \
+  --output "$desk_snapshot_report_dir/stocks.json"
+```
+
+During a regular session, test the same stocks plus a real listed SPY call and put
+(normally ten requests; the strike is selected nearest a fresh underlying snapshot
+midpoint, and actual contract identities are fetched independently):
+
+```sh
+python -m desk.snapshot_quote_check --environment production \
+  --symbols SPY QQQ NVDA --option-underlying SPY \
+  --rounds 2 --interval-seconds 5 --max-requests 12 \
+  --output "$desk_snapshot_report_dir/stocks-options.json"
+```
+
+Optional `--option-strike` takes a positive listed-strike reference supplied by the
+operator, for diagnostic selection only. No imaginary contract or automatic median
+fallback is used. A stale/missing underlying reference leaves option selection
+unavailable while still allowing the stock observations to be collected. Any REST
+provider stop ends all remaining calls.
+
+Review `current`, `current_failures`, `identity_issues`, `option_selection`, request
+count, quote-update ages and request/receipt brackets. `OBSERVATIONS_ONLY` and exit
+0 mean observations were collected, not that the source is accepted for trading.
+`PARTIAL_OBSERVATIONS` / `UNAVAILABLE` require review; do not retry a denial or rate
+limit. Off-hours results say `NOT_TESTED_MARKET_CLOSED`. Even regular-session
+results say `OBSERVATIONS_REQUIRE_REVIEW`; compare with simultaneous trusted
+quotes before consumer integration. The docs restrict REST access to funded
+accounts; prior access on Taz's unfunded account does not guarantee future access.
+
+Primary sources: [market-data concepts](https://developer.tastytrade.com/docs/concepts/market-data/),
+[endpoint and timestamp definition](https://developer.tastytrade.com/reference/market-data/getMarketDataByType/),
+[dxFeed side-change times](https://docs.dxfeed.com/dxfeed/api/com/dxfeed/event/market/Quote.html).
+Rollback for this bounded stage: revert its producer, diagnostic, tests and exact
+REST-route additions. It adds no database migration, stored trade state or service.

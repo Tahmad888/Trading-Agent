@@ -448,3 +448,32 @@ source access/freshness evidence and does not undo accepted historical evidence.
 The cleanup's full strict suites pass **1,813 tests** on local Python 3.12.14 and
 3.14.6; the repaired commit's iMac Python 3.14.7 result remains pending. No warnings
 were suppressed, and no provider call or quote-policy change was made.
+
+### Timestamped REST snapshot producer (2026-10-05)
+
+Taz subsequently supplied **1,813 passed** on the iMac Python 3.14.7 at `c3c661c`.
+That closes the earlier cleanup test hold for that commit only. His read-only
+`sntp` result was `+0.104142 +/- 0.036235`; no clock correction or quote-time
+tolerance is inferred from it.
+
+The next bounded implementation is `desk.snapshot_quotes` plus
+`desk.snapshot_quote_check`, recorded in
+`checkpoints/G5a-cp3-rest-snapshot-quotes.md`. The shared read-only REST client gains
+only the documented market-data snapshot route. The producer distinguishes
+provider quote-update time from side-change time and receipt, records resolved
+identity and environment, isolates malformed symbols, and retains no cache.
+The diagnostic rechecks age at completion; previous rounds cannot become current
+after a failed refresh. Stock and listed call/put observations carry
+`decision_eligibility=NOT_EVALUATED`, never an overall PASS.
+
+| Requirement | Disposition |
+| --- | --- |
+| REST timestamp/identity/error-handling code | Implemented; exact offline results in the checkpoint |
+| Actual stock/option REST fields and access on this account | Pending bounded provider run; unfunded-account access is not assumed |
+| Regular-session freshness of provider quote-update time | Pending active-session observations and review |
+| Consolidated coverage / bid-ask size units / each side's change time | Not attested or inferred by this producer |
+| Snapshot-aware final approval and consumption | Not implemented; requires accepted source evidence and a separate consumer stage |
+| Immediate consolidated RTH30 volume, clock policy and Step 09 | Unchanged; retain their separate pending status |
+
+This stays inside G5 → G5a parent Checkpoint 3 → children 5/6; no new parent step,
+activation, scheduler or order was added. Accepted earlier evidence retains its scope.

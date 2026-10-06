@@ -3,6 +3,16 @@
 ## Active repair work
 
 Latest scope (2026-10-05): G5 → G5a parent Checkpoint 3 → six child steps.
+Current bounded timestamp follow-up: `desk.snapshot_quote_check` produces tastytrade
+REST bid/ask observations using the documented provider quote-update timestamp,
+separate from DXLink side-change times and local receipt. Read
+`docs/checkpoints/G5a-cp3-rest-snapshot-quotes.md` before continuing. It consumes
+resolved stock/option identities, uses the existing read-only REST/TLS/request
+controls, and has no cache or approval consumer. Actual stock/option access,
+freshness and coverage remain pending provider review; it establishes no G5 PASS.
+Taz's iMac strict suite at `c3c661c` passed 1,813 tests on Python 3.14.7, superseding
+the earlier HTTPError-cleanup hold below. The iMac clock reading was
+`+0.104142 +/- 0.036235`; it was measured, not corrected, and sets no tolerance.
 Taz subsequently authorized the researched unresolved-data solutions. The first
 bounded follow-up is a read-only Webull snapshot source check plus the existing
 iMac clock measurement (`desk.webull_quote_check`;
@@ -11,8 +21,9 @@ it establishes no BBO/option/volume eligibility and changes no quote or risk pol
 Source observations and actual-host verification precede any replacement adapter.
 Taz's iMac strict suite at `c0c5e67` had 1 failure / 1,806 passes: tastytrade's
 translated HTTPError response was not explicitly closed. The bounded cleanup
-follow-up is recorded in the same quote-source checkpoint. Hold provider command
-block 2 until the updated strict suite passes on the iMac; do not suppress warnings.
+follow-up is recorded in the same quote-source checkpoint. That hold ended with
+Taz's successful `c3c661c` run above. Each later host update still requires its own
+strict suite before provider checks; do not suppress warnings.
 Step 09's earnings work stays separate and paused.
 Child 1 saved-volume audit is accepted. Child 2 tastytrade quote implementation was
 built by Astra at `78da588` (record `docs/checkpoints/G5a-cp3-child2-tastytrade-quotes.md`);
