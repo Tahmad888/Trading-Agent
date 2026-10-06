@@ -417,7 +417,7 @@ def test_measurements_stay_out_of_decision_modules():
     root = Path(__file__).resolve().parents[1] / "src" / "desk"
     importer = re.compile(r"^\s*(from desk(\.quote_measure| import quote_measure)|import desk\.quote_measure)", re.M)
     users = sorted(p.name for p in root.rglob("*.py") if importer.search(p.read_text()))
-    assert users == ["quote_check.py"]                     # the opt-in diagnostic command only
+    assert users == ["quote_check.py", "webull_quote_check.py"]  # opt-in diagnostics only; no decision consumer
 
 
 def test_every_documented_command_and_flag_parses_without_a_request(tmp_path, monkeypatch, capsys):

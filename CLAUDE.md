@@ -3,6 +3,13 @@
 ## Active repair work
 
 Latest scope (2026-10-05): G5 → G5a parent Checkpoint 3 → six child steps.
+Taz subsequently authorized the researched unresolved-data solutions. The first
+bounded follow-up is a read-only Webull snapshot source check plus the existing
+iMac clock measurement (`desk.webull_quote_check`;
+`docs/checkpoints/G5a-cp3-quote-source-check.md`). It supports children 4/5;
+it establishes no BBO/option/volume eligibility and changes no quote or risk policy.
+Source observations and actual-host verification precede any replacement adapter.
+Step 09's earnings work stays separate and paused.
 Child 1 saved-volume audit is accepted. Child 2 tastytrade quote implementation was
 built by Astra at `78da588` (record `docs/checkpoints/G5a-cp3-child2-tastytrade-quotes.md`);
 Taz had asked Claude to stop before Claude wrote or committed anything for it. Child 3

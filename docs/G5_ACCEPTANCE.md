@@ -414,3 +414,26 @@ all-day quote service with token renewal; operational Webull↔tastytrade mappin
 broker account inputs; a complete option ContractBook; any BRK.B OHLC repair; SPY close
 reconciliation (Summary, last RTH Trade and daily bars stay separate fields); Alpaca
 volume in anchored VWAP.
+
+## Authorized source/clock follow-up (2026-10-05)
+
+Taz authorized proceeding with the researched unresolved-data solutions. The first
+bounded change is the standalone `desk.webull_quote_check` diagnostic, documented
+in `checkpoints/G5a-cp3-quote-source-check.md`. It supports the existing children
+4/5, without adding a new parent checkpoint. It groups snapshots by independently
+resolved Webull security type, checks each row's identity, records snapshot fields
+and request/receipt brackets, refuses redirects and enforces a request budget.
+It can attach the existing read-only host-clock measurement.
+
+| Requirement | Current disposition |
+| --- | --- |
+| Webull snapshot source schema/identity with request/receipt timing | Diagnostic implemented; provider/host run pending |
+| Verified current bid/ask contract and consolidated coverage | NOT ESTABLISHED; `quote_time` is not substituted for either side time |
+| iMac clock synchronization/offset evidence | Existing diagnostic ready; current-host result pending |
+| Options BBO alternative | NOT TESTED by this stock-only probe |
+| Immediate consolidated RTH30 volume | Still unresolved; no source/rule replacement |
+| Step 09 upcoming earnings integration | Still paused; not a G5 source-probe result |
+
+No report from this command is trade eligibility or an overall G5 PASS. Off-hours
+observations establish no regular-session freshness. Existing accepted evidence
+and the separate independent review of the close-recovery repairs keep their scope.
