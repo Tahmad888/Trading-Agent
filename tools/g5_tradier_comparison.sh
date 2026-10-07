@@ -72,7 +72,7 @@ python -m desk.quote_check --environment production --symbols SPY QQQ NVDA \
   --option-selection "$OUT/selection.json" --seconds 180 --reconnects 1 --max-requests 12 \
   --measure ${HC[@]+"${HC[@]}"} --output "$OUT/tastytrade.json" > "$OUT/tastytrade.stdout" 2>&1 &
 P2=$!
-python -m desk.webull_quote_check --symbols SPY QQQ NVDA --rounds 2 --interval-seconds 60 \
+python -m desk.webull_quote_check --symbols SPY QQQ NVDA --rounds 2 --interval-seconds 30 \
   --max-requests 5 ${HC[@]+"${HC[@]}"} --output "$OUT/webull.json" > "$OUT/webull.stdout" 2>&1 &
 P3=$!
 if wait "$P1"; then tradier_exit=0; else tradier_exit=$?; fi

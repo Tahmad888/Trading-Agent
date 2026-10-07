@@ -60,6 +60,35 @@ elif name in {"tradier", "tastytrade"}:
     selected = json.loads(Path(args[args.index("--option-selection") + 1]).read_text())["option_pair"]
     sid = "different-selection" if os.environ.get("TEST_MISMATCH") == name else selected["selection_id"]
     data["option_pair_comparison"] = {"selection_id": sid, "status": "MATCHED_REPORTED_FIELDS"}
+elif module == "desk.webull_quote_check":
+    # Use the real CLI and parser with synthetic HTTP, so caller arguments cannot
+    # bypass the diagnostic's validation as they did in the original harness.
+    from datetime import datetime, timezone
+    from functools import partial
+    from urllib.parse import urlsplit, parse_qs
+    from desk import webull_quote_check as probe
+    from desk.webull import INSTRUMENTS_PATH
+    at = datetime(2026, 10, 7, 17, 0, tzinfo=timezone.utc)
+    ids = {"SPY": "913243251", "QQQ": "913243249", "NVDA": "913257561"}
+    def transport(request, timeout):
+        query = parse_qs(urlsplit(request.full_url).query)
+        names = query["symbols"][0].split(",")
+        if urlsplit(request.full_url).path == INSTRUMENTS_PATH:
+            rows = [dict(symbol=n, instrument_id=ids[n], name=n, category="US_STOCK",
+                         sub_category="ETF" if n in {"SPY", "QQQ"} else "COMMON_STOCK",
+                         exchange_code="NSQ", currency="USD") for n in names]
+        else:
+            rows = [dict(symbol=n, instrument_id=ids[n], bid="100.10", ask="100.20",
+                         bid_size="25", ask_size="40", price="100.15", volume="150000.25",
+                         quote_time=int(at.timestamp() * 1000),
+                         last_trade_time=int(at.timestamp() * 1000)) for n in names]
+        return json.dumps(rows).encode()
+    probe.BoundedData.from_env = classmethod(lambda cls, max_requests: cls(
+        "fixture-key", "fixture-secret", host="api.sandbox.webull.com", transport=transport,
+        min_interval=0, clock=lambda: at, max_requests=max_requests))
+    probe.check = partial(probe.check, clock=lambda: at, sleep=lambda _: None)
+    exit_code = probe.main(args[2:])
+    sys.exit(1 if os.environ.get("TEST_FAIL") == name else exit_code)
 output.write_text(json.dumps(data))
 sys.exit(1 if os.environ.get("TEST_FAIL") == name else 0)
 ''')
@@ -93,6 +122,33 @@ def test_shared_selection_precedes_captures_and_each_exit_is_preserved(host):
     for command in captures:
         assert command[command.index("--option-selection") + 1] == str(folder / "selection.json")
         assert "--option-underlying" not in command
+
+
+def test_webull_command_uses_real_validator_and_collects_both_rounds(host):
+    result, folder, summary = run(host)
+    report = json.loads((folder / "webull.json").read_text())
+    assert result.returncode == 0, report
+    assert summary["command_exit_codes"]["webull"] == 0
+    assert report["status"] == "OBSERVATIONS_ONLY"
+    assert report["requests"] == 5
+    assert len(report["rounds"]) == 2 and len(report["checks"]) == 6
+    assert {item["symbol"] for item in report["checks"]} == {"SPY", "QQQ", "NVDA"}
+    assert all(item["identity"] == "MATCH" for item in report["checks"])
+    assert report["nbbo_coverage"] == "NOT_ESTABLISHED"
+
+
+def test_unsupported_webull_interval_stops_before_requests_and_preserves_peers(host):
+    script = host[0]
+    script.write_text(script.read_text().replace(
+        "desk.webull_quote_check --symbols SPY QQQ NVDA --rounds 2 --interval-seconds 30",
+        "desk.webull_quote_check --symbols SPY QQQ NVDA --rounds 2 --interval-seconds 60"))
+    result, folder, summary = run(host)
+    report = json.loads((folder / "webull.json").read_text())
+    assert result.returncode == 1 and summary["command_exit_codes"]["webull"] == 1
+    assert report["stop_reason"] == "INVALID_PROBE_ARGUMENTS" and report["requests"] == 0
+    assert summary["report_statuses"]["tradier"] == "OBSERVATIONS_ONLY"
+    assert summary["report_statuses"]["tastytrade"] == "OBSERVATIONS_ONLY"
+    assert summary["G5"] == "OPEN"
 
 
 @pytest.mark.parametrize("failed", ["tradier", "tastytrade", "webull", "clock", "tastytrade-greeks-normalized"])

@@ -506,7 +506,7 @@ reviewed `5b43e5d` implementation; it is not independent approval of Astra's own
 | Latest bid/ask and trade freshness | Separate own-price/own-time checks at completion using the existing 60 s policy; future receipt/completion times fail. Advancement cannot grant freshness; final missing rows cannot reuse earlier observations. Actual-host RTH comparison pending. |
 | Malformed Greek/OCC dates | Structured field/chain-row refusal, preserving healthy peers. Offline regressions; provider observation not claimed. |
 | Same option pair across providers | One explicit selection file, fresh provider terms checked, no neighboring fallback; conflicts excluded and missing terms disclosed. Reported size agreement is not full deliverable/premium-unit attestation. Actual-host comparison pending. |
-| Comparison command integrity | Committed Bash script uses that shared file, bounded overlapping captures and recorded exits. Collection is `RECORDED_REVIEW_REQUIRED` or partial/failed, never an overall live-data PASS. |
+| Comparison command integrity | Committed Bash script uses that shared file, bounded overlapping captures and recorded exits. The iMac run at `92b7897` collected the shared pair but Webull exited 1; code inspection found an unsupported 60-second interval. Follow-up uses the supported 30-second interval and tests the actual Webull CLI against synthetic HTTP. Actual saved reports and a new Webull capture still require review. Collection is never an overall live-data PASS. |
 | Multiplier provenance | Existing one-source diagnostic illustration retained and disclosed; both supplied values must agree. No default 100 or risk/ticket integration. |
 
 Tradier option quote-size units, provisional Greek conventions, the inferred Greek

@@ -122,3 +122,38 @@ directory, including selection and summary. Tradier REST freshness does not test
 stream/reconnect, and this pipeline does not close immediate RTH30 volume or G5.
 Option quantity units and provisional/inferred Greek conventions retain their existing
 qualifications. Step 09 stays paused.
+
+### Comparison-command follow-up, 2026-10-07 — requirements before coding
+
+Taz's iMac suite passed 1,973 tests in 305.70 s at `92b7897`. Its subsequent
+comparison preserved both providers' shared-pair reports but Webull exited 1.
+**Checked in code:** the wrapper supplies a 60-second Webull interval, while the
+real diagnostic permits 0–30 seconds and refuses larger intervals before requests.
+The synthetic CLI orchestration tests did not exercise that real validator.
+
+Requirement: use a supported 30-second interval in the wrapper and the external
+Claude cloud prompt. Preserve the diagnostic limit, request cap, other providers'
+collection settings and all trading policies. Producer: comparison shell command;
+consumer: `desk.webull_quote_check.main` and its existing validation/normalization.
+Acceptance: execute the wrapper's actual Webull arguments through the real CLI
+against a synthetic HTTP transport, observing two rounds, six symbol observations
+and five requests. The original 60-second command must fail before requests;
+provider/clock/normalizer failures must still preserve other reports and exit codes.
+Run the focused and combined strict suites; no real provider calls for this repair.
+Rollback: revert this bounded follow-up. Preserve the original iMac reports; a new
+Webull capture has its own timestamps and cannot be labelled simultaneous with them.
+The failure reason in the actual saved Webull report still needs confirmation.
+G5 remains open; source freshness, field conventions and host acceptance require
+review of actual reports. This change grants no data eligibility or activation.
+
+Verification: the new real-CLI regression failed on the original wrapper (exit 1,
+Webull unavailable) before its interval changed. After repair,
+`PYTHONPATH=src python -m pytest -q -W error tests/test_comparison_command.py
+tests/test_webull_quote_check.py` passed **51 tests in 13.92 s**. The negative
+wrapper regression preserves the original unsupported interval, proves
+`INVALID_PROBE_ARGUMENTS` with zero requests, and retains both peers' reports.
+The full strict suite passed **1,975 tests in 184.35 s**, exit 0, local Python
+**3.14.6**. Bash syntax and `git diff --check` are clean. The synthetic real CLI
+uses fake HTTP and injected clock/sleep; no live provider or iMac check was run.
+Changed files: comparison wrapper, its orchestration regressions, this checkpoint
+and the G5 acceptance row. The external Claude cloud prompt also uses 30 seconds.
