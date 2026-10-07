@@ -1,0 +1,33 @@
+{
+  "purpose": "offline implementation verification; no independent sign-off or activation",
+  "base_commit": "af98bd8d3f336ad337d734cc38b9f0e8296e7ccd",
+  "date": "2026-10-07",
+  "python": "3.14.6",
+  "strict_suite": {
+    "command": "PYTHONPATH=src ../verify-python314/bin/python -m pytest -q -W error",
+    "passed": 2116,
+    "seconds": 199.96
+  },
+  "tradier_runtime": {
+    "passed": 76,
+    "guard_mutations_caught": 7
+  },
+  "greek_state": {
+    "cases": 58,
+    "guard_mutations_caught": 10
+  },
+  "diagnostic_safety": {
+    "cases": 7
+  },
+  "market_data_requests": 0,
+  "iMac_changes": false,
+  "activation": false,
+  "open": [
+    "independent audit",
+    "iMac exact-commit verification",
+    "bounded live Greek capture",
+    "reviewed mappings and operational integration acceptance",
+    "advertised option size units",
+    "remaining parent G5 acceptance"
+  ]
+}

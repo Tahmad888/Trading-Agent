@@ -4,6 +4,7 @@ Run on the credentialed host: python -m desk.provider_check
 Output contains only counts/field names and sanitized status, not response values.
 The unavailable Display Solution route is described, not retried on guessed hosts.
 """
+import argparse
 import json
 
 from desk.webull import WebullData, WebullError, WebullHTTPError, DIVIDENDS_PATH, FUND_SPLITS_PATH
@@ -31,7 +32,8 @@ def check(source: WebullData) -> dict:
     return report
 
 
-def main():
+def main(argv=None):
+    argparse.ArgumentParser(description=__doc__).parse_args(argv)
     try:
         source = WebullData.from_env()
     except WebullError:

@@ -38,6 +38,7 @@ import subprocess
 
 from desk.tastytrade_quotes import CORE, FIELDS, QuoteUnavailable, canonical
 from desk.tastytrade_transport import MEASURE_CHANNEL, Credentials, ReadClient, capture, utcnow
+from desk.tastytrade_greeks import GreekState, FIELDS as GREEK_STATE_FIELDS
 
 UTC = timezone.utc
 # Requested on the measurement channel only; the core FIELDS are unchanged.
@@ -160,6 +161,7 @@ class Recorder:
         self._volume: dict[str, dict] = {}
         self._brackets: dict[str, dict] = {}
         self._greeks: dict[str, dict] = {}
+        self.greek_state = GreekState(service)
 
     # ---- helpers
     def _count(self, group: str, *keys):
@@ -186,11 +188,13 @@ class Recorder:
 
     def failed(self, name: str):
         self.fault = f"RECORDER_FAULT:{name}"
+        self.greek_state.down("RECORDER_FAULT")
 
     # ---- session lifecycle (measurement channel)
     def begin(self, generation: str, at: datetime):
         self.fields.clear()  # a new connection needs a new accepted map
         self.state = "NOT_REQUESTED"
+        self.greek_state.begin(generation)
         self.generations.append({"generation": generation, "started_at": at.isoformat()})
 
     def requested(self):
@@ -202,6 +206,7 @@ class Recorder:
     def down(self, code: str, at: datetime):
         self.state = "UNAVAILABLE"
         self.fields.clear()
+        self.greek_state.down(code)
         self.channel_events.append({"at": at.isoformat(), "code": code, "generation": self.service.generation})
 
     def wants(self, kind: str, instrument_kind: str) -> bool:
@@ -272,6 +277,8 @@ class Recorder:
         if message.get("dataFormat") not in (None, "COMPACT"):
             for kind in self.kinds:
                 self.fields.pop(kind, None)
+                if kind == "Greeks":
+                    self.greek_state.down("GREEK_SCHEMA_UNSUPPORTED_FORMAT")
                 self.schema(self.channel, kind, None, "WITHDRAWN_UNSUPPORTED_FORMAT", at)
             return
         fields = message.get("eventFields")
@@ -280,6 +287,8 @@ class Recorder:
         if not isinstance(fields, dict):
             for kind in self.kinds:
                 self.fields.pop(kind, None)
+                if kind == "Greeks":
+                    self.greek_state.down("GREEK_SCHEMA_INVALID")
                 self.schema(self.channel, kind, None, "WITHDRAWN_INVALID_MAP", at)
             return
         for kind in self.kinds:
@@ -289,12 +298,19 @@ class Recorder:
             if (not isinstance(names, list) or not all(isinstance(n, str) for n in names)
                     or len(set(names)) != len(names) or not set(MEASURE_REQUIRED[kind]) <= set(names)):
                 self.fields.pop(kind, None)
+                if kind == "Greeks":
+                    self.greek_state.down("GREEK_SCHEMA_INVALID")
                 self.schema(self.channel, kind, None, "WITHDRAWN_INVALID_MAP", at)
                 continue
             names = tuple(names)
             previous = self.fields.get(kind)
             self.fields[kind] = names
             self.schema(self.channel, kind, names, "ACCEPTED" if previous in (None, names) else "CHANGED", at)
+            if kind == "Greeks":
+                if set(GREEK_STATE_FIELDS) <= set(names):
+                    self.greek_state.schema(changed=previous != names)
+                else:
+                    self.greek_state.down("GREEK_SCHEMA_MISSING_INDEX_FIELDS")
 
     def data(self, message: dict, received: datetime):
         data = message.get("data")
@@ -309,6 +325,8 @@ class Recorder:
                 continue
             if len(values) % len(names):
                 self.fields.pop(kind, None)
+                if kind == "Greeks":
+                    self.greek_state.down("GREEK_SCHEMA_DATA_INVALID")
                 self.schema(self.channel, kind, None, "WITHDRAWN_DATA_INVALID", received)
                 raise QuoteUnavailable("MEASURE_DATA_INVALID")
             for j in range(0, len(values), len(names)):
@@ -316,6 +334,9 @@ class Recorder:
                 self._sample(f"{self.channel}:{kind}", row)
                 if row.get("eventType") != kind:
                     self._count("measure_rejected", kind, "EVENT_TYPE_MISMATCH")
+                    if kind == "Greeks":
+                        symbol = self._symbol(row.get("eventSymbol"))
+                        self.greek_state.reject(symbol, "GREEK_EVENT_TYPE_MISMATCH")
                     continue
                 symbol = self._symbol(row.get("eventSymbol"))
                 if symbol is None:
@@ -391,6 +412,7 @@ class Recorder:
 
     # ---- Greeks
     def _greeks_row(self, symbol: str, row: dict, received: datetime):
+        self.greek_state.feed(symbol, row, received)
         decided = self.clock()
         source = time_state(row, "time", received)
         record = {"type": "GREEKS", "label": "RAW_OBSERVATION", "symbol": symbol,
@@ -418,6 +440,10 @@ class Recorder:
         summary["last_raw_observation"] = record
 
     # ---- report
+    def greek_report(self, at: datetime) -> dict:
+        """Analysis state at this exact clock; raw observations remain separate."""
+        return self.greek_state.report(at)
+
     def report(self) -> dict:
         volume = {}
         for symbol, counts in self.counts.get("volume_transitions", {}).items():
@@ -437,6 +463,7 @@ class Recorder:
                            "by_symbol": volume},
                 "greeks": {"note": GREEKS_NOTE, "current_state": "NOT_REDUCED_RAW_OBSERVATIONS_ONLY",
                            "by_symbol": self._greeks},
+                "greek_state": self.greek_report(self.clock()),
                 "bbo_note": ("Side times are the provider's last bid/ask change times; receipt and decision "
                              "times are local and never substituted. Eligibility is the unchanged getter's.")}
 

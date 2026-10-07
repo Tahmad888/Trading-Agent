@@ -419,6 +419,8 @@ def diagnostic(client: TradierClient, equities, *, option_underlying=None, round
     except QuoteUnavailable as exc:
         report.update(status="UNAVAILABLE", reason=str(exc), stopped_on_error=True,
                       current="NONE_AFTER_FAILURE")
+        if str(exc) == "REST_REQUEST_BUDGET":
+            report["failure_category"] = "LOCAL_REQUEST_BUDGET"
     report["verdicts"] = verdicts(report)
     report["option_pair_comparison"] = pair_comparison(report)
     if report["status"] == "OBSERVATIONS_ONLY" and report["option_pair_comparison"]["status"] in {"FAIL", "PARTIAL"}:

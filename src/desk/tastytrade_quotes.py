@@ -283,6 +283,7 @@ class QuoteService:
         self._lock = RLock()
         self.identities: dict[str, Instrument] = {}
         self._streamers: dict[str, str] = {}
+        self._identity_epochs: dict[str, int] = {}
         self._quotes: dict[str, Quote] = {}
         self._trades: dict[str, Trade] = {}
         self._profiles: dict[str, Profile] = {}
@@ -323,6 +324,7 @@ class QuoteService:
 
     def invalidate(self, symbol: str, reason="IDENTITY_REFRESH_FAILED"):
         with self._lock:
+            self._identity_epochs[symbol] = self._identity_epochs.get(symbol, 0) + 1
             self._failures[symbol, "identity"] = reason
             self._quotes.pop(symbol, None)
             self._trades.pop(symbol, None)
@@ -401,6 +403,15 @@ class QuoteService:
         """The currently registered, healthy identity (for mapping verification)."""
         with self._lock:
             return self._health(symbol, now)
+
+    def identity_state(self, symbol: str, now: datetime) -> tuple[Instrument, int]:
+        """Atomic identity plus invalidation epoch for separate analysis caches.
+
+        A successful same-identity refresh cannot erase an intervening failure.
+        This counter changes no quote/trade acceptance policy.
+        """
+        with self._lock:
+            return self._health(symbol, now), self._identity_epochs.get(symbol, 0)
 
     def feed(self, kind: str, row: dict, received: datetime):
         """Rejected/out-of-order events never freshen an earlier observation."""

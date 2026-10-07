@@ -2,6 +2,14 @@
 
 ## Active repair work
 
+Latest authorized batch (2026-10-07): diagnostic safety, developer verification of
+the af98bd8 Tradier integration, and indexed tastytrade Greek analysis. Read
+`docs/checkpoints/G5a-options-state-2026-10-07.md`, `docs/TASTYTRADE_GREEKS.md` and
+`docs/TRADIER_SIZE_CLARIFICATION.md`. The reducer owns a separate measurement-channel
+state; current calculation is not fresh execution eligibility. Tradier quote-size
+clarification, independent audit, actual-host/runtime acceptance and G5 remain open.
+No Greek maximum age, portfolio quantity rule, stop valuation or activation is added.
+
 Latest authorized implementation (2026-10-07): **Step 2, Tradier quotes in signal
 and ticket checks**, inside G5 -> G5a parent CP3. Read
 `docs/checkpoints/G5a-tradier-ticket-integration.md` and `docs/TRADIER_TICKET_QUOTES.md`.

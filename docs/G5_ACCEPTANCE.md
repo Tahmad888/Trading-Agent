@@ -531,3 +531,22 @@ Taz authorized bounded Step 2. Record:
 | Actual operational wiring / mappings | **Pending.** No synthetic account, market, halt/OI or contract adapter is supplied for production. Explicit opt-in composition only. |
 | New iMac commit and read-only consumer/source acceptance | **Pending.** Earlier host/source evidence keeps its exact scope. |
 | Immediate consolidated opening-window volume / other G5 rows | Unchanged, still open. This change is neither a G5 PASS nor trading activation. |
+
+### Diagnostic safety and option Greek state (2026-10-07)
+
+Same G5 -> G5a parent CP3; authorized batch recorded in
+`checkpoints/G5a-options-state-2026-10-07.md`.
+
+| Requirement | Implementation / remaining acceptance |
+|---|---|
+| Safe diagnostic help / bad arguments | provider_check parses arguments before client/credential access; zero-request regressions. |
+| Local ceiling vs transport failure | Named RequestBudgetExceeded preserves REST_REQUEST_BUDGET through collectors/transport; reports local category. Arbitrary external exceptions are still sanitized, never classified by potentially secret text. Earlier rounds remain history after a refused final fetch. |
+| Tradier af98bd8 developer verification | 76 targeted runtime cases pass; seven deliberate mutations caught. Independent review, current-commit iMac checks, real crosswalks and operational factory remain pending. |
+| tastytrade Greek updates / snapshots / removals | Separate indexed analysis state, per-symbol transactions, own timestamps/ages, per-field supported units, generation/schema/identity checks. Raw observations remain distinct. No approved Greek freshness threshold or option stop valuation is introduced. |
+| Connection ends and failed final attempts | Each attempt records an explicit historical terminal Greek view; closed captures are unavailable as live state, and a socket-close fault cannot certify the earlier value. Measurement reporting cannot prevent core quote disposal. |
+| Advertised option quote sizes | Still unresolved. Separate REST/stream provider questions in TRADIER_SIZE_CLARIFICATION.md; no message sent or capacity arithmetic enabled. Chosen contracts/multipliers/loss math remain available. |
+| Greek actual-host/provider acceptance | Pending bounded capture on the verified new iMac commit and independent review. No actual provider call or order occurred during implementation. |
+
+The analytics importer allowlist adds exactly the analysis-only tastytrade_greeks
+module; scanner, risk, tickets and runtime quote fields remain excluded. This batch
+does not close parent CP3, G5 or Step 09.

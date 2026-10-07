@@ -342,6 +342,8 @@ class Session:
             # Invalidate before WebSocket teardown can wait for close, but never touch a
             # newer session's state.
             if self.service.generation == self.generation and str(exc) != "SESSION_NOT_CONNECTED":
+                if self.measure is not None:
+                    self.measure.down(str(exc), aware(received))
                 self.service.disconnect(str(exc))  # keep the original reason when already down
             raise
 
@@ -581,7 +583,7 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
 
     while monotonic() < end and attempts <= reconnects:
         attempts += 1
-        fault, before, generation, view = None, sum(service.events.values()), None, None
+        fault, before, generation, view, greek_terminal = None, sum(service.events.values()), None, None, None
         try:
             token = client.stream_token()
             levels.append(token.entitlement)
@@ -643,7 +645,22 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
         except Exception:
             fault = "DXLINK_TRANSPORT_FAILURE"
         finally:
-            service.disconnect(fault or reason or "DISCONNECTED")
+            try:
+                if measure is not None:
+                    try:
+                        if fault is not None:
+                            measure.down(fault, clock())  # a close fault cannot certify a previous value
+                        if hasattr(measure, "greek_report"):
+                            greek_terminal = measure.greek_report(clock())
+                    except Exception:
+                        greek_terminal = {"error": "GREEK_TERMINAL_VIEW_UNAVAILABLE", "checks": {}}
+                    try:
+                        measure.down(fault or reason or "DISCONNECTED", clock())
+                    except Exception:
+                        # A measurement report never prevents core quote disposal.
+                        greek_terminal = {"error": "GREEK_TERMINAL_VIEW_UNAVAILABLE", "checks": {}}
+            finally:
+                service.disconnect(fault or reason or "DISCONNECTED")
         current = generation is not None and generation == service.generation
         if fault is not None:
             view = None  # e.g. the socket failed to close after the deadline: report the fault state
@@ -655,6 +672,10 @@ def capture(client: ReadClient, service: QuoteService, *, seconds=30, reconnects
         attempt_log.append(dict(attempt=attempts, generation=generation, outcome=fault or reason,
                                 deliberate_end=fault is None, fresh_events=fresh, components=components,
                                 usable_at_end=usable, health=end_health(usable), terminal_view=view))
+        if greek_terminal is not None:
+            attempt_log[-1]["greek_terminal_state"] = dict(
+                eligible=False, historical=True, note="As of attempt end; disconnected captures are not live state",
+                view=greek_terminal)
         if pending is not None:
             # Receipt and current usability are separate facts. Recovered only if every
             # subscribed symbol's Quote and Trade were usable at the attempt's end under

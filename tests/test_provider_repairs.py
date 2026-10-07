@@ -79,7 +79,7 @@ def test_probe_empty_or_populated_results_never_claim_complete_coverage():
 def test_probe_missing_keys_is_actionable_and_does_not_print_credentials(monkeypatch, capsys):
     monkeypatch.delenv("WEBULL_APP_KEY", raising=False)
     monkeypatch.delenv("WEBULL_APP_SECRET", raising=False)
-    assert provider_check.main() == 1
+    assert provider_check.main([]) == 1
     assert "NOT_CONFIGURED" in capsys.readouterr().out
 
 

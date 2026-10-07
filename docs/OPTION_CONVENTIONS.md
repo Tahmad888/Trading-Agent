@@ -31,7 +31,7 @@ endpoint to another. Nothing here feeds risk, tickets, setups or approval yet.
 | tastytrade · DXLink `Greeks` | option | `vega`, `rho` | $ per share per percentage point | by percentage volatility / interest rate | — | dxFeed | documented |
 | tastytrade · DXLink `Greeks` | option | `volatility` | decimal fraction | Black-Scholes implied volatility | — | live 10-07 values 0.10–0.14 | observed |
 | tastytrade · DXLink `Greeks` | option | `time` | epoch ms | event time | UTC epoch | dxFeed | documented |
-| tastytrade · DXLink `Greeks` | option | `index`, `eventFlags` | indexed-event markers | snapshot/transaction protocol | — | dxFeed IndexedEvent | documented; **no reducer** (raw observations only) |
+| tastytrade · DXLink `Greeks` | option | `index`, `eventFlags` | indexed-event markers | snapshot/transaction protocol | — | dxFeed IndexedEvent | documented; separate analysis reducer in `TASTYTRADE_GREEKS.md`; raw observations remain separate |
 | tastytrade · DXLink `Quote` | option | `bidSize`, `askSize` | not established | quoted size; NaN overnight | — | live 10-07 | unresolved |
 | Alpaca · options snapshot, free plan | option | all | — | `indicative` feed: "trades are delayed and quotes are modified" | RFC-3339 | [Alpaca](https://docs.alpaca.markets/us/reference/optionsnapshots) | **not an OPRA reference**; stock SIP volume acceptance unaffected |
 

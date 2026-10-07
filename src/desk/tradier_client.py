@@ -8,6 +8,15 @@ ROUTES = {"quotes": "/v1/markets/quotes", "expirations": "/v1/markets/options/ex
           "chains": "/v1/markets/options/chains"}
 MAX_REQUESTS = 12   # diagnostic workload bound, not a trading limit
 
+
+class RequestBudgetExceeded(QuoteUnavailable):
+    """Local collectors must raise this typed failure before sending a request.
+
+    Unknown exceptions remain sanitized transport failures, never text-classified.
+    """
+    def __init__(self):
+        super().__init__("REST_REQUEST_BUDGET")
+
 class TradierClient:
     """GET-only market-data client on the audited transport (TLS, no redirects, safe errors)."""
 
@@ -26,7 +35,7 @@ class TradierClient:
         if route not in ROUTES:
             raise QuoteUnavailable("ROUTE_NOT_ALLOWED")
         if self.requests >= self.max_requests:
-            raise QuoteUnavailable("REST_REQUEST_BUDGET")
+            raise RequestBudgetExceeded()
         self.requests += 1
         entry = {"route": ROUTES[route], "sent_at": aware(self.clock()).isoformat()}
         self.log.append(entry)

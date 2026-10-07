@@ -224,7 +224,8 @@ GREEKS = {
     },
     ("tastytrade", "dxlink"): {
         "delta": GreekField("dPrice/dUnderlying", "per share", "delta", "DOCUMENTED", "DXFEED_GREEKS"),
-        "gamma": GreekField("d2Price/dUnderlying2", "per share", "gamma", "DOCUMENTED", "DXFEED_GREEKS"),
+        "gamma": GreekField("d2Price/dUnderlying2", "per share per $1 underlying move", "gamma", "DOCUMENTED",
+                            "DXFEED_GREEKS"),
         "theta": GreekField("dPrice/d(days to expiration)", "$ per share per day", "theta", "DOCUMENTED",
                             "DXFEED_GREEKS"),
         "vega": GreekField("dPrice/d(percentage volatility)", "$ per share per IV point", "vega", "DOCUMENTED",

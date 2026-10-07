@@ -337,8 +337,10 @@ real `BRK/B` lookup is still to be done.
   day volume includes extended hours; no RTH 09:30–10:00 total is derived.
 - **Greeks.** Raw observations: provider time, receipt and decision times, receipt age
   and decision age from the Greeks' own time (negative kept), decoded event flags,
-  index and sequence. No snapshot/transaction reduction, so no "current" value; no age
-  cutoff. `Greeks.price` is market price; TheoPrice is not requested. The saved
+  index and sequence. These raw rows stay observations. The 2026-10-07 follow-up
+  adds a separate indexed analysis reducer and explicitly historical terminal views:
+  `docs/TASTYTRADE_GREEKS.md`. No Greek age cutoff exists. `Greeks.price` is the
+  calculation's market-price input; TheoPrice is not requested. The saved
   2026-10-05 Greeks files have no receipt times, so their ages cannot be recomputed.
   Units and per-share normalization: `docs/OPTION_CONVENTIONS.md`; offline
   `python -m desk.option_conventions tastytrade-greeks` labels them observations only.

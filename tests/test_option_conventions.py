@@ -239,7 +239,8 @@ def test_decimal_values_keep_their_text_precision():
 
 
 def test_conventions_stay_out_of_decision_modules():
-    # Normalized analytics are not wired into tickets, risk or setups in this repair.
+    # Analysis-only Greek state may normalize fields. Tickets, risk and setups
+    # still cannot import these analytics or the diagnostic.
     import re
     from pathlib import Path
     root = Path(__file__).resolve().parents[1] / "src" / "desk"
@@ -247,4 +248,4 @@ def test_conventions_stay_out_of_decision_modules():
                           r"(option_conventions|tradier_option_check))|import desk\.(option_conventions|tradier_option_check))",
                           re.M)
     users = sorted(p.name for p in root.rglob("*.py") if importer.search(p.read_text()))
-    assert users == ["tradier_option_check.py"]
+    assert users == ["tastytrade_greeks.py", "tradier_option_check.py"]
