@@ -2,10 +2,10 @@
 
 2026-10-07, from Claude, for Astra's audit. Taz relays it.
 
-**What is needed:**
-1. Astra audits commit `__FINAL_SHA__`.
-2. Only after Astra accepts it, Taz runs Part 1 on the iMac at any time.
-3. Taz runs Part 2 during a regular session.
+**Original handoff, now audited:** Astra reviewed `5b43e5d` and found F1/F2/F3
+plus D1/D2 documentation corrections. This document retains the original work record;
+its provider scripts are superseded below. Read `G5a-cp3-tradier-diagnostic-audit-repairs.md`
+for the implementation and verification of those repairs before host/live acceptance.
 
 Nothing here activates trading or resumes Step 09.
 
@@ -15,13 +15,15 @@ Nothing here activates trading or resumes Step 09.
 |---|---|
 | Branch | `codex/repair-step-01-baseline` |
 | Base | `d539d97dcc1cae6c62568bef5dc650b6c175d227` (local, local branch and remote agreed; tree clean) |
-| Final | `__FINAL_SHA__` (one commit, fast-forward push; no merge, rebase or force) |
-| Remote check | `git ls-remote origin codex/repair-step-01-baseline` returned `__FINAL_SHA__` after the push |
+| Final | `5b43e5de92ec183074a28ed0a1b10fa846945cc0` (one commit, fast-forward push; no merge, rebase or force) |
+| Remote check | `git ls-remote origin codex/repair-step-01-baseline` returned `5b43e5de92ec183074a28ed0a1b10fa846945cc0` after the push |
 | Record (written before code) | `docs/checkpoints/G5a-cp3-tradier-option-conventions.md` |
 | Field table | `docs/OPTION_CONVENTIONS.md` |
 
-The repository copy of this handoff is `docs/checkpoints/G5a-cp3-tradier-option-conventions-handoff.md`. It is in the same commit, so it can't name its own SHA and keeps the `__FINAL_SHA__` placeholder. The project-files copy has the SHA filled in:
-`/mnt/project-files/research/ai-trading/g5/G5a-cp3-tradier-option-conventions-handoff.md`
+This is the repository record of Claude's original handoff. Astra filled its base
+implementation SHA after checking the dedicated remote branch; later repair commits
+are separate. The project-files copy was originally saved at
+`/mnt/project-files/research/ai-trading/g5/G5a-cp3-tradier-option-conventions-handoff.md`.
 
 ## Changed files
 
@@ -38,7 +40,7 @@ The repository copy of this handoff is `docs/checkpoints/G5a-cp3-tradier-option-
 
 ## Defect found while mapping the pipeline (please audit first)
 
-At `d539d97`, `quote_measure.number_state` accepted only `int`, `float` and `str`. The DXLink transport's `json_read` decodes every JSON number as `Decimal` (`json.loads(raw, parse_float=Decimal)`). So every live Greek, BBO price and size, and `dayVolume` was recorded as `INVALID`. The fixture tests fed strings, so the suite never saw it.
+At `d539d97`, `quote_measure.number_state` accepted only `int`, `float` and `str`. Correction after Astra's audit: `json.loads(raw, parse_float=Decimal)` decodes JSON floating numbers as Decimal; integers and strings survive. Floating Greek/BBO/dayVolume values were affected, not every numeric observation. Retained raw samples or wire frames may support a bounded offline recovery with original times and flags. The old string fixtures missed the defect.
 
 The fix adds `Decimal` to the accepted value types. Booleans are still refused, NaN is still recorded as NAN, and Infinity as INFINITE.
 
@@ -50,7 +52,7 @@ Evidence comes from two read-only tastytrade `quote_check --measure` captures in
 | After the fix, `d539d97` plus the working-tree fix (the report's `commit` field shows the base) | VALUE 114, ZERO 32, NAN 4, INVALID 0 |
 
 What this affects:
-- Any measurement captured at or before `d539d97` has no numeric values and must be re-captured. That includes the iMac Greek captures behind "tastytrade best for Greeks".
+- Inspect each retained measurement before recapturing. Integer/string values survive; at most three raw samples per channel/type, or separately retained wire frames, may support limited offline recovery. INVALID records without values cannot be reconstructed. Saved observations do not establish current Greeks or prove one provider is best.
 - The planned opening-window `quote_measure volume` capture would have recorded day volume as INVALID too.
 - `webull_quote_check` also calls `number_state`. Its values arrive as strings or floats, so it is unchanged.
 - No decision module reads `number_state`; the isolation test checks this.
@@ -64,7 +66,7 @@ What this affects:
 | R3 Greek age from the Greek time; negative age kept; no threshold | `age_view` gives `FUTURE_AT_CHECK` and `threshold: NONE_DEFINED` | `test_future_greek_time_is_kept_as_an_anomaly_not_clamped`, `test_quote_and_greek_times_are_distinct_fields` | — | The hourly cadence is informational only |
 | R4 ET display via `ZoneInfo` | `ET = ZoneInfo("America/New_York")` | Acceptance example 7 (EDT and EST) | — | — |
 | R5/R6 Raw kept; normalized per field; exposure = raw × verified multiplier × signed contracts, once | `normalize_greeks`, `exposure`, `position_view`, `EXPOSURE_UNITS` | `test_delta_share_equivalents_follow_contract_sign`, `test_put_delta_is_not_converted_a_second_time`, `test_theta_dollars_per_day_for_the_documented_daily_convention`, `test_zero_contracts_or_bool_contracts_are_refused` | tastytrade: documented (dxFeed). Tradier: see the table | Not wired into tickets or risk |
-| R7 No universal 100 | `multiplier_from` returns `VERIFIED_FROM_METADATA`, `MISSING`, `INVALID` or `CONFLICT`. The chain and quote must agree, and a nonstandard root gives no multiplier | `test_non_100_multiplier_follows_metadata`, `test_unknown_or_conflicting_terms_are_never_replaced_by_100`, `test_conflicting_or_missing_contract_size_gives_no_exposure`, `test_nonstandard_root_is_not_given_a_verified_multiplier` | Documented (OIC) | Deliverable terms are not on this route |
+| R7 No universal 100 | `multiplier_from` returns `VERIFIED_FROM_METADATA`, `MISSING`, `INVALID` or `CONFLICT`. One positive metadata source is accepted when the other is absent; if both are supplied they must agree. Both missing/invalid values or a nonstandard root give no multiplier; raw source provenance is disclosed | `test_non_100_multiplier_follows_metadata`, `test_unknown_or_conflicting_terms_are_never_replaced_by_100`, `test_conflicting_or_missing_contract_size_gives_no_exposure`, `test_nonstandard_root_is_not_given_a_verified_multiplier` | Documented (OIC) | Deliverable terms are not on this route |
 | R8 Option sizes stay raw, `UNVERIFIED` / `CONTRACTS_PROVISIONAL`, with no arithmetic | `size_view`; arithmetic is always `EXCLUDED` | `test_option_size_stays_raw_and_provisional` | **Unresolved** | Support question 1 |
 | R9 Stock sizes are a sample observation in shares; `lot_size` is never applied | `SIZES[("tradier","rest","stock")]` gives `OBSERVED_SAMPLE` | `test_stock_size_is_a_sample_observation_and_unknown_sources_are_unresolved` | Observed (8 sides) | Sample only |
 | R10 Tradier rho and phi raw only; put delta never transformed | `GREEKS` entries `RAW_ONLY`; `pair_check` only reports | `test_tradier_rho_phi_stay_raw_and_theta_vega_gamma_are_provisional`, `test_pair_check_reports_shared_fields_without_transforming_the_put` | Observed, plus documented (ORATS) | — |
@@ -133,7 +135,7 @@ Provider calls made from the cloud this round:
 - **Market closed:** it was about 04:00 ET on 2026-10-07 during this work.
 - **No credential:** there is no Tradier credential in the cloud environment.
 
-Step 3 needs Part 2 below during a regular session.
+Step 3 needs the committed comparison script below during a regular session, after the repaired commit's host verification.
 
 ## The three gaps
 
@@ -143,98 +145,40 @@ Step 3 needs Part 2 below during a regular session.
 | Greek scaling | Done: per-field status, raw kept, exposure formula, no default 100 | Delta observed; gamma, theta and vega inferred (ORATS upstream); rho and phi raw; theta day type unresolved | Not run |
 | Greek timestamp zone | Done: Tradier-specific UTC parser; global parsers unchanged | Inferred, from a relayed 2024 support answer and the 2025 example | Not run (Part 2 records `updated_at` beside the side times during RTH) |
 
-## iMac scripts (Taz runs these only after Astra accepts `__FINAL_SHA__`)
+## iMac comparison: superseded commands
 
-Part 1 can run at any time:
-
-```bash
-#!/bin/bash
-# Run ONLY after Astra's audit accepts commit __FINAL_SHA__.
-# Part 1 (any time): verify the reviewed commit and run the strict suite.
-# Part 2 (only during a US regular session, 09:30-16:00 ET on a trading day):
-#   the bounded read-only comparison. Run it as a separate command.
-set -euo pipefail
-EXPECTED="__FINAL_SHA__"
-BRANCH="codex/repair-step-01-baseline"
-cd "$HOME/Trading-Agent"
-[ "$(git rev-parse --abbrev-ref HEAD)" = "$BRANCH" ] || { echo "STOP: not on $BRANCH"; exit 1; }
-[ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "STOP: tracked changes present"; exit 1; }
-git fetch origin "$BRANCH"
-[ "$(git rev-parse "origin/$BRANCH")" = "$EXPECTED" ] || { echo "STOP: remote head is not the reviewed commit"; exit 1; }
-git merge --ff-only "origin/$BRANCH"
-[ "$(git rev-parse HEAD)" = "$EXPECTED" ] || { echo "STOP: local head is not the reviewed commit"; exit 1; }
-source .venv/bin/activate
-python -m pip install -e '.[dev,quotes]'
-python --version
-python -m pytest -q -W error
-git diff --check
-echo "PART 1 DONE at $(git rev-parse HEAD)"
-```
-
-Part 2 runs during a regular session, as a separate command. It takes about 3.5 minutes and makes no orders or account calls:
+The earlier inline scripts independently selected a strike at each provider and hid
+process failures with `wait ... || true`. They are superseded by the bounded repair
+record `G5a-cp3-tradier-diagnostic-audit-repairs.md` and committed script:
 
 ```bash
-#!/bin/bash
-# Part 2: bounded read-only regular-session comparison. Run separately, after Part 1,
-# during 09:30-16:00 ET on a trading day. About 3.5 minutes. No orders, no account calls.
-set -euo pipefail
-EXPECTED="__FINAL_SHA__"
-cd "$HOME/Trading-Agent"
-[ "$(git rev-parse HEAD)" = "$EXPECTED" ] || { echo "STOP: not the reviewed commit"; exit 1; }
-[ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "STOP: tracked changes present"; exit 1; }
-source .venv/bin/activate
-python - <<'PY'
-from datetime import datetime, timedelta, timezone
-from desk.calendar import clock, session
-from desk.tastytrade_quotes import session_label
-now = datetime.now(timezone.utc)
-label = session_label(now)
-if label != "RTH":
-    raise SystemExit(f"STOP: market session is {label}, not a regular session")
-if session(clock(now).date())[1] - clock(now) < timedelta(minutes=10):
-    raise SystemExit("STOP: less than 10 minutes left in the session; run on another day")
-PY
-source "$HOME/.config/trading-desk/env"   # tastytrade and Webull names; values never printed
-OUT="$(mktemp -d "$HOME/Desktop/g5-step3-comparison-XXXXXX")"
-if [ -z "${TRADIER_ACCESS_TOKEN:-}" ]; then
-  read -rs -p "Tradier production token (hidden): " TRADIER_ACCESS_TOKEN; echo
-fi
-python -m desk.quote_measure clock --output "$OUT/clock.json" || true
-HC=(); [ -f "$OUT/clock.json" ] && HC=(--host-clock "$OUT/clock.json")
-# The three captures start together so their observations overlap in time.
-TRADIER_ACCESS_TOKEN="$TRADIER_ACCESS_TOKEN" python -m desk.tradier_option_check --environment production \
-  --symbols SPY QQQ NVDA --option-underlying SPY --rounds 4 --interval-seconds 60 --max-requests 12 \
-  --output "$OUT/tradier.json" > "$OUT/tradier.stdout" 2>&1 &
-P1=$!
-python -m desk.quote_check --environment production --symbols SPY QQQ NVDA --option-underlying SPY \
-  --seconds 180 --reconnects 1 --max-requests 12 --measure ${HC[@]+"${HC[@]}"} \
-  --output "$OUT/tastytrade.json" > "$OUT/tastytrade.stdout" 2>&1 &
-P2=$!
-python -m desk.webull_quote_check --symbols SPY QQQ NVDA --rounds 2 --interval-seconds 60 --max-requests 5 \
-  ${HC[@]+"${HC[@]}"} --output "$OUT/webull.json" > "$OUT/webull.stdout" 2>&1 &
-P3=$!
-unset TRADIER_ACCESS_TOKEN
-wait $P1 || true; wait $P2 || true; wait $P3 || true
-python -m desk.option_conventions tastytrade-greeks --capture "$OUT/tastytrade.json" \
-  --output "$OUT/tastytrade-greeks-normalized.json" || true
-echo "PART 2 DONE. Files in: $OUT"
-ls -l "$OUT"
+bash tools/g5_tradier_comparison.sh FULL_REVIEWED_COMMIT_SHA
 ```
 
-What to send back:
-- the Part 1 test summary line
-- the folder Part 2 printed: `clock.json`, `tradier.json`, `tastytrade.json`, `webull.json`, `tastytrade-greeks-normalized.json` and the `.stdout` files
+Run from the iMac repository only after updating to that exact reviewed SHA and passing
+its strict suite. Replace `FULL_REVIEWED_COMMIT_SHA` with the full accepted SHA. The
+script requires a clean dedicated branch, a regular session with ten minutes left for
+this diagnostic, and the existing credentials file. A missing Tradier token is prompted
+with hidden input and not saved. No order/account route is used.
 
-Each report is checked for credentials before it is written.
+It selects one call/put pair, then passes the same report to both captures using
+`--option-selection`. It records clock, Tradier, tastytrade, Webull and normalization
+exit codes, preserves outputs in a new Desktop directory and reports missing/contradictory
+pair evidence. Collection requires review; it is not G5 approval. It sets no clock
+tolerance, Greek freshness threshold, size-unit conversion or new trading cutoff.
+
+Send the strict-suite result and the complete report directory (including selection.json,
+summary.json, clock.json, provider JSON, normalized Greeks and stdout files). Do not
+repeat all provider calls to recover a missing file without checking saved evidence first.
 
 ## Rollback
 
-`git revert __FINAL_SHA__` on `codex/repair-step-01-baseline`, then a fast-forward push. Reverting brings back the all-INVALID recorder defect, so prefer a targeted revert of the new modules if only they are rejected.
+`git revert 5b43e5d` restores the original base implementation, including its Decimal recorder defect for floating values. Later repair rollback is separate; see `G5a-cp3-tradier-diagnostic-audit-repairs.md`.
 
 ## Remaining G5 requirements (unchanged in status by this commit)
 
-- **Child 4:** an iMac strict run at the reviewed commit (now `__FINAL_SHA__` in place of `d539d97`). The iMac clock offset of +104 ms is still unresolved.
-- **Child 5:** a regular-session quotes, freshness and recovery comparison (Part 2 covers REST); the Tradier stream and a controlled reconnect; live tastytrade re-captures after the recorder fix; the opening-window consolidated volume.
+- **Child 4:** an iMac strict run at the reviewed commit (at the reviewed repair SHA). The iMac clock offset of +104 ms is still unresolved.
+- **Child 5:** a regular-session quotes, freshness and recovery comparison (Part 2 covers REST); the Tradier stream and a controlled reconnect; live tastytrade evidence after the recorder fix, first recovering usable saved observations; the opening-window consolidated volume.
 - **Child 6:** the actual Friday 16:40 build, and the overnight revision and dividend workflow on the host.
 - Wiring the normalized option analytics into tickets and risk, which needs an open decision first.
 - A DXLink Greek reducer, if tastytrade Greeks are to be "current".

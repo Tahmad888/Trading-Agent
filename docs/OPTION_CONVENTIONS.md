@@ -40,8 +40,11 @@ endpoint to another. Nothing here feeds risk, tickets, setups or approval yet.
 `exposure = raw per-share value × verified multiplier × signed contracts`, once.
 Delta → share equivalents; gamma → share equivalents per $1; theta → $ per day;
 vega → $ per IV point; rho → $ per rate point. The multiplier comes only from contract
-metadata (Tradier `contract_size`, agreeing across chain and quote, standard root); a
-missing, non-integer, nonstandard-root or conflicting value gives no exposure. Option
+metadata (Tradier `contract_size`, standard root). The diagnostic accepts one positive
+integer source when the other is absent; if both exist they must agree. Both missing,
+an invalid supplied value, a nonstandard root or a conflict gives no exposure. Each
+report discloses the supplied `quote.contract_size` and `chain_or_selection.contract_size`.
+A single-source illustration is not two-source contract confirmation. Option
 sizes and IV are never multiplied. Tradier gamma/theta/vega exposures are labelled
 `PROVISIONAL`; Tradier rho/phi are raw only. Example: one long call with delta 0.494
 and multiplier 100 is about +49.4 share equivalents.
@@ -57,3 +60,17 @@ python -m desk.option_conventions tastytrade-greeks --capture CAPTURE.json --out
 ```
 
 Both refuse to overwrite an existing output file. Verdicts are diagnostic only.
+
+For a cross-provider comparison, use `tradier_option_check --select-only` once, then
+pass its report through `--option-selection` to both diagnostics. See
+`tools/g5_tradier_comparison.sh`. Both check the explicit expiry/right/strike and current
+provider metadata; neither substitutes a neighboring contract. `MATCHED_REPORTED_FIELDS`
+compares the reported size fields only: Tradier `contract_size` and tastytrade
+`shares-per-contract` are not an attestation of premium units or full adjusted
+deliverables. Unknown fields give `PARTIAL`; conflicting terms give `FAIL`.
+
+Freshness is measured independently for bid, ask and trade at report completion under
+the existing 60-second quote policy. Future source times at receipt or completion fail.
+Timestamp advancement is separate; a fresh trade does not freshen an old bid/ask.
+Greek age is computed from its own time and has no new threshold. These checks do not
+approve a trade or attest entitlement/coverage. Malformed dates produce field failures.

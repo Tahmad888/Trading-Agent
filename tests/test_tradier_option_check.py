@@ -145,7 +145,7 @@ def test_off_hours_capture_records_schema_but_freshness_is_not_run():
     assert report["verdicts"]["option_quote_freshness"]["reason"] == "NOT_A_REGULAR_SESSION_FOR_EVERY_ROUND"
 
 
-def test_unchanged_provider_times_are_not_reported_as_advancing():
+def test_unchanged_provider_times_are_not_advancement_but_can_remain_within_policy():
     def frozen(_, rows):
         for row in rows:
             for k in ("bid_date", "ask_date", "trade_date"):
@@ -153,7 +153,7 @@ def test_unchanged_provider_times_are_not_reported_as_advancing():
         return rows
     report, _ = run(quote_hook=frozen)
     assert report["advancing"]["SPY"]["state"] == "NOT_ADVANCED"
-    assert report["verdicts"]["stock_quote_freshness"]["verdict"] == "FAIL"
+    assert report["verdicts"]["stock_quote_freshness"]["verdict"] == "PASS"
 
 
 def test_http_200_fault_body_is_a_failure_and_stops_requests():

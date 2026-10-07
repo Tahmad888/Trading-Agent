@@ -38,7 +38,7 @@ a saved or live sample), **Inferred** (reasoning from evidence), **Unresolved**.
 | `src/desk/option_conventions.py` (new) | Field mappings, provider time parsing, Greek normalization, exposure, size and IV views, pair check, offline tastytrade Greeks normalizer CLI | New diagnostic only |
 | `src/desk/tradier_option_check.py` (new) | Read-only Tradier REST diagnostic: GET `/v1/markets/quotes`, `/v1/markets/options/expirations`, `/v1/markets/options/chains`; bounded requests; token from `TRADIER_ACCESS_TOKEN` or a hidden prompt; refuses to overwrite a report | None (report file) |
 | `src/desk/quote_measure.py` | Adds `TRADIER_ACCESS_TOKEN` to the credential guard's names | Every report written by `write_report` (guard is stricter, otherwise unchanged) |
-| `src/desk/quote_measure.py` `number_state` | Accepts `Decimal` as a value type (found during this work: DXLink's `json_read` decodes numbers as `Decimal`, so at `d539d97` every live Greek, BBO price/size and `dayVolume` was recorded `INVALID`) | `quote_check --measure` reports (now record values); `webull_quote_check` (its values arrive as strings or floats, unchanged); booleans, NaN and Infinity still refused. No decision module reads `number_state` (isolation test). |
+| `src/desk/quote_measure.py` `number_state` | Accepts `Decimal` as a value type. Correction after Astra's audit: `parse_float=Decimal` affects JSON floating values, not every number; integers/strings survived. Raw samples/wire frames may support limited offline recovery. | `quote_check --measure` reports; `webull_quote_check` (strings/floats unchanged); booleans, NaN and Infinity still refused. No decision module reads `number_state` (isolation test). |
 | Scanner, setups, quote service, quote mapping, quote risk bridge, risk engine, tickets, approval, Webull bars, Alpaca SIP volume, RTH30 measurement, source eligibility, quote-age policy, future-time policy, identity review, halts, schedules | **Unchanged.** Normalized analytics are not wired into tickets or risk in this repair; that integration stays open. | — |
 
 No account, order, position or balance route; no support message; no schedule; no iMac
@@ -71,8 +71,9 @@ change. Webull stays market-data only.
 `git revert <final commit>` on `codex/repair-step-01-baseline`. The two new modules
 and their tests are additive. The edits to existing code are one tuple entry in
 `quote_measure.CREDENTIAL_NAMES` and the `Decimal` acceptance in
-`quote_measure.number_state`; reverting the latter brings back the all-`INVALID`
-recording defect.
+`quote_measure.number_state`; reverting the latter brings back the JSON-floating-value
+recording defect. Later audit repairs are recorded separately in
+`G5a-cp3-tradier-diagnostic-audit-repairs.md`.
 
 ## Results
 

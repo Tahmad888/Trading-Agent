@@ -12,6 +12,7 @@ import subprocess
 from desk.tastytrade_quotes import CLOCK_NOTE, QuoteService, QuoteUnavailable, canonical, session_label
 from desk.tastytrade_transport import Credentials, ReadClient, capture, select_pair, utcnow
 from desk.quote_measure import Recorder, load_host_clock, write_report
+from desk.diagnostic_pair import load_pair, size_match, validate_pair
 
 STOP_CODES = {"REST_HTTP_401", "REST_HTTP_403", "REST_HTTP_429", "REST_REQUEST_BUDGET"}
 
@@ -30,13 +31,22 @@ def _lag_evidence(rows, in_session):
 
 def diagnostic(client, service, equities, *, option_underlying=None, option_strike=None, option_median=False,
                seconds=30, reconnects=1, profile=False, capture_fn=capture, clock=utcnow, measure=None,
-               host_clock=None):
+               host_clock=None, option_pair=None):
     started = clock()
     issues = {}
     option = dict(status="NOT_REQUESTED")
+    pair_checks = {}
+    pair_input, option_pair = option_pair, None
     # Denial/rate-limit/budget errors stop this run; symbol identity/404 faults isolate.
     try:
-        underlying = canonical(option_underlying, "Equity") if option_underlying else None
+        if pair_input is not None:
+            option_pair = validate_pair(pair_input, environment=client.environment, now=started)
+            if option_strike is not None or option_median:
+                raise QuoteUnavailable("OPTION_PAIR_SELECTION_CONFLICT")
+        underlying = (canonical(option_underlying, "Equity") if option_underlying else
+                      option_pair["underlying"] if option_pair else None)
+        if option_pair and underlying != option_pair["underlying"]:
+            raise QuoteUnavailable("OPTION_PAIR_IDENTITY_MISMATCH")
         names = list(dict.fromkeys(list(equities) + ([underlying] if underlying else [])))
         for symbol in names:
             try:
@@ -51,7 +61,28 @@ def diagnostic(client, service, equities, *, option_underlying=None, option_stri
             identities = []
             for symbol in (selection["call"], selection["put"]):
                 try:
-                    identities.append(client.resolve(symbol, "Equity Option", service))
+                    # resolve registers its result. Keep a contradicted counterpart
+                    # outside the real service, so capture cannot subscribe it.
+                    registry = QuoteService(environment=service.environment) if option_pair else service
+                    identity = client.resolve(symbol, "Equity Option", registry)
+                    if option_pair:
+                        wanted = {option_pair[right]["symbol"]: option_pair[right]
+                                  for right in ("call", "put")}.get(identity.symbol)
+                        if wanted is None:
+                            raise QuoteUnavailable("OPTION_PAIR_IDENTITY_MISMATCH")
+                        metadata = dict(identity.metadata)
+                        chain_type = metadata.get("option-chain-type")
+                        check = size_match(wanted["contract_size"], metadata.get("shares-per-contract"),
+                                           standard_root=chain_type in {None, "Standard"})
+                        if chain_type is None and check["status"] == "MATCHED_REPORTED_FIELDS":
+                            check.update(status="INCOMPLETE", reason="CHAIN_TYPE_UNAVAILABLE")
+                        check["provider_fields"] = {"option-chain-type": chain_type,
+                                                    "shares-per-contract": metadata.get("shares-per-contract")}
+                        pair_checks[identity.symbol] = check
+                        if check["status"] == "CONFLICT":
+                            raise QuoteUnavailable("OPTION_PAIR_TERMS_CONFLICT")
+                        service.register(identity)
+                    identities.append(identity)
                 except QuoteUnavailable as exc:
                     issues[symbol] = str(exc)
                     if str(exc) in STOP_CODES:
@@ -60,10 +91,29 @@ def diagnostic(client, service, equities, *, option_underlying=None, option_stri
             return identities
 
         if underlying:
-            option = dict(status="WAITING_FOR_UNDERLYING_TRADE", underlying=underlying)
-            chain = client.chain_options(underlying)
-            if option_strike is not None or option_median:
-                add_pair(select_pair(chain, now=clock(), strike=option_strike, median=option_median))
+            if option_pair:
+                option = dict(status="UNAVAILABLE", underlying=underlying, method="SHARED_EXPLICIT_PAIR",
+                              selection_id=option_pair["selection_id"])
+                try:
+                    chain = client.chain_options(underlying)
+                    matches = [row for row in chain if row[0].isoformat() == option_pair["expiry"]
+                               and row[1] == Decimal(option_pair["strike"])
+                               and canonical(row[2], "Equity Option") == option_pair["call"]["symbol"]
+                               and canonical(row[3], "Equity Option") == option_pair["put"]["symbol"]]
+                    if len(matches) != 1:
+                        raise QuoteUnavailable("OPTION_PAIR_NOT_LISTED" if not matches else "OPTION_PAIR_AMBIGUOUS")
+                    match = matches[0]
+                    add_pair(dict(call=match[2], put=match[3], strike=str(match[1]), expiry=match[0].isoformat(),
+                                  method="SHARED_EXPLICIT_PAIR", selection_id=option_pair["selection_id"]))
+                except QuoteUnavailable as exc:
+                    option.update(status="UNAVAILABLE", reason=str(exc))
+                    if str(exc) in STOP_CODES or str(exc).startswith("REST_") and str(exc) != "REST_HTTP_404":
+                        raise
+            else:
+                option = dict(status="WAITING_FOR_UNDERLYING_TRADE", underlying=underlying)
+                chain = client.chain_options(underlying)
+                if option_strike is not None or option_median:
+                    add_pair(select_pair(chain, now=clock(), strike=option_strike, median=option_median))
         if not service.identities:
             raise QuoteUnavailable("NO_ACCEPTED_IDENTITIES")
 
@@ -133,12 +183,25 @@ def diagnostic(client, service, equities, *, option_underlying=None, option_stri
     last_data = final_views[-1] if final_views else None
     clock_rows = {f"{row['symbol']}:{part}": row[part]["clock_uncertainty"] for row in rows
                   for part in ("trade", "quote") if "clock_uncertainty" in row.get(part, {})}
+    pair_result = dict(status="NOT_REQUESTED")
+    if pair_input is not None and option_pair is None:
+        pair_result = dict(status="FAIL", reason=result["stop_reason"])
+    if option_pair:
+        checks = {option_pair[right]["symbol"]: pair_checks.get(option_pair[right]["symbol"]) or
+                  dict(status="CONFLICT", reason=option.get("reason", "OPTION_PAIR_NOT_RESOLVED"))
+                  for right in ("call", "put")}
+        states = [check["status"] for check in checks.values()]
+        pair_result = dict(status="FAIL" if "CONFLICT" in states else "PARTIAL" if "INCOMPLETE" in states
+                           else "MATCHED_REPORTED_FIELDS", selection_id=option_pair["selection_id"],
+                           by_symbol=checks, scope="Current provider identity and reported size fields only; "
+                           "full deliverables NOT_ATTESTED. Not a reviewed mapping or quote eligibility.")
     return dict(purpose="read-only quote observations; no signal/order activation",
                 environment=client.environment, started_at=started.isoformat(), finished_at=finished.isoformat(),
                 LIVE_TIMING="OBSERVATIONS_REQUIRE_REVIEW" if in_session else "NOT_TESTED_MARKET_CLOSED",
                 lag_evidence=_lag_evidence([r for r in rows if r["kind"] == "Equity"], in_session),
                 status=status,
                 identity_issues=issues, stocks=groups["stocks"], options=groups["options"],
+                option_pair_comparison=pair_result,
                 final_attempt=dict(
                     attempt=final.get("attempt"), generation=final.get("generation"), outcome=final.get("outcome"),
                     deliberate_end=final.get("deliberate_end"), components=final.get("components", {}),
@@ -180,6 +243,7 @@ def main(argv=None):
     parser.add_argument("--symbols", nargs="+", required=True)
     parser.add_argument("--environment", choices=("production", "sandbox"), required=True)
     parser.add_argument("--option-underlying")
+    parser.add_argument("--option-selection", type=Path, help="Use the exact pair from a Tradier select-only report")
     parser.add_argument("--option-strike", type=Decimal,
                         help="Explicit strike; otherwise the strike nearest the observed underlying trade")
     parser.add_argument("--option-median-fallback", action="store_true",
@@ -208,11 +272,12 @@ def main(argv=None):
                                         os.environ.get("TASTYTRADE_REFRESH_TOKEN", "")),
                             environment=args.environment, max_requests=args.max_requests)
         service = QuoteService(environment=args.environment)
+        pair = load_pair(args.option_selection, environment=args.environment, now=utcnow()) if args.option_selection else None
         report = diagnostic(client, service, args.symbols, option_underlying=args.option_underlying,
                             option_strike=args.option_strike, option_median=args.option_median_fallback,
                             seconds=args.seconds, reconnects=args.reconnects, profile=args.profile,
                             measure=Recorder(service) if args.measure else None,
-                            host_clock=load_host_clock(args.host_clock))
+                            host_clock=load_host_clock(args.host_clock), option_pair=pair)
     except QuoteUnavailable as exc:
         report = dict(purpose="read-only quote observations; no signal/order activation", status="UNAVAILABLE",
                       reason=str(exc), LIVE_TIMING="NOT_TESTED", requests=0)

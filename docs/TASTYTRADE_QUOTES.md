@@ -342,10 +342,14 @@ real `BRK/B` lookup is still to be done.
   2026-10-05 Greeks files have no receipt times, so their ages cannot be recomputed.
   Units and per-share normalization: `docs/OPTION_CONVENTIONS.md`; offline
   `python -m desk.option_conventions tastytrade-greeks` labels them observations only.
-- **Numeric decoding (fixed 2026-10-07).** The DXLink transport decodes numbers as
-  `Decimal`; before this fix the recorder marked every live Greek, BBO price/size and
-  `dayVolume` INVALID. Measurements captured at or before `d539d97` carry no numeric
-  values and must be re-captured.
+- **Numeric decoding (fixed 2026-10-07).** The DXLink transport's `parse_float=Decimal`
+  decodes JSON floating numbers as `Decimal`; before the fix those values were marked
+  INVALID by the recorder. JSON integers and strings were not affected. Retained raw
+  samples (at most three per channel/type), or separately retained wire frames, may
+  support an offline recovery with original times/flags and limited coverage. An INVALID
+  state with no retained value cannot be reconstructed. Inspect saved evidence first;
+  re-capture only the evidence missing for the required check. Existing captures are
+  historical observations, never current quotes. No blanket recapture requirement.
 - **Reports** are bounded (4000 records per record type, three raw samples per type,
   complete counters) and refused with `REPORT_CREDENTIAL_MATCH` if a configured
   credential value or a token/header marker appears.
@@ -435,7 +439,13 @@ only before today's close), at the listed strike nearest the observed SPY trade
 (`NEAR_OBSERVED_UNDERLYING`, with the reference price and its age); `--option-strike N`
 picks the strike nearest N instead. Off-hours, `--option-median-fallback` picks the
 median listed strike, labelled `NOT_REPRESENTATIVE_MEDIAN_STRIKE`. This is diagnostic
-selection, not a recommendation. The report separates stocks and options, socket
+selection, not a recommendation. For the three-provider comparison, independent
+nearest-strike selection is superseded by `--option-selection FILE`: Tradier selects
+once; both commands use the same explicit pair and re-check their provider metadata.
+The committed `tools/g5_tradier_comparison.sh` runs this pipeline under Bash, records
+each command's exit and pair binding, and labels collection as requiring review.
+Missing/contradictory counterparts remain failures; no neighboring substitute is used.
+The pair is not a reviewed identity mapping or a complete ContractBook. The report separates stocks and options, socket
 liveness, identity capture (for a later mapping review), receipt times, signed
 receipt-minus-source lag, trade age, side-change ages, trading status, faults and
 recoveries. Stock/option rows, coverage and `lag_evidence` come from the final attempt's

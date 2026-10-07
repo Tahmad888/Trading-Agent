@@ -145,7 +145,8 @@ def equity_provider_symbol(value: str) -> str:
 
 # Supporting tastytrade metadata kept for a reviewed mapping (not part of the digest).
 CAPTURE_FIELDS = ("symbol", "instrument-type", "streamer-symbol", "cusip", "id", "description",
-                  "listed-market", "is-etf", "instrument-sub-type", "active")
+                  "listed-market", "is-etf", "instrument-sub-type", "active",
+                  "option-chain-type", "shares-per-contract")
 
 
 @dataclass(frozen=True)

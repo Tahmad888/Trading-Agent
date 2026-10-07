@@ -2,6 +2,15 @@
 
 ## Active repair work
 
+Latest bounded follow-up (2026-10-07): Astra repairs her audit of Tradier conventions
+commit `5b43e5d`, preparing the regular-session comparison within G5 → G5a parent CP3.
+Read `docs/checkpoints/G5a-cp3-tradier-diagnostic-audit-repairs.md`. Latest-field ages
+are separate from timestamp advancement; invalid dates fail per field; both providers
+use one explicit option pair with current metadata checks. Run the committed
+`tools/g5_tradier_comparison.sh` under Bash at the reviewed SHA, after its iMac strict
+suite. This adds no source eligibility, risk/ticket integration or G5 approval. Tradier
+size/Greek conventions retain their qualifications. Step 09 remains paused.
+
 Latest scope (2026-10-05): G5 → G5a parent Checkpoint 3 → six child steps.
 Current bounded timestamp follow-up: `desk.snapshot_quote_check` produces tastytrade
 REST bid/ask observations using the documented provider quote-update timestamp,

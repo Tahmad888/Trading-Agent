@@ -490,8 +490,25 @@ Same hierarchy (G5 → G5a parent CP3 → children 5/6); Step 09 stays paused.
 | Greek scaling | Convention layer implemented. tastytrade documented; Tradier delta observed, gamma/theta/vega provisional (ORATS upstream), rho/phi raw only. |
 | Tradier `greeks.updated_at` zone | Provider-specific UTC parser under a relayed 2024 support answer; global parsers unchanged. Not a first-party schema. |
 | Position exposure | raw × metadata multiplier × signed contracts; no default 100. Not wired into tickets or risk (open). |
-| Recorder numeric decoding | **Defect fixed:** `quote_measure.number_state` refused DXLink `Decimal` values, so live Greeks, BBO prices/sizes and dayVolume were all INVALID at `d539d97`. Regression test from wire text; cloud capture before/after retained. Affects the planned opening-window volume capture. |
+| Recorder numeric decoding | **Defect fixed:** `quote_measure.number_state` refused DXLink JSON floating values decoded as `Decimal`. Integers/strings survived, and retained raw samples/wire frames can support limited offline recovery. Missing values cannot be invented; inspect evidence before recapturing. Regression test from wire text; cloud before/after retained. |
 | Regular-session Tradier/tastytrade/Webull comparison (Step 3) | **NOT_RUN** in the cloud: market closed (04:00 ET) and no Tradier credential here. iMac command in the handoff, after Astra's audit. |
 | Tradier stream and controlled reconnect | NOT_RUN in-repo: the new diagnostic is REST-only; Astra's earlier iMac stream preflight is outside the repository. |
 
 No verdict here is quote, ticket or order eligibility, and none is an overall G5 PASS.
+
+### Astra's bounded Tradier diagnostic repairs (2026-10-07)
+
+Record: `checkpoints/G5a-cp3-tradier-diagnostic-audit-repairs.md`. This repairs the
+reviewed `5b43e5d` implementation; it is not independent approval of Astra's own edits.
+
+| Requirement | Current implementation / remaining acceptance |
+|---|---|
+| Latest bid/ask and trade freshness | Separate own-price/own-time checks at completion using the existing 60 s policy; future receipt/completion times fail. Advancement cannot grant freshness; final missing rows cannot reuse earlier observations. Actual-host RTH comparison pending. |
+| Malformed Greek/OCC dates | Structured field/chain-row refusal, preserving healthy peers. Offline regressions; provider observation not claimed. |
+| Same option pair across providers | One explicit selection file, fresh provider terms checked, no neighboring fallback; conflicts excluded and missing terms disclosed. Reported size agreement is not full deliverable/premium-unit attestation. Actual-host comparison pending. |
+| Comparison command integrity | Committed Bash script uses that shared file, bounded overlapping captures and recorded exits. Collection is `RECORDED_REVIEW_REQUIRED` or partial/failed, never an overall live-data PASS. |
+| Multiplier provenance | Existing one-source diagnostic illustration retained and disclosed; both supplied values must agree. No default 100 or risk/ticket integration. |
+
+Tradier option quote-size units, provisional Greek conventions, the inferred Greek
+timezone, live streaming/reconnect, opening-window consolidated volume and the existing
+G5 operational rows remain open. Step 09 stays paused.

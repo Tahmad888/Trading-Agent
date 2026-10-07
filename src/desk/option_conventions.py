@@ -146,7 +146,10 @@ def provider_time(provider: str, name: str, value) -> dict:
         if not isinstance(value, str):
             raise ConventionError("TIME_INVALID")
         if NAIVE.fullmatch(value):
-            parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+            try:
+                parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                raise ConventionError("TIME_INVALID") from None
             at, interpretation = parsed.replace(tzinfo=UTC), "NAIVE_TEXT_READ_AS_UTC"
         elif EXPLICIT.fullmatch(value):
             try:

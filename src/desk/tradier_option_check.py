@@ -30,6 +30,7 @@ import time
 from urllib.parse import urlencode
 
 from desk import option_conventions as oc
+from desk.diagnostic_pair import load_pair, make_pair, occ_terms, size_match, validate_pair
 from desk.quote_measure import write_report
 from desk.tastytrade_quotes import QuoteUnavailable, aware, canonical, session_label
 from desk.tastytrade_transport import request_json, select_pair, utcnow
@@ -99,11 +100,7 @@ def wire_symbol(symbol: str) -> str:
 
 
 def occ(symbol: str) -> dict:
-    match = re.fullmatch(r"([A-Z]{1,6})(\d{6})([CP])(\d{8})", symbol)
-    if not match:
-        raise QuoteUnavailable("OPTION_IDENTITY_INVALID")
-    return dict(underlying=match[1], expiry=datetime.strptime(match[2], "%y%m%d").date().isoformat(),
-                right="call" if match[3] == "C" else "put", strike=Decimal(match[4]) / 1000)
+    return occ_terms(symbol)
 
 
 # ----------------------------------------------------------------- normalize ----
@@ -136,6 +133,12 @@ def observe_row(row: dict, requested: dict, received: datetime, chain_terms: dic
         if view["terms"]["root_status"] != "MATCHES_UNDERLYING" and multiplier["status"] == "VERIFIED_FROM_METADATA":
             multiplier = dict(status="UNVERIFIED_NONSTANDARD_ROOT", value=None)
         view["multiplier"] = dict(multiplier, deliverable="NOT_PROVIDED_BY_ROUTE")
+        view["multiplier"]["metadata_sources"] = {
+            "quote.contract_size": row.get("contract_size"),
+            "chain_or_selection.contract_size": (chain_terms or {}).get("contract_size")}
+        if (chain_terms or {}).get("pair_expected"):
+            view["pair_terms"] = size_match(chain_terms.get("contract_size"), row.get("contract_size"),
+                                             standard_root=root == terms["underlying"])
     prices = {}
     for name in ("bid", "ask", "last"):
         try:
@@ -199,16 +202,28 @@ def selection(client: TradierClient, underlying: str, reference: Decimal, now: d
     chain = client.get("chains", {"symbol": wire_symbol(underlying), "expiration": live[0].isoformat(),
                                   "greeks": "false"})
     rows = listed((chain.get("options") or {}).get("option") if isinstance(chain.get("options"), dict) else None)
-    by_strike, terms = {}, {}
-    for row in rows:
+    by_strike, terms, rejected = {}, {}, []
+    for index, row in enumerate(rows):
         if not isinstance(row, dict) or row.get("root_symbol") != underlying or row.get("underlying") != underlying:
             continue  # nonstandard roots are never selected
         try:
             ident = occ(row.get("symbol") if isinstance(row.get("symbol"), str) else "")
-        except QuoteUnavailable:
+        except QuoteUnavailable as exc:
+            rejected.append(dict(row=index, reason=str(exc)))
             continue
         if ident["expiry"] != live[0].isoformat() or row.get("option_type") != ident["right"]:
             continue
+        try:
+            consistent = (ident["underlying"] == underlying and
+                          oc.value_of(row.get("strike")) == ident["strike"] and
+                          row.get("expiration_date") == ident["expiry"])
+        except oc.ConventionError:
+            consistent = False
+        if not consistent:
+            rejected.append(dict(row=index, reason="OPTION_IDENTITY_MISMATCH"))
+            continue
+        if row["symbol"] in terms and terms[row["symbol"]]["contract_size"] != row.get("contract_size"):
+            raise QuoteUnavailable("OPTION_CHAIN_AMBIGUOUS")
         by_strike.setdefault(ident["strike"], {})[ident["right"]] = row["symbol"]
         terms[row["symbol"]] = {"contract_size": row.get("contract_size")}
     options = [(live[0], strike, pair["call"], pair["put"]) for strike, pair in by_strike.items()
@@ -216,7 +231,8 @@ def selection(client: TradierClient, underlying: str, reference: Decimal, now: d
     if not options:
         raise QuoteUnavailable("OPTION_CHAIN_UNAVAILABLE")
     chosen = select_pair(options, now=now, reference=reference)
-    return dict(chosen, reference="TRADIER_STOCK_QUOTE_MIDPOINT", chain_rows=len(rows)), terms
+    return dict(chosen, reference="TRADIER_STOCK_QUOTE_MIDPOINT", chain_rows=len(rows),
+                rejected_chain_rows=rejected), terms
 
 
 def quotes(client: TradierClient, requested: list[dict], chain_terms: dict) -> dict:
@@ -263,7 +279,45 @@ def advancing(rounds: list[dict], symbol: str) -> dict:
     return out
 
 
-KEYS = ("stock_quote_freshness", "option_quote_freshness", "option_size_interpretation", "greek_normalization",
+def price_time_view(observation: dict, price_name: str, time_name: str, checked_at: datetime) -> dict:
+    """Latest field's measured age and existing policy, not feed entitlement or eligibility."""
+    from desk.risk import RiskLimits
+    limit = RiskLimits().max_quote_age.total_seconds()
+    price = observation["prices"][price_name]
+    stamp = observation["times"][time_name]
+    reasons = []
+    if price.get("state") != "VALUE":
+        reasons.append("PRICE_UNAVAILABLE")
+    elif Decimal(price["value"]) <= 0:
+        reasons.append("PRICE_NONPOSITIVE")
+    timing = dict(stamp)
+    if "utc" not in stamp:
+        reasons.append(stamp.get("state", "TIME_UNAVAILABLE"))
+    else:
+        timing["at_check"] = oc.age_view(stamp, checked_at)
+        age = timing["at_check"]["age_seconds"]
+        if age < 0 or stamp.get("receipt", {}).get("age_seconds", 0) < 0:
+            reasons.append("FUTURE_SOURCE_TIME")
+        elif age > limit:
+            reasons.append("OLDER_THAN_QUOTE_POLICY")
+    return dict(verdict="FAIL" if reasons else "PASS", price=price, time=timing,
+                checked_at=checked_at.isoformat(), max_age_seconds=limit, reasons=reasons)
+
+
+def latest_policy_view(observation: dict, checked_at: datetime) -> dict:
+    bid = price_time_view(observation, "bid", "bid_date", checked_at)
+    ask = price_time_view(observation, "ask", "ask_date", checked_at)
+    trade = price_time_view(observation, "last", "trade_date", checked_at)
+    book = observation["prices"].get("book", "UNAVAILABLE")
+    quote = dict(verdict="PASS" if bid["verdict"] == ask["verdict"] == "PASS" and book == "NORMAL"
+                 else "FAIL", bid=bid, ask=ask, book=book,
+                 note="Side-change age outside policy does not alone prove a delayed feed. "
+                      "Trade time cannot freshen bid/ask; size units and entitlement are not attested.")
+    return dict(quote=quote, trade=trade)
+
+
+KEYS = ("stock_quote_freshness", "option_quote_freshness", "stock_trade_freshness", "option_trade_freshness",
+        "option_size_interpretation", "greek_normalization",
         "greek_timestamp_interpretation", "current_greek_state", "reconnect_behavior")
 
 
@@ -276,19 +330,30 @@ def verdicts(report: dict) -> dict:
         out["note"] = "Diagnostic verdicts only; never approval or order eligibility."
         return out
     rounds = report["rounds"]
-    rth = bool(rounds) and all(r["session"] == "RTH" for r in rounds)
+    rth = (bool(rounds) and all(r["session"] == "RTH" for r in rounds)
+           and session_label(datetime.fromisoformat(report["finished_at"])) == "RTH")
     out = {}
-    for kind, key in (("stock", "stock_quote_freshness"), ("option", "option_quote_freshness")):
+    for kind, key, component in (("stock", "stock_quote_freshness", "quote"),
+                                 ("option", "option_quote_freshness", "quote"),
+                                 ("stock", "stock_trade_freshness", "trade"),
+                                 ("option", "option_trade_freshness", "trade")):
         names = [r["symbol"] for r in report["requested"] if r["kind"] == kind]
         if not names:
             out[key] = dict(verdict="NOT_RUN", reason="NOT_REQUESTED")
         elif not rth:
             out[key] = dict(verdict="NOT_RUN", reason="NOT_A_REGULAR_SESSION_FOR_EVERY_ROUND")
         else:
-            states = {n: report["advancing"].get(n, {}).get("state") for n in names}
-            good = [n for n, s in states.items() if s == "ADVANCED"]
+            final = rounds[-1]
+            checked_at = aware(datetime.fromisoformat(report["finished_at"]))
+            states = {}
+            for n in names:
+                observation = final["observations"].get(n)
+                states[n] = (latest_policy_view(observation, checked_at)[component] if observation is not None
+                             else dict(verdict="FAIL", reason=final["failures"].get(n, "FINAL_SYMBOL_UNAVAILABLE")))
+            good = [n for n, s in states.items() if s["verdict"] == "PASS"]
             out[key] = dict(verdict="PASS" if len(good) == len(names) else "PARTIAL" if good else "FAIL",
-                            by_symbol=states, scope="provider times advanced within this capture only")
+                            by_symbol=states, scope="Latest round prices and their own source times under "
+                            "the existing quote policy; advancement is separate, real-time coverage NOT_ATTESTED.")
     options = [o for r in rounds[-1:] for o in r["observations"].values() if o["kind"] == "option"]
     out["option_size_interpretation"] = dict(
         verdict="PARTIAL" if options else "NOT_RUN",
@@ -310,12 +375,34 @@ def verdicts(report: dict) -> dict:
     return out
 
 
+def pair_comparison(report: dict) -> dict:
+    pair = report.get("option_pair")
+    if not pair:
+        return dict(status="NOT_REQUESTED")
+    if report.get("stopped_on_error") or not report["rounds"]:
+        return dict(status="NOT_RUN", selection_id=pair["selection_id"])
+    last = report["rounds"][-1]
+    checks = {}
+    for right in ("call", "put"):
+        symbol = pair[right]["symbol"]
+        checks[symbol] = last["observations"].get(symbol, {}).get("pair_terms") or dict(
+            status="CONFLICT", reason=last["failures"].get(symbol, "PAIR_TERMS_UNAVAILABLE"))
+    states = [check["status"] for check in checks.values()]
+    return dict(status="FAIL" if "CONFLICT" in states else "PARTIAL" if "INCOMPLETE" in states
+                else "MATCHED_REPORTED_FIELDS", selection_id=pair["selection_id"], by_symbol=checks,
+                scope="Selected identity and reported size fields only; full deliverables NOT_ATTESTED.")
+
+
 def diagnostic(client: TradierClient, equities, *, option_underlying=None, rounds=4, interval_seconds=60,
-               sleep=time.sleep) -> dict:
+               sleep=time.sleep, option_pair=None, select_only=False) -> dict:
     report = dict(purpose=PURPOSE, status="UNAVAILABLE", environment=client.environment, requested=[],
                   option_selection={"status": "NOT_REQUESTED"}, rounds=[], advancing={},
                   coverage="NOT_ATTESTED", mapping="NOT_REVIEWED_BY_DIAGNOSTIC", decision_eligibility="NOT_EVALUATED",
                   note="Earlier rounds are history only; a failed later round leaves no current result.")
+    from desk.risk import RiskLimits
+    report["quote_policy"] = dict(max_age_seconds=RiskLimits().max_quote_age.total_seconds(),
+                                 source="RiskLimits.max_quote_age", future_tolerance_seconds=0,
+                                 greek_age_threshold="NONE_DEFINED")
     try:
         if (not isinstance(equities, (list, tuple)) or not 1 <= len(equities) <= 6
                 or type(rounds) is not int or not 1 <= rounds <= 6
@@ -323,12 +410,17 @@ def diagnostic(client: TradierClient, equities, *, option_underlying=None, round
                 or not math.isfinite(interval_seconds) or not 0 <= interval_seconds <= 90):
             raise QuoteUnavailable("PROBE_ARGUMENTS_INVALID")
         names = [canonical(s, "Equity") for s in equities]
-        underlying = canonical(option_underlying, "Equity") if option_underlying else None
+        if option_pair is not None:
+            option_pair = validate_pair(option_pair, environment=client.environment, now=client.clock())
+        underlying = (canonical(option_underlying, "Equity") if option_underlying else
+                      option_pair["underlying"] if option_pair else None)
+        if option_pair and underlying != option_pair["underlying"] or select_only and (not underlying or option_pair):
+            raise QuoteUnavailable("PROBE_ARGUMENTS_INVALID")
         if underlying and underlying not in names:
             names.append(underlying)
         if len(set(names)) != len(names):
             raise QuoteUnavailable("PROBE_ARGUMENTS_INVALID")
-        needed = (1 + 2 if underlying else 0) + rounds
+        needed = (3 if underlying and not option_pair else 0) + (0 if select_only else rounds)
         if needed > client.max_requests:
             raise QuoteUnavailable("REQUEST_PLAN_EXCEEDS_BUDGET")
         report["request_plan"] = dict(planned=needed, budget=client.max_requests)
@@ -336,7 +428,10 @@ def diagnostic(client: TradierClient, equities, *, option_underlying=None, round
         report["started_at"] = started.isoformat()
         requested = [dict(symbol=n, wire=wire_symbol(n), kind="stock") for n in names]
         chain_terms = {}
-        if underlying:
+        if option_pair:
+            chosen = dict(call=option_pair["call"]["symbol"], put=option_pair["put"]["symbol"],
+                          strike=option_pair["strike"], expiry=option_pair["expiry"], method="SHARED_EXPLICIT_PAIR")
+        elif underlying:
             report["option_selection"] = {"status": "UNAVAILABLE", "underlying": underlying}
             seed = quotes(client, [r for r in requested if r["symbol"] == underlying], {})
             report["option_reference_observation"] = seed
@@ -348,12 +443,17 @@ def diagnostic(client: TradierClient, equities, *, option_underlying=None, round
             except KeyError:
                 raise QuoteUnavailable("OPTION_REFERENCE_UNAVAILABLE") from None
             chosen, chain_terms = selection(client, underlying, mid, aware(client.clock()))
+            option_pair = make_pair(chosen, chain_terms, environment=client.environment, now=client.clock())
+        if underlying:
+            report["option_pair"] = option_pair
+            chain_terms = {option_pair[right]["symbol"]: dict(
+                contract_size=option_pair[right]["contract_size"], pair_expected=True) for right in ("call", "put")}
             report["option_selection"] = dict(chosen, status="SELECTED", underlying=underlying,
                                               note="Diagnostic selection only; never a trading plan.")
             requested += [dict(symbol=chosen["call"], wire=chosen["call"], kind="option"),
                           dict(symbol=chosen["put"], wire=chosen["put"], kind="option")]
         report["requested"] = requested
-        for index in range(rounds):
+        for index in range(0 if select_only else rounds):
             if index:
                 sleep(interval_seconds)
             try:
@@ -362,20 +462,23 @@ def diagnostic(client: TradierClient, equities, *, option_underlying=None, round
                 report["rounds"].append(dict(round=index + 1, failed=str(exc)))
                 raise
         report["advancing"] = {r["symbol"]: advancing(report["rounds"], r["symbol"]) for r in requested}
-        last = report["rounds"][-1]
+        last = report["rounds"][-1] if report["rounds"] else {"observations": {}, "failures": {}, "unexpected_rows": 0}
         options = [last["observations"][r["symbol"]] for r in requested
                    if r["kind"] == "option" and r["symbol"] in last["observations"]]
         if len(options) == 2:
             call, put = sorted(options, key=lambda o: o["terms"]["right"])
             if "fields" in call.get("greeks", {}) and "fields" in put.get("greeks", {}):
                 report["greek_pair_check"] = oc.pair_check(call["greeks"], put["greeks"])
-        report["status"] = ("PARTIAL_OBSERVATIONS" if last["failures"] or last["unexpected_rows"]
-                            else "OBSERVATIONS_ONLY")
+        report["status"] = ("OPTION_PAIR_SELECTED" if select_only else
+                            "PARTIAL_OBSERVATIONS" if last["failures"] or last["unexpected_rows"] else "OBSERVATIONS_ONLY")
         report["finished_at"] = aware(client.clock()).isoformat()
     except QuoteUnavailable as exc:
         report.update(status="UNAVAILABLE", reason=str(exc), stopped_on_error=True,
                       current="NONE_AFTER_FAILURE")
     report["verdicts"] = verdicts(report)
+    report["option_pair_comparison"] = pair_comparison(report)
+    if report["status"] == "OBSERVATIONS_ONLY" and report["option_pair_comparison"]["status"] in {"FAIL", "PARTIAL"}:
+        report["status"] = "PARTIAL_OBSERVATIONS"
     report["requests"] = dict(count=client.requests, budget=client.max_requests, log=client.log)
     return report
 
@@ -385,6 +488,8 @@ def main(argv=None, env=None, prompt=getpass.getpass) -> int:
     parser.add_argument("--environment", choices=tuple(HOSTS), required=True)
     parser.add_argument("--symbols", nargs="+", required=True)
     parser.add_argument("--option-underlying")
+    parser.add_argument("--select-only", action="store_true", help="Select one pair without capture rounds")
+    parser.add_argument("--option-selection", type=Path, help="Reuse the exact pair from a select-only report")
     parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--interval-seconds", type=float, default=60)
     parser.add_argument("--max-requests", type=int, default=MAX_REQUESTS)
@@ -399,8 +504,9 @@ def main(argv=None, env=None, prompt=getpass.getpass) -> int:
     env["TRADIER_ACCESS_TOKEN"] = token  # only so the report guard can refuse a leak
     try:
         client = TradierClient(token, environment=args.environment, max_requests=args.max_requests)
+        pair = load_pair(args.option_selection, environment=args.environment, now=client.clock()) if args.option_selection else None
         report = diagnostic(client, args.symbols, option_underlying=args.option_underlying, rounds=args.rounds,
-                            interval_seconds=args.interval_seconds)
+                            interval_seconds=args.interval_seconds, option_pair=pair, select_only=args.select_only)
     except QuoteUnavailable as exc:
         report = dict(purpose=PURPOSE, status="UNAVAILABLE", reason=str(exc), decision_eligibility="NOT_EVALUATED")
     try:
@@ -413,7 +519,7 @@ def main(argv=None, env=None, prompt=getpass.getpass) -> int:
     summary = {k: report.get(k) for k in ("status", "reason", "code")}
     summary["verdicts"] = {k: v.get("verdict") for k, v in (report.get("verdicts") or {}).items() if isinstance(v, dict)}
     print(json.dumps(summary, indent=2))
-    return 0 if report.get("status") == "OBSERVATIONS_ONLY" else 1
+    return 0 if report.get("status") in {"OBSERVATIONS_ONLY", "OPTION_PAIR_SELECTED"} else 1
 
 
 if __name__ == "__main__":
