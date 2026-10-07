@@ -477,3 +477,21 @@ after a failed refresh. Stock and listed call/put observations carry
 
 This stays inside G5 → G5a parent Checkpoint 3 → children 5/6; no new parent step,
 activation, scheduler or order was added. Accepted earlier evidence retains its scope.
+
+### Tradier option conventions and focused comparison (2026-10-07)
+
+Taz authorized Astra's bounded prompt as one batch. Record:
+`checkpoints/G5a-cp3-tradier-option-conventions.md`; field table: `OPTION_CONVENTIONS.md`.
+Same hierarchy (G5 → G5a parent CP3 → children 5/6); Step 09 stays paused.
+
+| Requirement | Disposition |
+| --- | --- |
+| Option quote sizes (Tradier REST and stream) | Raw kept, `UNVERIFIED` / `CONTRACTS_PROVISIONAL`, excluded from arithmetic. Provider definition **unresolved**. |
+| Greek scaling | Convention layer implemented. tastytrade documented; Tradier delta observed, gamma/theta/vega provisional (ORATS upstream), rho/phi raw only. |
+| Tradier `greeks.updated_at` zone | Provider-specific UTC parser under a relayed 2024 support answer; global parsers unchanged. Not a first-party schema. |
+| Position exposure | raw × metadata multiplier × signed contracts; no default 100. Not wired into tickets or risk (open). |
+| Recorder numeric decoding | **Defect fixed:** `quote_measure.number_state` refused DXLink `Decimal` values, so live Greeks, BBO prices/sizes and dayVolume were all INVALID at `d539d97`. Regression test from wire text; cloud capture before/after retained. Affects the planned opening-window volume capture. |
+| Regular-session Tradier/tastytrade/Webull comparison (Step 3) | **NOT_RUN** in the cloud: market closed (04:00 ET) and no Tradier credential here. iMac command in the handoff, after Astra's audit. |
+| Tradier stream and controlled reconnect | NOT_RUN in-repo: the new diagnostic is REST-only; Astra's earlier iMac stream preflight is outside the repository. |
+
+No verdict here is quote, ticket or order eligibility, and none is an overall G5 PASS.

@@ -256,6 +256,28 @@ def test_greeks_ages_use_their_own_time_never_the_latest_trade():
     assert rec.report()["greeks"]["current_state"] == "NOT_REDUCED_RAW_OBSERVATIONS_ONLY"
 
 
+def test_wire_decoded_decimal_values_are_recorded_as_values():
+    # Regression (2026-10-07 cloud capture at d539d97): the transport's json_read decodes
+    # numbers as Decimal, and every live BBO price/size, dayVolume and Greek was recorded
+    # INVALID. Feed the same path from wire text.
+    from desk.tastytrade_transport import json_read
+    source = with_option()
+    rec = qm.Recorder(source, clock=lambda: AT, max_age=AGE)
+    session = open_measure(source, rec)
+    names = qm.MEASURE_FIELDS["Greeks"]
+    row = greeks_row(AT - timedelta(seconds=1))
+    wire = json.dumps({"type": "FEED_DATA", "channel": MEASURE_CHANNEL,
+                       "data": ["Greeks", [float(row[n]) if n in qm.GREEK_VALUES else row[n] for n in names]]})
+    message = json_read(wire)
+    assert isinstance(message["data"][1][names.index("delta")], Decimal)
+    session.receive(message, AT)
+    greek = [r for r in rec.records if r["type"] == "GREEKS"][0]
+    assert greek["delta"] == {"state": "VALUE", "value": "0.52"} and greek["theta"]["value"] == "-0.31"
+    assert qm.number_state({"v": Decimal("NaN")}, "v") == {"state": "NAN"}
+    assert qm.number_state({"v": Decimal("Infinity")}, "v") == {"state": "INFINITE"}
+    assert qm.number_state({"v": True}, "v")["state"] == "INVALID"
+
+
 def test_transaction_snapshot_and_removal_markers_are_kept_raw():
     source = with_option()
     rec = qm.Recorder(source, clock=lambda: AT, max_age=AGE)
@@ -417,7 +439,8 @@ def test_measurements_stay_out_of_decision_modules():
     root = Path(__file__).resolve().parents[1] / "src" / "desk"
     importer = re.compile(r"^\s*(from desk(\.quote_measure| import quote_measure)|import desk\.quote_measure)", re.M)
     users = sorted(p.name for p in root.rglob("*.py") if importer.search(p.read_text()))
-    assert users == ["quote_check.py", "snapshot_quote_check.py", "webull_quote_check.py"]  # diagnostics only
+    assert users == ["option_conventions.py", "quote_check.py", "snapshot_quote_check.py",
+                     "tradier_option_check.py", "webull_quote_check.py"]  # diagnostics only
 
 
 def test_every_documented_command_and_flag_parses_without_a_request(tmp_path, monkeypatch, capsys):

@@ -61,7 +61,7 @@ MAX_VOLUME_SECONDS = 3000
 MAX_VOLUME_SYMBOLS = 5
 CREDENTIAL_NAMES = ("TASTYTRADE_CLIENT_SECRET", "TASTYTRADE_REFRESH_TOKEN", "APCA_API_KEY_ID",
                     "APCA_API_SECRET_KEY", "WEBULL_APP_KEY", "WEBULL_APP_SECRET", "WEBULL_ACCESS_TOKEN",
-                    "ALPHAVANTAGE_API_KEY", "MASSIVE_API_KEY")
+                    "ALPHAVANTAGE_API_KEY", "MASSIVE_API_KEY", "TRADIER_ACCESS_TOKEN")
 CREDENTIAL_MARKERS = ("bearer ", "authorization:", "access_token", "refresh_token", "client_secret", "token=",
                       "api_key=", "apikey=")
 VOLUME_NOTE = ("Trade.dayVolume is the provider's day volume including regular and extended hours (dxFeed "
@@ -102,13 +102,17 @@ def time_state(row: dict, name: str, received: datetime) -> dict:
 
 
 def number_state(row: dict, name: str) -> dict:
-    """Raw state of a JSONDouble field; zero and negative values are values."""
+    """Raw state of a JSONDouble field; zero and negative values are values.
+
+    The DXLink transport decodes JSON numbers as Decimal (``json_read``), so Decimal
+    is a value type here, not a corrupt one.
+    """
     if name not in row:
         return {"state": "ABSENT"}
     value = row[name]
     if value is None:
         return {"state": "NULL"}
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
         return {"state": "INVALID", "type": type(value).__name__}
     try:
         number = Decimal(str(value))

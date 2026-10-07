@@ -340,6 +340,12 @@ real `BRK/B` lookup is still to be done.
   index and sequence. No snapshot/transaction reduction, so no "current" value; no age
   cutoff. `Greeks.price` is market price; TheoPrice is not requested. The saved
   2026-10-05 Greeks files have no receipt times, so their ages cannot be recomputed.
+  Units and per-share normalization: `docs/OPTION_CONVENTIONS.md`; offline
+  `python -m desk.option_conventions tastytrade-greeks` labels them observations only.
+- **Numeric decoding (fixed 2026-10-07).** The DXLink transport decodes numbers as
+  `Decimal`; before this fix the recorder marked every live Greek, BBO price/size and
+  `dayVolume` INVALID. Measurements captured at or before `d539d97` carry no numeric
+  values and must be re-captured.
 - **Reports** are bounded (4000 records per record type, three raw samples per type,
   complete counters) and refused with `REPORT_CREDENTIAL_MATCH` if a configured
   credential value or a token/header marker appears.
