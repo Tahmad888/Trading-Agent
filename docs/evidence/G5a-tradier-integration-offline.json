@@ -1,0 +1,54 @@
+{
+  "purpose": "offline implementation verification; no host/live/order acceptance",
+  "base_commit": "686576d4eb4cef831b89a3020caf27836fa4410c",
+  "python": "3.14.6",
+  "strict_suite": {
+    "passed": 2051,
+    "seconds": 210.09,
+    "warnings": "errors"
+  },
+  "targeted": {
+    "passed": 76,
+    "seconds": 21.53
+  },
+  "mutation_checks": [
+    {
+      "protection": "attributed request start",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "late-failure ordering",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "failure epoch",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "current timestamp recheck",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reviewed crosswalk",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "final option reread",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "durable STOP",
+      "caught": true,
+      "exit_code": 1
+    }
+  ],
+  "actual_provider_calls": 0,
+  "G5": "OPEN",
+  "Step09": "PAUSED"
+}

@@ -17,7 +17,7 @@ Positive = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 
 # Quote-source labels that assert independent adapter evidence. A ticket request
 # carrying one is refused unless the resolved terms hold matching provenance (F6).
-RESERVED_QUOTE_SOURCES = frozenset({"tastytrade-dxlink"})
+RESERVED_QUOTE_SOURCES = frozenset({"tastytrade-dxlink", "tradier-rest"})
 QUOTE_ENVIRONMENTS = {"live": frozenset({"production"}), "paper": frozenset({"production", "sandbox"})}
 
 
@@ -29,8 +29,10 @@ class EvidenceUnavailable(ValueError):
 class QuoteProvenance(BaseModel):
     """Independent adapter identity/health, excluding changing receipt times.
 
-    ``generation`` is the quote connection session: a reconnect, restart or another
-    process is a different session, so approvals never carry across it (child 3, F8).
+    ``generation`` is provider-specific health evidence. For tastytrade-dxlink it is
+    the connection session (child 3, F8). For tradier-rest it is a durable store and
+    failure epoch: healthy GETs and command restarts do not change it; failure,
+    explicit STOP recovery or mapping replacement does.
     ``mapping_digest`` is the reviewed Webull↔quote-provider mapping the quote was
     verified against before any signal state could change (child 3, F7).
     """

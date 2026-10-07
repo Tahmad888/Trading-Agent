@@ -59,11 +59,7 @@ SAMPLES = 3               # first raw decoded rows kept per channel/type
 SEGMENT_SECONDS = 600     # = capture's own maximum, unchanged
 MAX_VOLUME_SECONDS = 3000
 MAX_VOLUME_SYMBOLS = 5
-CREDENTIAL_NAMES = ("TASTYTRADE_CLIENT_SECRET", "TASTYTRADE_REFRESH_TOKEN", "APCA_API_KEY_ID",
-                    "APCA_API_SECRET_KEY", "WEBULL_APP_KEY", "WEBULL_APP_SECRET", "WEBULL_ACCESS_TOKEN",
-                    "ALPHAVANTAGE_API_KEY", "MASSIVE_API_KEY", "TRADIER_ACCESS_TOKEN")
-CREDENTIAL_MARKERS = ("bearer ", "authorization:", "access_token", "refresh_token", "client_secret", "token=",
-                      "api_key=", "apikey=")
+from desk.quote_secrets import CREDENTIAL_NAMES, CREDENTIAL_MARKERS, credential_free
 VOLUME_NOTE = ("Trade.dayVolume is the provider's day volume including regular and extended hours (dxFeed "
                "Trade documentation); the Trade time is the last regular-hours trade time and can stay fixed "
                "while day volume changes, so it is never the volume update time. Receipt times are local "
@@ -506,14 +502,6 @@ def load_host_clock(path: Path | None) -> dict:
 
 
 # ---------------------------------------------------------------- credential guard ----
-
-def credential_free(text: str, env=None) -> bool:
-    env = os.environ if env is None else env
-    lowered = text.lower()
-    values = [env.get(name) for name in CREDENTIAL_NAMES]
-    if any(value and len(value) >= 6 and value in text for value in values):
-        return False
-    return not any(marker in lowered for marker in CREDENTIAL_MARKERS)
 
 
 def write_report(report: dict, path: Path, env=None) -> dict:

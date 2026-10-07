@@ -270,3 +270,13 @@ warning is never taken as proof that the policy is unchanged.
 Someone with write access to the file can still drop triggers and forge consistent
 rows; the local file is not a signed ledger. A keyed signature was suggested by the
 outside review; it needs a key kept outside the database and is not built here.
+
+## Tradier quote composition (G5a Step 2, 2026-10-07)
+
+See [Tradier ticket quote integration](TRADIER_TICKET_QUOTES.md) for the opt-in
+composer and explicit CLI factory. It refreshes quotes before revalidation and
+fences durable health/mappings plus every option BBO through final commit. It does
+not provide fabricated account, market, contract, OI or halt evidence. Separate
+healthy REST commands preserve approvals; failures/revocations require new versions.
+Tastytrade connection-session rules stay unchanged. Chosen contract quantities and
+verified multipliers remain in loss arithmetic; advertised quote sizes do not.

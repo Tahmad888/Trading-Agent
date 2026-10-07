@@ -45,7 +45,7 @@ from desk.playbook.cards import CARDS
 from desk.risk import AccountState, RiskLimits, evaluate
 from desk.risk_context import MarketContext, SetupRegistry
 from desk.risk_state import RiskStateError, RiskStateStore
-from desk.risk_terms import (RESERVED_QUOTE_SOURCES, EvidenceUnavailable, RiskTerms, RiskTermsSource,
+from desk.risk_terms import (RESERVED_QUOTE_SOURCES, EvidenceUnavailable, QuoteProvenance, RiskTerms, RiskTermsSource,
                              stop_distance)
 
 Text = Annotated[str, Field(min_length=1)]
@@ -179,6 +179,14 @@ class MarketObservation(BaseModel):
     open_interest: dict[str, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
 
 
+class ExecutableQuotes(BaseModel):
+    """Current BBO evidence only, independent of position quantity and Greek data."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    quote_as_of: AwareDatetime
+    option_spread_pct_mid: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    provenance: dict[str, QuoteProvenance]
+
+
 @dataclass
 class RiskInputs:
     """Independently supplied adapters. Live wiring is Step 13/15/20 work."""
@@ -191,6 +199,9 @@ class RiskInputs:
     limits: RiskLimits = field(default_factory=RiskLimits)
     # Read again at each final transaction; UTC wall clock when unset.
     clock: Callable[[], datetime] | None = None
+    # Fresh GET outside all final locks; local BBO reads under held_event at commit.
+    refresh_quotes: Callable[[TicketRequest, datetime], None] | None = None
+    executable_quotes: Callable[[TicketRequest, RiskTerms, ContractBook | None, datetime], ExecutableQuotes] | None = None
 
 
 @dataclass(frozen=True)
@@ -203,6 +214,7 @@ class Check:
     book: ContractBook | None
     account_revision: int | None = None
     market: MarketContext | None = None
+    quotes: ExecutableQuotes | None = None
 
 
 class _TermsSnapshot:
@@ -448,7 +460,11 @@ def quote_session_change(stored: dict | None, current: dict | None) -> str | Non
         return None
     same = {k: v for k, v in stored.items() if k != "generation"} == {k: v for k, v in current.items()
                                                                        if k != "generation"}
-    return QUOTE_SESSION_CHANGED if same else "the quote instrument, mapping or source changed"
+    if same:
+        if stored.get("source") == "tradier-rest":
+            return "Tradier quote health changed; prepare a new version after a successful fresh check"
+        return QUOTE_SESSION_CHANGED
+    return "the quote instrument, mapping or source changed"
 
 
 def _policy_text(policy: dict | None) -> str:
@@ -483,7 +499,15 @@ def recheck(ticket_id: str, version: int, request: TicketRequest, inputs: RiskIn
             now: datetime) -> Check:
     """Independent rerun from the stored request and fresh trusted evidence."""
     problems: list[str] = []
-    terms = book = proposal = decision = market = None
+    terms = book = proposal = decision = market = quotes = None
+    if inputs.refresh_quotes is not None:
+        try:
+            inputs.refresh_quotes(request, now)
+            now = final_clock(inputs, now)  # GET receipt can be later than command start.
+        except Exception as exc:
+            code = str(exc) if isinstance(exc, EvidenceUnavailable) else type(exc).__name__
+            return Check(None, None, None, binding(ticket_id, version, request, None, None, None, None, inputs.limits),
+                         (f"quote refresh unavailable ({code})",), None)
     try:
         revision, account = inputs.risk_state.load(request.account_id)
     except (RiskStateError, ValidationError, ValueError) as exc:
@@ -492,8 +516,15 @@ def recheck(ticket_id: str, version: int, request: TicketRequest, inputs: RiskIn
     try:
         terms = RiskTerms.model_validate(inputs.terms_source.resolve(request.event_id, now).model_dump())
         book = inputs.contract_book(now)
+        if terms.quote_provenance is not None and terms.quote_provenance.source == "tradier-rest":
+            if inputs.refresh_quotes is None or inputs.executable_quotes is None:
+                raise EvidenceUnavailable("TRADIER_EXECUTABLE_ADAPTER_REQUIRED")
         observation = MarketObservation.model_validate(
             inputs.observe(terms.symbol, tuple(l.symbol for l in request.legs), now).model_dump())
+        if inputs.executable_quotes is not None:
+            quotes = ExecutableQuotes.model_validate(inputs.executable_quotes(request, terms, book, now).model_dump())
+            observation = observation.model_copy(update={"quote_as_of": quotes.quote_as_of,
+                                                         "option_spread_pct_mid": quotes.option_spread_pct_mid})
         proposal = build_proposal(f"{ticket_id}:v{version}", request, terms, observation, book, now)
         market = inputs.market(now)
         decision = evaluate(proposal, account, inputs.limits, now, live=request.environment == "live",
@@ -509,7 +540,9 @@ def recheck(ticket_id: str, version: int, request: TicketRequest, inputs: RiskIn
     if now >= request.time_stop:
         problems.append("time stop has passed; no new entry")
     bound = json.loads(_json(binding(ticket_id, version, request, proposal, decision, terms, book, inputs.limits)))
-    return Check(proposal, decision, terms, bound, tuple(problems), book, revision, market)
+    if quotes is not None:
+        bound["executable_quote_provenance"] = {k: v.model_dump(mode="json") for k, v in quotes.provenance.items()}
+    return Check(proposal, decision, terms, bound, tuple(problems), book, revision, market, quotes)
 
 
 def final_evaluation(ticket_id: str, version: int, request: TicketRequest, inputs: RiskInputs,
@@ -523,6 +556,8 @@ def final_evaluation(ticket_id: str, version: int, request: TicketRequest, input
                         terms_source=_TermsSnapshot(check.terms))
     bound = json.loads(_json(binding(ticket_id, version, request, check.proposal, decision, check.terms, check.book,
                                inputs.limits)))
+    if check.quotes is not None:
+        bound["executable_quote_provenance"] = {k: v.model_dump(mode="json") for k, v in check.quotes.provenance.items()}
     return decision, bound
 
 
@@ -539,7 +574,20 @@ def final_problem(ticket_id: str, version: int, request: TicketRequest, inputs: 
         terms = RiskTerms.model_validate({**check.terms.model_dump(),
                                          "underlying_price": event.quote_price, "quote_at": event.quote_at})
         check = replace(check, terms=terms)
+    quote_problem = None
+    if inputs.executable_quotes is not None and event.eligible:
+        try:
+            quotes = ExecutableQuotes.model_validate(inputs.executable_quotes(request, check.terms, check.book, at).model_dump())
+            proposal = check.proposal.model_copy(update={"quote_as_of": quotes.quote_as_of,
+                                                        "option_spread_pct_mid": quotes.option_spread_pct_mid})
+            check = replace(check, proposal=proposal, quotes=quotes)
+        except EvidenceUnavailable as exc:
+            quote_problem = f"Final executable quote check failed ({exc}); revalidate the ticket"
+        except Exception as exc:
+            quote_problem = f"Final executable quote check failed ({type(exc).__name__}); revalidate the ticket"
     decision, bound = final_evaluation(ticket_id, version, request, inputs, check, account, at)
+    if quote_problem:
+        return quote_problem, decision
     if not event.eligible or event.event_digest != check.terms.event_digest:
         reason = getattr(event, "reason", None)
         return (f"{EVENT_NOT_ELIGIBLE}: {reason}" if reason else EVENT_NOT_ELIGIBLE), decision
@@ -1080,12 +1128,18 @@ def render(view: dict) -> str:
             f"Target: {price(b['target']) if b['target'] else 'none set by the setup'}"]
     if b.get("quote_provenance"):
         proof = b["quote_provenance"]
+        identity_label = "reviewed quote key" if proof['source'] == "tradier-rest" else "verified instrument"
         out.append(f"Current quote source: {proof['source']} ({proof['environment']}); "
-                   f"verified instrument {proof['instrument_id']}; reviewed mapping "
+                   f"{identity_label} {proof['instrument_id']}; reviewed mapping "
                    f"{(proof.get('mapping_digest') or 'MISSING')[:12]}")
     elif view["request"].get("quote_source") in RESERVED_QUOTE_SOURCES:
         out.append(f"Quote source label '{view['request']['quote_source']}' is NOT backed by independent "
                    "evidence; this ticket cannot be approved")
+    if b.get("executable_quote_provenance"):
+        out.append("Current bid/ask checks cover: " + ", ".join(sorted(b["executable_quote_provenance"])))
+        if b["structure"] != "shares":
+            out.append("Position quantities above are contracts; verified contract metadata determines the "
+                       "multiplier and loss. Advertised bid/ask sizes are unverified and do not size this position.")
     if not b["eligible"] and any(leg["ceiling_qty"] for leg in b["legs"]):
         ceiling = ", ".join(str(leg["ceiling_qty"]) for leg in b["legs"])
         at = []

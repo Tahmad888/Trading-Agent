@@ -2,6 +2,20 @@
 
 ## Active repair work
 
+Latest authorized implementation (2026-10-07): **Step 2, Tradier quotes in signal
+and ticket checks**, inside G5 -> G5a parent CP3. Read
+`docs/checkpoints/G5a-tradier-ticket-integration.md` and `docs/TRADIER_TICKET_QUOTES.md`.
+The opt-in composer requires existing trusted account/status/OI/market/contract
+adapters and real reviewed Webull/Tradier crosswalks. A persistent REST health
+store permits healthy separate commands; failures, STOP recovery and mapping
+changes cannot revive old approvals. Final local checks hold every required BBO
+and quote/mapping health through ticket commit, without a provider request.
+Greek/volume analytics stay outside decision modules; option chosen quantities and
+verified multipliers remain in loss math. No production mapping, iMac update,
+runner activation, order or G5 closure is implied. Step 09 stays paused. Older
+entries below retain their dated scope.
+
+
 Latest bounded follow-up (2026-10-07): Astra repairs her audit of Tradier conventions
 commit `5b43e5d`, preparing the regular-session comparison within G5 → G5a parent CP3.
 Read `docs/checkpoints/G5a-cp3-tradier-diagnostic-audit-repairs.md`. Latest-field ages

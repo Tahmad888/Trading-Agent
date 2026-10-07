@@ -512,3 +512,22 @@ reviewed `5b43e5d` implementation; it is not independent approval of Astra's own
 Tradier option quote-size units, provisional Greek conventions, the inferred Greek
 timezone, live streaming/reconnect, opening-window consolidated volume and the existing
 G5 operational rows remain open. Step 09 stays paused.
+
+
+### Tradier signal/ticket quote integration (2026-10-07)
+
+Taz authorized bounded Step 2. Record:
+`checkpoints/G5a-tradier-ticket-integration.md`; operator/wiring details:
+`TRADIER_TICKET_QUOTES.md`. Same parent CP3; Step 09 stays paused.
+
+| Requirement | Implementation / remaining acceptance |
+|---|---|
+| Current Tradier trade -> independent scanner revalidation | Implemented behind reviewed crosswalk and current vendor identity; synthetic integration tested. |
+| Independent current stock BBO and every option leg BBO | Implemented with each side's own timestamp, full standard contract identity and trusted ContractBook comparison; final risk reread under the quote fence. |
+| Separate CLI commands and healthy REST refresh | Durable provider-specific health generation; store reopen preserves healthy approvals. Existing tastytrade session rules unchanged. |
+| Failure ordering, restart, STOP/recovery, mapping revoke, final races | Persistent append-only outcomes; failure cannot be cleared by an older request. Final store reservation holds through ticket commit. |
+| Position quantity vs advertised quote size | Chosen contracts and verified multiplier remain in premium/max-loss math; advertised sizes stay unverified and do not determine capacity or position size. |
+| Greek/volume analytics isolation | Existing architecture guards kept unchanged. Shared GET transport and quote-only fields are separate modules; no provisional analytics enters decision code. |
+| Actual operational wiring / mappings | **Pending.** No synthetic account, market, halt/OI or contract adapter is supplied for production. Explicit opt-in composition only. |
+| New iMac commit and read-only consumer/source acceptance | **Pending.** Earlier host/source evidence keeps its exact scope. |
+| Immediate consolidated opening-window volume / other G5 rows | Unchanged, still open. This change is neither a G5 PASS nor trading activation. |
