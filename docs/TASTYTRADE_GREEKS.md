@@ -82,6 +82,19 @@ dropping a payload adds no such requirement. Normal first flag-zero delivery in 
 new generation is still accepted. This does not implement automatic resubscription
 or prove that a live provider will send a replacement snapshot after a map repair.
 
+A row with the wrong event type is malformed even if its field map decoded it.
+Recorder and the direct reducer both latch full-snapshot/new-generation recovery;
+the row's flags, values and index are not trusted. When the registered option is
+identifiable, only its analysis state is withheld. An unidentifiable or non-option
+wire identity withholds registered option analysis without allocating unknown
+symbols or modifying stock Quote/Trade state. This closes the wrong-eventType
+missing-start path from Claude's cd9f891 re-audit.
+Missing/invalid flags on an otherwise mapped row use the same latch: they cannot
+prove that the discarded row was an atomic update. Valid flag-zero rows with a
+bad calculation index retain the existing standalone recovery and F1 floor.
+A first rejected TX requiring a snapshot allocates recovery metadata even if
+there is no previous calculation (including a locally invalid receipt time).
+
 **Conservative engineering choice:** removal of the latest calculation does not
 silently promote an older one to current; a replacement at that index or later, or
 an explicit full snapshot, restores state. Earlier rows remain internally indexed.

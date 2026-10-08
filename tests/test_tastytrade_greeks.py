@@ -195,6 +195,10 @@ def test_bad_protocol_field_cannot_leave_prior_current_value(field, value):
     with pytest.raises(QuoteUnavailable):
         get(state)
     feed(state)
+    if field == "eventFlags":
+        # An invalid flag cannot establish that the dropped row was atomic.
+        refused(state, "FLAGS_INVALID")
+        feed(state, row(eventFlags=BEGIN | END))
     assert get(state)["status"] == "CURRENT_CALCULATION"
 
 

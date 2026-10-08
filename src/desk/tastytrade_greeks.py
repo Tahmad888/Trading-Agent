@@ -113,13 +113,20 @@ class GreekState:
         self._states[symbol] = state
         return state
 
-    def unknown_gap(self):
-        """Unmapped payload may contain a lost BEGIN; TX-clear cannot repair it."""
+    def unknown_gap(self, symbol=None, *, reason="GREEK_LOST_BOUNDARY_UNKNOWN"):
+        """Malformed/undecodable data may hide BEGIN; TX-clear cannot repair it.
+
+        Isolate a resolved option when known. Otherwise the affected option cannot
+        be identified, so withhold registered options without allocating strangers.
+        """
         with self._lock:
             if not self.generation or self.generation != self.service.generation:
                 return
-            for symbol in list(self.service.identities):
-                state = self._withdrawn_state(symbol, "GREEK_LOST_BOUNDARY_UNKNOWN")
+            identity = self.service.identities.get(symbol)
+            symbols = ((symbol,) if identity is not None and identity.kind == "Equity Option"
+                       else list(self.service.identities))
+            for affected in symbols:
+                state = self._withdrawn_state(affected, reason)
                 if state is not None:
                     state.requires_snapshot = True
 
@@ -152,6 +159,9 @@ class GreekState:
     def reject(self, symbol, reason, *, needs_snapshot=False):
         with self._lock:
             state = self._states.get(symbol)
+            if (state is None and needs_snapshot and self.generation
+                    and self.generation == self.service.generation):
+                state = self._withdrawn_state(symbol, reason)
             if state is not None:
                 state.requires_snapshot |= bool(state.pending or state.snapshot or needs_snapshot)
                 state.rows.clear()
@@ -174,10 +184,14 @@ class GreekState:
                     self._discarded(symbol, row, str(exc))
                     return False
                 if not isinstance(row, dict):
-                    raise QuoteUnavailable("GREEK_ROW_INVALID")
-                if (identity.kind != "Equity Option" or row.get("eventType") != "Greeks"
-                        or row.get("eventSymbol") != identity.streamer_symbol):
-                    raise QuoteUnavailable("GREEK_IDENTITY_MISMATCH")
+                    self.unknown_gap(symbol, reason="GREEK_ROW_INVALID")
+                    return False
+                if row.get("eventType") != "Greeks":
+                    self.unknown_gap(symbol, reason="GREEK_EVENT_TYPE_MISMATCH")
+                    return False
+                if identity.kind != "Equity Option" or row.get("eventSymbol") != identity.streamer_symbol:
+                    self.unknown_gap(symbol, reason="GREEK_IDENTITY_MISMATCH")
+                    return False
                 state = self._states.get(symbol)
                 if state is None:
                     state = self._states[symbol] = _State(identity.identity_digest, identity_epoch)
@@ -189,7 +203,8 @@ class GreekState:
                 state.last_receipt = received
                 flags = row.get("eventFlags")
                 if type(flags) is not int or flags < 0 or flags & ~(TX | REMOVE | BEGIN | END | SNIP | MODE):
-                    raise QuoteUnavailable("GREEK_FLAGS_INVALID")
+                    self.unknown_gap(symbol, reason="GREEK_FLAGS_INVALID")
+                    return False
                 if type(row.get("index")) is not int or not 0 <= row["index"] < 1 << 63:
                     raise QuoteUnavailable("GREEK_INDEX_INVALID")
                 if state.requires_snapshot and not flags & BEGIN:

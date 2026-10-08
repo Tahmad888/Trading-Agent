@@ -576,3 +576,10 @@ no lost data does not invent that requirement. Follow-up offline verification is
 recorded in the same checkpoint and `evidence/G5a-greek-dropped-start-offline.json`.
 Independent re-audit is still required; earlier iMac commands are held. This does
 not change the remaining O3–O5 or parent acceptance rows.
+
+Claude's cd9f891 re-audit accepts the four first-record-loss paths and points 1–7,
+but finds a remaining malformed-eventType route (H1, same F2 class). Recorder's
+branch now records unknown loss rather than generic rejection; the direct reducer
+uses the same scoped full-snapshot recovery. Its new acceptance evidence belongs
+in the existing Greek-recovery checkpoint. Independent review and iMac/live
+acceptance remain held; no other parent row is closed by this correction.

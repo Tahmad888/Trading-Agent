@@ -1,0 +1,248 @@
+{
+  "purpose": "offline malformed Greek first-record repair; independent re-audit pending",
+  "base_commit": "cd9f891dba3818e9735f33322b0a5590afcc2efd",
+  "python": "3.14.6",
+  "date": "2026-10-08",
+  "recreated_H1_before_after": [
+    {
+      "prior_state": false,
+      "before": {
+        "status": "CURRENT_CALCULATION",
+        "delta": "0.63"
+      },
+      "after": {
+        "status": "UNAVAILABLE",
+        "reason": "GREEK_EVENT_TYPE_MISMATCH"
+      }
+    },
+    {
+      "prior_state": true,
+      "before": {
+        "status": "CURRENT_CALCULATION",
+        "delta": "0.63"
+      },
+      "after": {
+        "status": "UNAVAILABLE",
+        "reason": "GREEK_EVENT_TYPE_MISMATCH"
+      }
+    }
+  ],
+  "new_regressions": {
+    "cases": 46,
+    "against_base_failed": 41,
+    "against_base_passed": 5,
+    "collection_errors": false
+  },
+  "focused": {
+    "passed": 353,
+    "seconds": 22.6
+  },
+  "greek_mutations": [
+    {
+      "protection": "transaction boundary",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "overlapping snapshot",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "latest removal",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "index consistency",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "read clock",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "schema revision",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "corrupt transaction recovery",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "capture state disposal",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity binding",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity failure memory",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "newest index floor",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reject retains floor",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reset keeps interruption",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "closing boundary is discarded",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "schema retains interruption",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity epoch retains interruption",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reset preserves unfinished snapshot",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reset retains truncation refusal",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity drops first record",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "schema drops first record",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "first dropped snapshot boundary",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "first dropped transaction boundary",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "undecodable gap reported",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "unknown gap requires snapshot",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "unknown gap reset retains latch",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "discarded end permits complete next update",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "Recorder malformed type latches uncertainty",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "direct malformed type latches uncertainty",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "known option failure isolated",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "unmapped malformed type latches uncertainty",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "invalid flags latch unknown boundary",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "first rejected transaction allocates recovery metadata",
+      "caught": true,
+      "exit_code": 1
+    }
+  ],
+  "tradier_control_mutations": [
+    {
+      "protection": "attributed request start",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "late-failure ordering",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "failure epoch",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "current timestamp recheck",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reviewed crosswalk",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "final option reread",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "durable STOP",
+      "caught": true,
+      "exit_code": 1
+    }
+  ],
+  "strict_suite": {
+    "passed": 2235,
+    "seconds": 201.65,
+    "command": "PYTHONPATH=src:. ../verify-python314/bin/python -m pytest -q -W error"
+  },
+  "providers": 0,
+  "orders": 0,
+  "imac_changes": false,
+  "G5": "OPEN"
+}

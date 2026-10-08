@@ -339,7 +339,7 @@ class Recorder:
                     self._count("measure_rejected", kind, "EVENT_TYPE_MISMATCH")
                     if kind == "Greeks":
                         symbol = self._symbol(row.get("eventSymbol"))
-                        self.greek_state.reject(symbol, "GREEK_EVENT_TYPE_MISMATCH")
+                        self.greek_state.unknown_gap(symbol, reason="GREEK_EVENT_TYPE_MISMATCH")
                     continue
                 symbol = self._symbol(row.get("eventSymbol"))
                 if symbol is None:

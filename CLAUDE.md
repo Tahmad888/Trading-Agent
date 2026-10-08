@@ -13,6 +13,10 @@ or schema withdrawal (F2). The follow-up tracks discarded decoded boundaries eve
 before any calculation; undecodable Greek payloads require a full snapshot or new
 generation. See the re-audit section in the same checkpoint. Held iMac instructions
 must not be run until the follow-up passes independent review.
+Claude's cd9f891 re-audit accepts the previous first-record-loss paths but found
+a malformed-eventType route bypassing recovery (H1, same F2 class). Recorder and
+the direct reducer now use the same scoped full-snapshot/new-generation latch.
+The re-audit section of the same checkpoint records it; iMac commands remain held.
 
 Latest authorized batch (2026-10-07): diagnostic safety, developer verification of
 the af98bd8 Tradier integration, and indexed tastytrade Greek analysis. Read

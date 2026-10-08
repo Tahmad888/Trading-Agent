@@ -161,3 +161,68 @@ credential reads, iMac changes, orders or runner activation. Git/documentation
 network access only. Independent re-audit remains required, then exact-commit iMac
 and bounded live acceptance. F1's accepted audit evidence is retained; this does
 not close G5, resume Step 09 or implement O3–O5.
+
+## Wrong-eventType follow-up (before code)
+
+Claude's cd9f891 re-audit accepts the four first-record-loss repairs and points
+1–7, but reports H1: Recorder rejects a row carrying the wrong eventType without
+recording uncertainty. Astra reproduced both versions (with/without an existing
+calculation) on exact cd9f891, remote/local matched. The tail incorrectly becomes
+CURRENT_CALCULATION. Claude stopped before a redundant full suite, as requested.
+His original probes are named in the report but are not present in this workspace;
+the reproduction here is recreated, not a claim to run those byte-identical files.
+
+Requirement: malformed typed Greek data must force full-snapshot/new-generation
+recovery regardless of the purported flags. Reuse unknown-gap state, scoped to
+the registered option when identifiable; otherwise withhold registered options
+without allocating unknown symbols. The direct reducer and Recorder must agree.
+No unvalidated index/value is retained. Healthy peers remain isolated for known
+options; Quote/Trade, the F1 index floor and previous recovery controls stay intact.
+
+This closes the same F2 missing-start class, not a new G5 child or trading rule.
+The protocol evidence and conservative recovery rationale above still apply.
+Producer: Recorder's malformed-row branch/direct GreekState input. Consumer:
+analysis-only Greek state. Acceptance: TX/BEGIN/plain/missing or invalid flags,
+first/existing state, unknown symbol, peer isolation, repeated resets, full/empty
+snapshot and new-generation recovery. Add baseline-failing cases and mutation
+guards, then one combined strict suite. No provider call/iMac update/activation.
+Roll back this follow-up to cd9f891. Independent review and the iMac hold remain.
+
+Before finalization, Astra also reproduced the same tail publication with a
+healthy mapped Greek row whose flags are missing. Invalid flags cannot establish
+an atomic boundary, so this route uses the same full-snapshot latch. The final
+suite was interrupted after 1111 passes to add this correction; that interrupted
+run is not final evidence. First-row protocol rejection requiring a snapshot also
+must allocate metadata when no prior state exists, covering a bad-receipt TX path.
+
+## Malformed-start correction results
+
+Recorder's wrong-eventType branch now uses the unknown-gap latch, scoped to an
+identifiable registered option. Unknown/non-option identity withholds registered
+options without allocating strangers or touching stock Quote/Trade state. Direct
+malformed row/type/identity input uses the same latch. Missing/invalid mapped flags
+cannot establish an atomic boundary and also require a full snapshot/new generation.
+A first rejected TX requiring snapshot recovery allocates value-free metadata even
+before a prior calculation exists. No unvalidated value/index changes the F1 floor.
+
+`tests/test_greek_malformed_type.py` adds **46 cases**; on exact cd9f891 Greek and
+Recorder modules in a disposable source copy: **41 failed, 5 passed**, no collection
+errors. Both recreated H1 cases now return UNAVAILABLE/GREEK_EVENT_TYPE_MISMATCH,
+rather than the old current delta 0.63. Three existing invalid-flags cases in
+`tests/test_tastytrade_greeks.py` now assert that ordinary recovery stays withheld,
+then show full-snapshot recovery. Other valid flag-zero protocol-error recovery
+controls are unchanged. These assertions are stricter, not relaxed to pass the code.
+
+Focused eight-file strict suite (previous seven files plus the new malformed-type
+file): **353 passed in 22.60 s** on Python 3.14.6. Greek mutations: **32/32 caught**
+(six new guards); unchanged Tradier controls: **7/7 caught**. The final new mutation
+anchor initially matched two helper calls and was narrowed to the reject branch;
+that harness failure was not counted as a caught mutation. All final guards fail
+through test assertions, not import/collection errors. Final combined strict suite,
+`PYTHONPATH=src:. ../verify-python314/bin/python -m pytest -q -W error`, passed
+**2235 tests in 201.65 s** on Python **3.14.6**. The intentionally interrupted
+earlier run is not final proof. `git diff --check` clean.
+
+Evidence: `../evidence/G5a-greek-malformed-type-offline.json`. No provider calls,
+credential reads, iMac changes or orders. Independent re-audit remains required;
+the iMac hold and remaining parent G5/Step 09 status remain unchanged.
