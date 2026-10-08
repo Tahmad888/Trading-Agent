@@ -43,7 +43,9 @@ class _State:
         return _State(
             self.identity_digest if identity_digest is None else identity_digest,
             self.identity_epoch if identity_epoch is None else identity_epoch,
-            reason=reason, last_receipt=self.last_receipt,
+            reason=(self.reason or "GREEK_SNAPSHOT_TRUNCATED") if
+                   (self.requires_snapshot or self.truncated) else reason,
+            last_receipt=self.last_receipt,
             requires_snapshot=self.requires_snapshot or self.truncated,
             highest_index=self.highest_index if same_identity else None,
             await_boundary=self.await_boundary or bool(self.pending or self.snapshot),
@@ -95,6 +97,58 @@ class GreekState:
             self.ready, self.reason = False, reason
             self._states = {symbol: state.reset(reason) for symbol, state in self._states.items()}
 
+    def _withdrawn_state(self, symbol, reason):
+        """Allocate only recovery metadata for a previously resolved option.
+
+        The registered identity is not treated as healthy here. A healthy
+        identity_state check remains mandatory before accepting any calculation.
+        Epoch -1 ensures the first healthy event rebinds this metadata.
+        """
+        identity = self.service.identities.get(symbol)
+        if identity is None or identity.kind != "Equity Option":
+            return None
+        state = self._states.get(symbol)
+        state = (state.reset(reason) if state is not None else
+                 _State(identity.identity_digest, -1, reason=reason))
+        self._states[symbol] = state
+        return state
+
+    def unknown_gap(self):
+        """Unmapped payload may contain a lost BEGIN; TX-clear cannot repair it."""
+        with self._lock:
+            if not self.generation or self.generation != self.service.generation:
+                return
+            for symbol in list(self.service.identities):
+                state = self._withdrawn_state(symbol, "GREEK_LOST_BOUNDARY_UNKNOWN")
+                if state is not None:
+                    state.requires_snapshot = True
+
+    def _discarded(self, symbol, row, reason):
+        """Follow decoded flags while unavailable; never retain values/indexes."""
+        state = self._withdrawn_state(symbol, reason)
+        if state is None:
+            return
+        identity = self.service.identities[symbol]
+        flags = row.get("eventFlags") if isinstance(row, dict) else None
+        if (not isinstance(row, dict) or row.get("eventType") != "Greeks"
+                or row.get("eventSymbol") != identity.streamer_symbol
+                or type(flags) is not int or flags < 0
+                or flags & ~(TX | REMOVE | BEGIN | END | SNIP | MODE)):
+            state.requires_snapshot = True
+            state.reason = "GREEK_LOST_BOUNDARY_UNKNOWN"
+            return
+        if flags & BEGIN:
+            state.await_boundary = state.await_snapshot_end = True
+        if flags & TX:
+            state.await_boundary = True
+        if flags & SNIP:
+            state.requires_snapshot = True
+            state.reason = "GREEK_SNAPSHOT_TRUNCATED"
+        if state.await_snapshot_end and flags & (END | SNIP):
+            state.await_snapshot_end = False
+        if state.await_boundary and not state.await_snapshot_end and not flags & TX:
+            state.await_boundary = False  # the decoded closing row was itself discarded
+
     def reject(self, symbol, reason, *, needs_snapshot=False):
         with self._lock:
             state = self._states.get(symbol)
@@ -109,14 +163,15 @@ class GreekState:
         with self._lock:
             try:
                 received = aware(received)
-                if not self.ready or self.generation != self.service.generation:
-                    return False  # schema/session withdrawal already withheld the state
+                if self.generation != self.service.generation or not self.generation:
+                    return False  # do not attach old-session loss to a new generation
+                if not self.ready:
+                    self._discarded(symbol, row, self.reason)
+                    return False
                 try:
                     identity, identity_epoch = self.service.identity_state(symbol, received)
                 except QuoteUnavailable as exc:
-                    state = self._states.get(symbol)
-                    if state is not None:
-                        self._states[symbol] = state.reset(str(exc))
+                    self._discarded(symbol, row, str(exc))
                     return False
                 if not isinstance(row, dict):
                     raise QuoteUnavailable("GREEK_ROW_INVALID")

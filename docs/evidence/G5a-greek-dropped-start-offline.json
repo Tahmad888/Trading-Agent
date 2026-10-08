@@ -1,0 +1,254 @@
+{
+  "purpose": "offline first-record-loss follow-up; no provider calls; independent re-audit pending",
+  "base_commit": "f67f027da0e6d2e043c2928bbc7950769939c6fd",
+  "python": "3.14.6",
+  "date": "2026-10-08",
+  "before": {
+    "identity_lost_1": {
+      "lost_accepted": false,
+      "tail_accepted": [
+        false,
+        true
+      ],
+      "current": {
+        "status": "CURRENT_CALCULATION"
+      }
+    },
+    "identity_lost_4": {
+      "lost_accepted": false,
+      "tail_accepted": [
+        false,
+        true
+      ],
+      "current": {
+        "status": "CURRENT_CALCULATION"
+      }
+    },
+    "map_lost_5": {
+      "status": "CURRENT_CALCULATION"
+    },
+    "map_lost_1": {
+      "status": "CURRENT_CALCULATION"
+    }
+  },
+  "after": {
+    "identity_lost_1": {
+      "lost_accepted": false,
+      "tail_accepted": [
+        false,
+        false
+      ],
+      "current": {
+        "status": "UNAVAILABLE",
+        "reason": "GREEK_RESET_BOUNDARY_DISCARDED"
+      }
+    },
+    "identity_lost_4": {
+      "lost_accepted": false,
+      "tail_accepted": [
+        false,
+        false
+      ],
+      "current": {
+        "status": "UNAVAILABLE",
+        "reason": "GREEK_RESET_BOUNDARY_DISCARDED"
+      }
+    },
+    "map_lost_5": {
+      "status": "UNAVAILABLE",
+      "reason": "GREEK_RESET_BOUNDARY_DISCARDED"
+    },
+    "map_lost_1": {
+      "status": "UNAVAILABLE",
+      "reason": "GREEK_LOST_BOUNDARY_UNKNOWN"
+    }
+  },
+  "new_regressions": {
+    "cases": 40,
+    "against_base_failed": 36,
+    "against_base_controls_passed": 4,
+    "collection_errors": false
+  },
+  "focused": {
+    "passed": 307,
+    "seconds": 22.05
+  },
+  "greek_mutations": [
+    {
+      "protection": "transaction boundary",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "overlapping snapshot",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "latest removal",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "index consistency",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "read clock",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "schema revision",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "corrupt transaction recovery",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "capture state disposal",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity binding",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity failure memory",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "newest index floor",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reject retains floor",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reset keeps interruption",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "closing boundary is discarded",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "schema retains interruption",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity epoch retains interruption",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reset preserves unfinished snapshot",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reset retains truncation refusal",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity drops first record",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "schema drops first record",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "first dropped snapshot boundary",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "first dropped transaction boundary",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "undecodable gap reported",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "unknown gap requires snapshot",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "unknown gap reset retains latch",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "discarded end permits complete next update",
+      "caught": true,
+      "exit_code": 1
+    }
+  ],
+  "tradier_control_mutations": [
+    {
+      "protection": "attributed request start",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "late-failure ordering",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "failure epoch",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "current timestamp recheck",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reviewed crosswalk",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "final option reread",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "durable STOP",
+      "caught": true,
+      "exit_code": 1
+    }
+  ],
+  "strict_suite": {
+    "passed": 2189,
+    "seconds": 209.78,
+    "command": "PYTHONPATH=src:. ../verify-python314/bin/python -m pytest -q -W error"
+  },
+  "providers": 0,
+  "orders": 0,
+  "imac_changes": false,
+  "G5": "OPEN"
+}

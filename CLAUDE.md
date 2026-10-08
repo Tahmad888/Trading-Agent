@@ -8,6 +8,11 @@ recovery retains the newest validated index and lost transaction/snapshot bounda
 metadata. No old calculation or interrupted tail is published as current. This is
 analysis-only; O3 runtime budgeting and O4/O5 reporting are separate follow-ups.
 Independent re-audit and actual-host acceptance remain required; G5 stays open.
+Claude's re-audit of f67f027 accepts F1 but found first-record loss during identity
+or schema withdrawal (F2). The follow-up tracks discarded decoded boundaries even
+before any calculation; undecodable Greek payloads require a full snapshot or new
+generation. See the re-audit section in the same checkpoint. Held iMac instructions
+must not be run until the follow-up passes independent review.
 
 Latest authorized batch (2026-10-07): diagnostic safety, developer verification of
 the af98bd8 Tradier integration, and indexed tastytrade Greek analysis. Read

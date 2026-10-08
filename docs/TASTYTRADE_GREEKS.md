@@ -65,6 +65,23 @@ is a conservative engineering choice implementing the provider transaction rules
 it is not a trading threshold. Stored recovery metadata has no numeric Greek values
 or executable quotes. See `checkpoints/G5a-greek-recovery-2026-10-08.md`.
 
+Discarded decoded events still update boundary metadata during identity/schema
+withdrawal, including before the first stored calculation. A dropped BEGIN keeps
+subsequent snapshot body records unavailable until END and any pending TX finish;
+a dropped TX keeps its tail unavailable through TX-clear. If the closing boundary
+is decoded while still withdrawn, the next complete update can recover after
+health returns. No discarded calculation values or indexes establish a current
+calculation or index floor.
+
+If Greek data arrives while its map cannot decode it (or cannot expose valid
+flags), a lost snapshot start cannot be ruled out. Registered option states then
+require a complete new replacement snapshot or a new connection generation.
+When the symbol cannot be decoded, all currently registered options are affected;
+stock Quote/Trade state remains untouched. Merely withdrawing a map without
+dropping a payload adds no such requirement. Normal first flag-zero delivery in a
+new generation is still accepted. This does not implement automatic resubscription
+or prove that a live provider will send a replacement snapshot after a map repair.
+
 **Conservative engineering choice:** removal of the latest calculation does not
 silently promote an older one to current; a replacement at that index or later, or
 an explicit full snapshot, restores state. Earlier rows remain internally indexed.

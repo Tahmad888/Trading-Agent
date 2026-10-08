@@ -87,3 +87,77 @@ credential reads, iMac changes or orders. Documentation and Git network access o
 Independent re-audit remains required. This record does not close G5 or claim any
 actual-host/live transaction/snapshot event. Original live flag-zero evidence is
 retained in its scope; rare protocol behavior is synthetic acceptance only.
+
+## Re-audit follow-up: first record lost during withdrawal (before code)
+
+Claude's re-audit of f67f027 accepts F1 and reports a remaining F2 case. Astra
+reproduced all four reported paths on the exact commit: identity failure loses
+the first TX or BEGIN (including no prior symbol state); a map missing index
+fields loses first TX; an invalid map makes the first TX undecodable. Each
+published the tail as CURRENT_CALCULATION. Remote and local f67f027 match.
+
+Requirement: observe discarded protocol boundaries even before a symbol has a
+calculation. On a decoded row withheld by identity/schema health, retain only
+validated flags and same-generation recovery metadata, never its numeric values
+or unvalidated index. Discard its incomplete transaction/snapshot through the
+closing boundary. If that boundary is itself dropped but decoded, record its
+completion; subsequent complete updates can recover. Existing reset semantics
+and the F1 validated-index floor remain intact.
+
+Undecodable Greek data cannot reveal whether a BEGIN was lost: mark the currently
+registered option symbols as requiring a full replacement snapshot or a fresh
+connection generation. A TX-clear record alone cannot repair an unknown missing
+snapshot. This stricter engineering choice follows the documented snapshot/TX
+mechanism; it is not a freshness threshold or a claim about retail practice.
+Merely withdrawing a map, with no dropped data, does not impose this stronger
+requirement. Only Greek state is affected; Quote/Trade state is unchanged.
+
+Acceptance: first TX/BEGIN before any state and after an atomic calculation;
+identity and limited/invalid map windows; healthy-peer isolation where the symbol
+is known; unknown-schema loss, repeated resets, END+TX, truncation and explicit
+snapshot/new-generation recovery; no values retained in dropped-row metadata.
+Add failing regressions on f67f027, independent mutation guards and one final
+combined strict suite. No provider calls or iMac update. Roll back this follow-up
+to f67f027. The held iMac instructions remain held until re-audit passes.
+
+## First-record-loss follow-up results
+
+Implemented discarded-row boundary tracking in GreekState, including creation of
+value-free metadata for already resolved options without a prior calculation.
+It does not attest identity health: the healthy identity/epoch check still runs
+before any accepted calculation. Decoded BEGIN/TX/END/SNIP flags track the lost
+group; even a closing boundary dropped during the withdrawal is recorded. Invalid
+flags cannot clear uncertainty. No dropped numeric values or indexes are retained.
+
+Recorder reports undecodable Greek payloads and malformed compact row lengths as
+unknown gaps. These require a full new replacement snapshot or a fresh generation
+because a TX-clear alone cannot reveal a missed BEGIN. All registered options are
+withheld when the symbol is undecodable; Quote/Trade state is unchanged. Empty valid
+payloads and map withdrawal without lost data add no unknown gap. Snapshot-required
+reasons survive resets rather than being replaced by a generic waiting message.
+No automatic resubscription is added: in an unknown-gap case a provider sending
+only ordinary updates will remain unavailable until a new capture/reconnect.
+
+Claude's original new probes were not attached. Astra recreated the four reported
+paths against exact f67f027 and the repair: all four previously published current
+calculations; all four now remain unavailable with boundary-specific reasons.
+Before/after and mutation records: `../evidence/G5a-greek-dropped-start-offline.json`.
+
+`tests/test_greek_dropped_start.py` adds 40 cases. Against the exact f67f027 Greek
+and Recorder modules in a disposable source copy: **36 failed, 4 passed**, no
+collection errors. The prior 33 recovery cases are unchanged. Focused command:
+`PYTHONPATH=src:. ../verify-python314/bin/python -m pytest -q -W error
+tests/test_greek_dropped_start.py tests/test_greek_recovery.py
+tests/test_tastytrade_greeks.py tests/test_quote_measure.py
+tests/test_tastytrade_quotes.py tests/test_option_conventions.py
+tests/test_tradier_quotes_runtime.py`: **307 passed in 22.05 s**.
+
+`tools/check_greek_state_guards.py`: **26/26 caught** (eight new guards).
+Unchanged `tools/check_tradier_quote_guards.py`: **7/7 caught**. Import/collection
+errors are never counted as caught mutations. Final combined strict suite on
+Python **3.14.6**, `PYTHONPATH=src:. ../verify-python314/bin/python -m pytest -q -W
+error`: **2189 passed in 209.78 s**. `git diff --check` clean. No market-data calls,
+credential reads, iMac changes, orders or runner activation. Git/documentation
+network access only. Independent re-audit remains required, then exact-commit iMac
+and bounded live acceptance. F1's accepted audit evidence is retained; this does
+not close G5, resume Step 09 or implement O3–O5.

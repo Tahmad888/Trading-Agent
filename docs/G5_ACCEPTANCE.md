@@ -567,3 +567,12 @@ bounded provider/consumer acceptance and the remaining parent rows are open.
 Claude's O3 lifetime request-budget policy and O4/O5 reporting clarity remain
 separate follow-ups; this Greek repair does not implement them. Historical source,
 volume, identity and host evidence above remains accepted within its original scope.
+
+Claude's re-audit of f67f027 accepts F1 but found F2 incomplete when the first
+record is lost during identity/schema withdrawal. Astra reproduced the four cases
+and repaired discarded-boundary tracking, including before any state exists.
+Undecodable payloads require a full snapshot/new generation; a map-only reset with
+no lost data does not invent that requirement. Follow-up offline verification is
+recorded in the same checkpoint and `evidence/G5a-greek-dropped-start-offline.json`.
+Independent re-audit is still required; earlier iMac commands are held. This does
+not change the remaining O3–O5 or parent acceptance rows.

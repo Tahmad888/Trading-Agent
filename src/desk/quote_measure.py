@@ -322,11 +322,14 @@ class Recorder:
             if names is None or not isinstance(values, list):
                 label = kind if isinstance(kind, str) else "OTHER"
                 self.undecodable[label] = self.undecodable.get(label, 0) + 1
+                if kind == "Greeks" and (not isinstance(values, list) or values):
+                    self.greek_state.unknown_gap()
                 continue
             if len(values) % len(names):
                 self.fields.pop(kind, None)
                 if kind == "Greeks":
                     self.greek_state.down("GREEK_SCHEMA_DATA_INVALID")
+                    self.greek_state.unknown_gap()
                 self.schema(self.channel, kind, None, "WITHDRAWN_DATA_INVALID", received)
                 raise QuoteUnavailable("MEASURE_DATA_INVALID")
             for j in range(0, len(values), len(names)):
