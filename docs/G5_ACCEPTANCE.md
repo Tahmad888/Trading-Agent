@@ -550,3 +550,20 @@ Same G5 -> G5a parent CP3; authorized batch recorded in
 The analytics importer allowlist adds exactly the analysis-only tastytrade_greeks
 module; scanner, risk, tickets and runtime quote fields remain excluded. This batch
 does not close parent CP3, G5 or Step 09.
+
+### Greek recovery audit repairs (2026-10-08)
+
+Claude independently reviewed 4776bea, reporting 2116 strict passes on Python
+3.13/3.14 and all 17 then-existing mutations caught. His F1 (older calculation
+after reject) and F2 (lost transaction state across resets) were independently
+reproduced by Astra. Record: `checkpoints/G5a-greek-recovery-2026-10-08.md`.
+
+This immediate step retains the newest validated calculation index and interrupted
+transaction/snapshot knowledge across same-generation resets. Values are withdrawn;
+a closing tail is discarded, never published alone. Final offline results belong in
+the checkpoint, not an actual-host PASS. Independent re-audit, exact-commit iMac,
+bounded provider/consumer acceptance and the remaining parent rows are open.
+
+Claude's O3 lifetime request-budget policy and O4/O5 reporting clarity remain
+separate follow-ups; this Greek repair does not implement them. Historical source,
+volume, identity and host evidence above remains accepted within its original scope.

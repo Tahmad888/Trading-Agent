@@ -33,6 +33,21 @@ class _State:
     reason: str | None = None
     last_receipt: datetime | None = None
     requires_snapshot: bool = False
+    highest_index: int | None = None
+    await_boundary: bool = False
+    await_snapshot_end: bool = False
+
+    def reset(self, reason="GREEKS_NOT_RECEIVED", *, identity_digest=None, identity_epoch=None):
+        """Discard values, retaining only same-stream recovery metadata."""
+        same_identity = identity_digest is None or identity_digest == self.identity_digest
+        return _State(
+            self.identity_digest if identity_digest is None else identity_digest,
+            self.identity_epoch if identity_epoch is None else identity_epoch,
+            reason=reason, last_receipt=self.last_receipt,
+            requires_snapshot=self.requires_snapshot or self.truncated,
+            highest_index=self.highest_index if same_identity else None,
+            await_boundary=self.await_boundary or bool(self.pending or self.snapshot),
+            await_snapshot_end=self.await_snapshot_end or self.snapshot)
 
 
 def indexed_time(row, received):
@@ -72,13 +87,13 @@ class GreekState:
     def schema(self, *, changed=False):
         with self._lock:
             if changed:
-                self._states.clear()
+                self._states = {symbol: state.reset() for symbol, state in self._states.items()}
             self.ready, self.reason = True, "WAITING_FOR_GREEKS"
 
     def down(self, reason):
         with self._lock:
             self.ready, self.reason = False, reason
-            self._states.clear()
+            self._states = {symbol: state.reset(reason) for symbol, state in self._states.items()}
 
     def reject(self, symbol, reason, *, needs_snapshot=False):
         with self._lock:
@@ -95,17 +110,25 @@ class GreekState:
             try:
                 received = aware(received)
                 if not self.ready or self.generation != self.service.generation:
-                    raise QuoteUnavailable("GREEK_SESSION_UNAVAILABLE")
-                identity, identity_epoch = self.service.identity_state(symbol, received)
+                    return False  # schema/session withdrawal already withheld the state
+                try:
+                    identity, identity_epoch = self.service.identity_state(symbol, received)
+                except QuoteUnavailable as exc:
+                    state = self._states.get(symbol)
+                    if state is not None:
+                        self._states[symbol] = state.reset(str(exc))
+                    return False
                 if not isinstance(row, dict):
                     raise QuoteUnavailable("GREEK_ROW_INVALID")
                 if (identity.kind != "Equity Option" or row.get("eventType") != "Greeks"
                         or row.get("eventSymbol") != identity.streamer_symbol):
                     raise QuoteUnavailable("GREEK_IDENTITY_MISMATCH")
                 state = self._states.get(symbol)
-                if (state is None or state.identity_digest != identity.identity_digest
-                        or state.identity_epoch != identity_epoch):
+                if state is None:
                     state = self._states[symbol] = _State(identity.identity_digest, identity_epoch)
+                elif state.identity_digest != identity.identity_digest or state.identity_epoch != identity_epoch:
+                    state = self._states[symbol] = state.reset(
+                        identity_digest=identity.identity_digest, identity_epoch=identity_epoch)
                 if state.last_receipt is not None and received < state.last_receipt:
                     raise QuoteUnavailable("GREEK_RECEIPT_MOVED_BACKWARDS")
                 state.last_receipt = received
@@ -116,6 +139,19 @@ class GreekState:
                     raise QuoteUnavailable("GREEK_INDEX_INVALID")
                 if state.requires_snapshot and not flags & BEGIN:
                     return False  # a tail cannot repair a corrupt multi-event update
+                if state.await_boundary and not flags & BEGIN:
+                    if flags & SNIP:
+                        state.requires_snapshot = True
+                        state.reason = "GREEK_SNAPSHOT_TRUNCATED"
+                        return False
+                    if state.await_snapshot_end and flags & (END | SNIP):
+                        state.await_snapshot_end = False
+                    if not state.await_snapshot_end and not flags & TX:
+                        state.await_boundary = False
+                        state.reason = "GREEK_RESET_BOUNDARY_DISCARDED"
+                    else:
+                        state.reason = "GREEK_RESET_TRANSACTION_INCOMPLETE"
+                    return False  # discard the whole lost transaction, closing row included
                 # A removal/control marker has no calculation values. Its index
                 # still identifies the record to remove; no zero timestamp is fabricated.
                 if flags & REMOVE:
@@ -129,9 +165,12 @@ class GreekState:
                     state.pending.clear()  # discard residues of overlapping snapshots
                     state.snapshot, state.replacement, state.truncated = True, True, False
                     state.requires_snapshot = False
+                    state.await_boundary = False
+                    state.await_snapshot_end = False
                 if state.snapshot and flags & (END | SNIP):
                     state.snapshot = False
                     state.truncated = bool(flags & SNIP)
+                state.reason = None
                 state.pending.append(operation)
                 if len(state.pending) > self.max_entries:
                     raise QuoteUnavailable("GREEK_STATE_BOUND_EXCEEDED")
@@ -150,6 +189,14 @@ class GreekState:
                             removed = None
                 if len(rows) > self.max_entries:
                     raise QuoteUnavailable("GREEK_STATE_BOUND_EXCEEDED")
+                newest = max(rows, default=None)
+                seen = [index for index, value in state.pending if value is not None]
+                if newest is not None:
+                    seen.append(newest)
+                if state.replacement and not state.truncated:
+                    state.highest_index = max(seen, default=None)  # full replacement is authoritative
+                elif seen:
+                    state.highest_index = max(state.highest_index or 0, max(seen))
                 state.rows, state.removed_head = rows, removed
                 state.pending.clear()
                 state.replacement, state.reason = False, None
@@ -168,7 +215,9 @@ class GreekState:
             try:
                 identity, identity_epoch = self.service.identity_state(symbol, at)
             except QuoteUnavailable as exc:
-                self.reject(symbol, str(exc))
+                state = self._states.get(symbol)
+                if state is not None:
+                    self._states[symbol] = state.reset(str(exc))
                 raise
             state = self._states.get(symbol)
             if state is None:
@@ -186,6 +235,8 @@ class GreekState:
             if not state.rows:
                 raise QuoteUnavailable("GREEKS_EMPTY")
             row = state.rows[max(state.rows)]  # calculation time/sequence, not arrival order
+            if state.highest_index is not None and row["index"] < state.highest_index:
+                raise QuoteUnavailable("GREEK_NEWER_CALCULATION_REQUIRED")
             if row["source_at"] > at or row["received_at"] > at:
                 raise QuoteUnavailable("GREEK_CURRENT_CLOCK_INVALID")
             fields = normalize_greeks("tastytrade", "dxlink", row["raw"])

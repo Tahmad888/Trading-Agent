@@ -366,7 +366,7 @@ def test_core_disconnect_withholds_greeks_without_waiting_for_new_packet():
         session.receive(dict(type="ERROR", channel=0, error="UNAUTHORIZED"), AT)
     result = rec.greek_report(AT)
     assert result["checks"][CALL]["status"] == "UNAVAILABLE"
-    assert not rec.greek_state._states
+    assert all(not s.rows and not s.pending for s in rec.greek_state._states.values())
 
 
 @pytest.mark.parametrize("outcome", ["complete", "fault", "close_fault", "report_fault", "down_fault"])
@@ -416,8 +416,10 @@ def test_capture_terminal_greeks_are_labelled_history_and_closed_state_unavailab
                      monotonic=lambda: ticks[0], connect=lambda _: Socket())
     terminal = result["final_attempt"]["greek_terminal_state"]
     assert terminal["historical"] and not terminal["eligible"]
+    assert not rec.greek_state.ready  # withdrawal must precede any reader's cleanup
+    assert all(not s.rows and not s.pending for s in rec.greek_state._states.values())
     assert rec.greek_state.report(AT)["checks"][CALL]["status"] == "UNAVAILABLE"
-    assert not rec.greek_state._states
+    assert all(not s.rows and not s.pending for s in rec.greek_state._states.values())
     assert not source.connected
     if outcome in {"report_fault", "down_fault"}:
         assert terminal["view"]["error"] == "GREEK_TERMINAL_VIEW_UNAVAILABLE"

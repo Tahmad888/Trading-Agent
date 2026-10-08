@@ -2,6 +2,13 @@
 
 ## Active repair work
 
+Immediate authorized step (2026-10-08): repair Claude's F1/F2 review of 4776bea.
+Read `docs/checkpoints/G5a-greek-recovery-2026-10-08.md`. Same-generation Greek
+recovery retains the newest validated index and lost transaction/snapshot boundary
+metadata. No old calculation or interrupted tail is published as current. This is
+analysis-only; O3 runtime budgeting and O4/O5 reporting are separate follow-ups.
+Independent re-audit and actual-host acceptance remain required; G5 stays open.
+
 Latest authorized batch (2026-10-07): diagnostic safety, developer verification of
 the af98bd8 Tradier integration, and indexed tastytrade Greek analysis. Read
 `docs/checkpoints/G5a-options-state-2026-10-07.md`, `docs/TASTYTRADE_GREEKS.md` and

@@ -49,6 +49,21 @@ repeated BEGIN discards residual pending events. Truncated snapshots stay unavai
 A malformed multi-event update requires a new snapshot or generation; its tail cannot
 recover the incomplete view. A bad standalone update can recover with a valid atomic
 update. The newest calculation is chosen by index/time/sequence, not packet arrival.
+The newest validated index remains a recovery floor through rejection or a
+same-instrument/schema reset. An older standalone history correction cannot become
+current after newer rows were discarded. Equal/newer calculations can restore the
+view; a completed full replacement snapshot is authoritative and can reset that
+floor, including to an empty view. Invalid indexes never establish it.
+
+Same-generation identity/schema resets discard values but retain interruption
+metadata. If transaction content was lost, its remaining records and its TX-clear
+closing record are discarded. Lost snapshots also wait for END; if END has TX set,
+the closing transaction must finish too. SNIP retains the existing requirement for
+a new complete snapshot. A new BEGIN can restart cleanly, and a new connection
+generation starts empty with normal lasting-event delivery. This recovery behavior
+is a conservative engineering choice implementing the provider transaction rules;
+it is not a trading threshold. Stored recovery metadata has no numeric Greek values
+or executable quotes. See `checkpoints/G5a-greek-recovery-2026-10-08.md`.
 
 **Conservative engineering choice:** removal of the latest calculation does not
 silently promote an older one to current; a replacement at that index or later, or

@@ -1,0 +1,161 @@
+{
+  "purpose": "offline Greek-recovery repair verification; independent re-audit pending",
+  "base_commit": "4776bea03867e49b4ab37e7437b83072d6626890",
+  "date": "2026-10-08",
+  "python": "3.14.6",
+  "new_regressions": {
+    "cases": 33,
+    "against_base_failed": 27,
+    "against_base_controls_passed": 6
+  },
+  "focused": {
+    "passed": 267,
+    "seconds": 22.88
+  },
+  "strict_suite": {
+    "passed": 2149,
+    "seconds": 204.8,
+    "command": "PYTHONPATH=src ../verify-python314/bin/python -m pytest -q -W error"
+  },
+  "greek_mutations": [
+    {
+      "protection": "transaction boundary",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "overlapping snapshot",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "latest removal",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "index consistency",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "read clock",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "schema revision",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "corrupt transaction recovery",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "capture state disposal",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity binding",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity failure memory",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "newest index floor",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reject retains floor",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reset keeps interruption",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "closing boundary is discarded",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "schema retains interruption",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "identity epoch retains interruption",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reset preserves unfinished snapshot",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reset retains truncation refusal",
+      "caught": true,
+      "exit_code": 1
+    }
+  ],
+  "tradier_control_mutations": [
+    {
+      "protection": "attributed request start",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "late-failure ordering",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "failure epoch",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "current timestamp recheck",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reviewed crosswalk",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "final option reread",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "durable STOP",
+      "caught": true,
+      "exit_code": 1
+    }
+  ],
+  "market_data_requests": 0,
+  "credential_reads": false,
+  "iMac_changes": false,
+  "orders": false,
+  "open": [
+    "independent re-audit",
+    "iMac exact-commit and provider acceptance",
+    "O3 runtime budgeting",
+    "O4/O5 reporting clarity",
+    "advertised option size units",
+    "other parent G5 acceptance"
+  ]
+}
