@@ -110,7 +110,7 @@ def check(source, symbols, *, rounds=2, interval_seconds=5, clock=lambda: dateti
           sleep=time.sleep, host_clock=None):
     """Resolve once, then inspect each snapshot; preserve peers but never attest BBO."""
     report = dict(purpose="read-only Webull snapshot observations; no decision/order activation",
-                  status="UNAVAILABLE", checks=[], metadata_issues={}, rounds=[], requests=0,
+                  status="UNAVAILABLE", checks=[], metadata_issues={}, identity_capture=[], rounds=[], requests=0,
                   host=getattr(source, "_host", "unspecified"), host_clock=host_clock or load_host_clock(None),
                   nbbo_coverage="NOT_ESTABLISHED", option_coverage="NOT_TESTED",
                   bid_ask_side_time_contract="NOT_ESTABLISHED",
@@ -138,6 +138,8 @@ def check(source, symbols, *, rounds=2, interval_seconds=5, clock=lambda: dateti
         metadata = securities(Captured(), names, report["metadata_issues"])
         if not metadata:
             raise ProbeStop("NO_VERIFIED_WEBULL_METADATA")
+        report['identity_capture'] = [dict(host=report['host'], **m.model_dump(mode='json'))
+                                      for m in metadata.values()]
         for round_id in range(1, rounds + 1):
             if round_id > 1:
                 sleep(interval_seconds)

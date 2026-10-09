@@ -253,7 +253,8 @@ def test_greeks_ages_use_their_own_time_never_the_latest_trade():
     assert old["receipt_age_ms"] == 10000 and old["decision_age_ms"] == 12000
     assert ahead["source_time"]["state"] == "FUTURE" and ahead["receipt_age_ms"] == -3  # kept negative
     assert old["theta"] == {"state": "VALUE", "value": "-0.31"} and old["label"] == "RAW_OBSERVATION"
-    assert rec.report()["greeks"]["current_state"] == "NOT_REDUCED_RAW_OBSERVATIONS_ONLY"
+    assert rec.report()["greeks"]["summary_scope"] == "RAW_OBSERVATIONS_ONLY"
+    assert "current_state" not in rec.report()["greeks"]
 
 
 def test_wire_decoded_decimal_values_are_recorded_as_values():

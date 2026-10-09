@@ -114,6 +114,7 @@ def compose(base, *, price_source, log, store, client):
     Each command performs a fresh GET before local revalidation. All final reads borrow
     the quote reservation held by TradierRiskSource until the ticket write commits.
     """
+    client.use_operational_policy(store.reserve_request)
     source = TradierRiskSource(price_source, log, store, client.environment)
 
     def refresh(request, at):
@@ -147,17 +148,21 @@ def factory():
     from desk.tickets import RiskInputs
     from desk.tradier_client import TradierClient
     from desk.tradier_quotes import QuoteStore
+    from pathlib import Path
     try:
         module, name = os.environ["DESK_TRADIER_BASE_FACTORY"].split(":")
         environment = os.environ["DESK_TRADIER_ENVIRONMENT"]
         path = os.environ["DESK_TRADIER_QUOTE_STORE"]
-        if not path.strip():
+        if not path.strip() or not Path(path).is_absolute():
             raise ValueError
         dependencies = getattr(importlib.import_module(module), name)()
         if not isinstance(dependencies, Dependencies) or not isinstance(dependencies.base, RiskInputs):
             raise ValueError
-        client = TradierClient(os.environ["TRADIER_ACCESS_TOKEN"], environment=environment)
+        token = os.environ["TRADIER_ACCESS_TOKEN"]
+        store = QuoteStore(path)
+        client = TradierClient(token, environment=environment,
+                               operational=True, reserve_request=store.reserve_request)
     except Exception:
         raise QuoteUnavailable("TRADIER_FACTORY_CONFIGURATION_INVALID") from None
     return compose(dependencies.base, price_source=dependencies.price_source, log=dependencies.log,
-                   store=QuoteStore(path), client=client)
+                   store=store, client=client)

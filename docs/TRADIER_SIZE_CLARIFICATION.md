@@ -38,3 +38,17 @@ Once first-party evidence and compatible observations support a mapping, a separ
 reviewed change can enable that exact field's unit conversion and capacity checks.
 Do not enable all providers/transport fields from one answer. No message has been
 sent, source entitlement assumed or size conversion enabled by this document.
+
+## Research recheck, 2026-10-08
+
+[Tradier REST Quotes](https://docs.tradier.com/docs/quotes) still describes both size
+fields as “in hundreds”, without separate equity/option encodings or an effective
+date. [Streaming Market Data](https://docs.tradier.com/docs/streaming) lists bidsz
+and asksz separately without a unit definition. Its trade-size fields are separate.
+The available same-second equity comparisons support a raw-share interpretation
+for that observed window, but lack identical-event proof and cannot certify option
+units. Searching community discussions did not supply a reliable first-party answer
+for these exact current fields. More repeating captures cannot resolve a schema
+definition by themselves. The prepared support inquiry above is the remaining
+external step; it has not been sent. Retain the response verbatim with its date,
+provider contact, exact endpoint/transport, security type and effective API version.

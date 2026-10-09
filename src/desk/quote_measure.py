@@ -464,7 +464,9 @@ class Recorder:
                 "volume": {"note": VOLUME_NOTE, "rth_window_total": "NOT_DERIVED",
                            "boundaries": [b.isoformat() for b in self.boundaries] if self.boundaries else None,
                            "by_symbol": volume},
-                "greeks": {"note": GREEKS_NOTE, "current_state": "NOT_REDUCED_RAW_OBSERVATIONS_ONLY",
+                "greeks": {"note": GREEKS_NOTE, "summary_scope": "RAW_OBSERVATIONS_ONLY",
+                           "label": "RAW_OBSERVATION_SUMMARY", "arithmetic_eligibility": "NONE",
+                           "reduced_state_path": "measurements.greek_state",
                            "by_symbol": self._greeks},
                 "greek_state": self.greek_report(self.clock()),
                 "bbo_note": ("Side times are the provider's last bid/ask change times; receipt and decision "

@@ -248,4 +248,4 @@ def test_conventions_stay_out_of_decision_modules():
                           r"(option_conventions|tradier_option_check))|import desk\.(option_conventions|tradier_option_check))",
                           re.M)
     users = sorted(p.name for p in root.rglob("*.py") if importer.search(p.read_text()))
-    assert users == ["tastytrade_greeks.py", "tradier_option_check.py"]
+    assert users == ["saved_greek_audit.py", "tastytrade_greeks.py", "tradier_option_check.py"]

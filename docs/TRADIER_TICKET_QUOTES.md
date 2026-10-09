@@ -97,8 +97,51 @@ and the existing protected `TRADIER_ACCESS_TOKEN`; then use
 The ticket request must name `quote_source: "tradier-rest"`; changing that label
 alone supplies no independent quote evidence. There is no canned live account or
 contract factory in this change. Do not point
-production tickets at the tests' synthetic adapters. Instantiate a bounded client
-per command; this is not an all-day quote service or a scheduler.
+production tickets at the tests' synthetic adapters. The composer explicitly selects
+the operational quote workload policy below. This is not an all-day quote service
+or a scheduler.
+
+## Operational request policy (2026-10-08)
+
+Diagnostics retain the 12-request lifetime ceiling. Operational composition permits
+one batched GET per explicit refresh workload, without stopping a healthy client
+after its twelfth lifetime request. A used diagnostic client cannot change modes to
+escape its limit; a used operational client cannot switch reservation stores.
+
+The shared quote store reserves attempts atomically and persistently before dispatch.
+Its conservative rolling-minute bound uses production 120/sandbox 60 from
+[Tradier's market-data policy](https://docs.tradier.com/docs/rate-limiting). Tradier
+documents per-token intervals starting at the first request; this local rolling
+window is an engineering guard, not an exact mirror of the provider counter or a
+trading rule. Other applications or stores using the same token remain invisible
+to it. Provider response headers are not currently integrated, so the local ledger
+does not attest remaining provider quota. No automatic sleeps or denial retries.
+
+A local workload/rate refusal withdraws only the requested quote/trade components;
+it does not create a global provider STOP. Healthy peers retain their evidence.
+Recovery changes the affected health generation, so an old approved ticket cannot
+revive. An actual HTTP/transport/global-reply failure still persists STOP and needs
+explicit resume plus a fresh successful capture. Clock rollback refuses a local
+reservation until its earlier evidence is no longer ahead; no tolerance is invented.
+
+Accounting distinguishes reserved/attempted dispatch from confirmed network sends.
+The shared client cannot know whether an injected request function contacted the
+network; `confirmed_network_sends` is null, `network_send_status` is NOT_ATTESTED,
+and log entries use `dispatch_attempted_at`, replacing the misleading `sent_at`.
+Keep the old count as attempts, never cite it as an independently verified send count.
+
+## Offline preparation and inventory
+
+New Webull diagnostics retain `identity_capture` issuer metadata with its host.
+Tradier diagnostic stock observations retain `issuer_reference` symbol/type/name
+and the raw exchange field (which is not used as a listing identifier).
+`desk.tradier_readiness` prepares non-installable drafts from complete,
+non-contradictory captures and their SHA-256 hashes. Missing issuer fields remain
+missing; equal ticker strings do not repair them. Drafts lack the human review
+fields required by ReviewedMapping. Without capture arguments, the command only
+inventories configuration presence. It never invokes the configured factory,
+creates a quote store, or calls a provider. Configured settings cannot establish
+real account/status/contract/market readiness.
 
 Final lock order: ticket, signal, existing volume/vendor identity guards, Tradier
 store, account. The final clock is sampled after all lock acquisition. The held

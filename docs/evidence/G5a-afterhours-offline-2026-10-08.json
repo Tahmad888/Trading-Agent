@@ -1,0 +1,163 @@
+{
+  "purpose": "developer offline verification; not independent audit, host or live acceptance",
+  "date": "2026-10-08",
+  "base_commit": "e2cb9f59c947f4ec12a7a5aa3d994e927fb16aa5",
+  "python": "3.14.6",
+  "strict_suite": {
+    "command": "PYTHONPATH=src:. python -m pytest -q -W error",
+    "passed": 2265,
+    "duration_seconds": 213.14
+  },
+  "focused_passed": 88,
+  "new_test_count": 30,
+  "provider_calls": 0,
+  "account_queries": 0,
+  "orders": 0,
+  "installed_mappings": 0,
+  "before_after_budget": {
+    "e2cb9f5": {
+      "synthetic": true,
+      "provider_calls": 0,
+      "checks": 20,
+      "passed": 12,
+      "first_failed_check": 13,
+      "requests": 12,
+      "global_health": "STOP",
+      "operational_policy": false
+    },
+    "working": {
+      "synthetic": true,
+      "provider_calls": 0,
+      "checks": 20,
+      "passed": 20,
+      "first_failed_check": null,
+      "requests": 20,
+      "global_health": null,
+      "operational_policy": true
+    }
+  },
+  "existing_mutations": [
+    {
+      "protection": "attributed request start",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "late-failure ordering",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "failure epoch",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "current timestamp recheck",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "reviewed crosswalk",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "final option reread",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "durable STOP",
+      "caught": true,
+      "exit_code": 1
+    }
+  ],
+  "batch_mutations": [
+    {
+      "protection": "operational composition",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "durable rate bound",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "local refusal isolation",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "honest dispatch labels",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "raw Greek summary",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "crosswalk contradictions",
+      "caught": true,
+      "exit_code": 1
+    },
+    {
+      "protection": "saved identity contradictions",
+      "caught": true,
+      "exit_code": 1
+    }
+  ],
+  "saved_greek_analysis": {
+    "input_sha256": "380cdbc80a1800b534fc5dc0f5aea9dfa559539f9f88eb78ae81dc8896176c3a",
+    "count": 6,
+    "statuses": [
+      "INDEXED_OBSERVATION_VALID",
+      "INDEXED_OBSERVATION_VALID",
+      "INDEXED_OBSERVATION_VALID",
+      "INDEXED_OBSERVATION_VALID",
+      "INDEXED_OBSERVATION_VALID",
+      "INDEXED_OBSERVATION_VALID"
+    ],
+    "receipt_ages_seconds": [
+      "200.967142",
+      "200.967142",
+      "128.550859",
+      "128.654318",
+      "101.271857",
+      "101.271857"
+    ],
+    "live_state": "NOT_RESTORED",
+    "record_drops": {}
+  },
+  "source_capture_sha256": {
+    "tradier.json": "2745f5cf4c6b0e53365f3124c4ad8adcfb070ffa6722f945acf15ad5d0e0acd0",
+    "tastytrade.json": "380cdbc80a1800b534fc5dc0f5aea9dfa559539f9f88eb78ae81dc8896176c3a",
+    "webull-followup.json": "74999c95572bad18febee91d79d88df4ca319c92b49a05fb19a6c9a9dd390628"
+  },
+  "crosswalk_preparation": "INCOMPLETE_CAPTURE_EVIDENCE",
+  "local_configuration_scope": "this developer process only; not the iMac",
+  "remaining": [
+    "independent review",
+    "real reviewed mappings and trusted live factory inputs",
+    "dated Tradier size/Greek clarification",
+    "new-commit iMac and current-state live acceptance",
+    "other parent CP3/G5 acceptance"
+  ],
+  "tested_source_sha256": {
+    "src/desk/tradier_client.py": "f26f006f0f74b19d5a044f04df3a655f200f7c9ac6afaf1486ca8c2cdb4b4e74",
+    "src/desk/tradier_quotes.py": "66f920b77ab0740ecccff9f877e3f3a8e955381cca0e64c1fdcd9bc629f191e2",
+    "src/desk/tradier_risk.py": "b642b6572b491d665acf208880d9f5f8825d2e835d10c7af0fc43e9cb5721af4",
+    "src/desk/tradier_readiness.py": "d43947a02aa9aa9125ac621a582a078aa2a5ee6f770206a5d02bc9fc25742bd2",
+    "src/desk/saved_greek_audit.py": "3902b8f84f57bd849b90b128e11f4e410a08823a86e9624e0edbe93744bc2918",
+    "src/desk/tradier_fields.py": "2c650d4d7424eefe201a50823d93a891b93c784276fec706bda83d53fbee570d",
+    "src/desk/tradier_option_check.py": "d93e20976e29ae750f36b25c567959baf8dbb5e3f0b7741cdabd9918cdd3d608",
+    "src/desk/webull_quote_check.py": "98b47eda90be0d2cb6b9317f9beb911e1c343d706c02658983711ec66935d84e",
+    "src/desk/quote_measure.py": "598fbaf7d4503686d5988d4c2f2f4bc19179913ae83e1a481c3a4758b9fb8a65",
+    "tests/test_afterhours_budget.py": "731f4e4725438e0c5064e4798de6e168fff6ed5e1899c2bc7f38b79ed874b6af",
+    "tests/test_afterhours_readiness.py": "3f220344acd68c41548e68d6568762b9540a9fa83dfe058a4a40f456fbd1030c",
+    "tools/check_afterhours_guards.py": "2e2071d50995c81a61e8bf179a7f314a614cd224b929b3f2c146291c7928e577"
+  }
+}

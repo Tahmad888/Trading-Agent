@@ -1,5 +1,13 @@
 # Option and quote field conventions
 
+2026-10-08 after-hours update: current first-party Tradier documents still leave
+the advertised-size contradiction unresolved; see TRADIER_SIZE_CLARIFICATION.md.
+Six authentic saved tastytrade Greek observations were independently checked for
+exact index/time, contract reference and documented fields; this does not restore
+a live connection or certify a Greek freshness threshold. See TASTYTRADE_GREEKS.md.
+The analytics import allowlist adds only `saved_greek_audit.py`, an offline analysis
+tool; it does not admit conventions into signal, ticket or risk decision modules.
+
 G5a CP3, Tradier preflight Step 2 (2026-10-07). Code: `src/desk/option_conventions.py`.
 Diagnostic: `python -m desk.tradier_option_check`. Record:
 `checkpoints/G5a-cp3-tradier-option-conventions.md`.

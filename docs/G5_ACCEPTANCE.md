@@ -583,3 +583,24 @@ branch now records unknown loss rather than generic rejection; the direct reduce
 uses the same scoped full-snapshot recovery. Its new acceptance evidence belongs
 in the existing Greek-recovery checkpoint. Independent review and iMac/live
 acceptance remain held; no other parent row is closed by this correction.
+
+### Four after-hours loops, 2026-10-08 (current status)
+
+The Greek recovery at e2cb9f5 is independently cleared and Taz's exact-commit iMac
+suite passed 2235. This supersedes the earlier Greek code/iMac holds above for that
+commit only; live reducer acceptance remains separate. Authorized batch record:
+`checkpoints/G5a-afterhours-four-loops-2026-10-08.md`.
+
+| Loop | Current disposition |
+|---|---|
+| Operational request budgets / reporting | Implemented and developer verified: operational refreshes no longer inherit the 12-request diagnostic lifetime cap; durable conservative minute reservations and ticker-local refusals preserve global provider STOP semantics. Raw Greek summaries explicitly link reduced state. Independent review/new-host acceptance pending. |
+| Provider mappings / ticket wiring | Issuer captures retained; hashed non-installable drafts and zero-call configuration inventory added; synthetic consumer/race checks pass. Authentic complete captures, human review, real mappings and independently trusted live inputs still required. No guessed account/status/contract adapter. |
+| Tradier advertised quantities | Primary REST/stream docs rechecked, contradiction retained; exact provider inquiry ready but not sent/answered. Units remain unverified and no capacity conversion enabled. Chosen contract exposure remains available. |
+| Greek conventions / saved data | Six authentic indexed observations checked offline; original ages and exact decimals preserved. No complete-snapshot/live-state claim from an incomplete measurement log. Documented tastytrade conventions remain supported; Tradier provisional definitions and current live-state acceptance remain open. |
+
+Final developer strict suite: 2265 passes on Python 3.14.6; 88 focused passes;
+14 collected safeguard mutations caught. Compact evidence:
+`evidence/G5a-afterhours-offline-2026-10-08.json`. No market-data provider call,
+account query, order, schedule, activation or iMac modification in this batch.
+The same G5 -> G5a -> parent CP3 outline and other open acceptance rows remain.
+Step 09 stays paused. This does not close all external loops or G5.

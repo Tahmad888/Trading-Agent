@@ -317,7 +317,8 @@ def test_measurement_disconnect_withholds_state_and_raw_rows_remain_history():
     rec._greeks_row(CALL, row(), AT)
     rec.down("MEASURE_CHANNEL_CLOSED", AT)
     assert rec.greek_report(AT)["checks"][CALL]["reason"] == "MEASURE_CHANNEL_CLOSED"
-    assert rec.report()["greeks"]["current_state"] == "NOT_REDUCED_RAW_OBSERVATIONS_ONLY"
+    assert rec.report()["greeks"]["summary_scope"] == "RAW_OBSERVATIONS_ONLY"
+    assert "current_state" not in rec.report()["greeks"]
     assert len(rec.records) == 1 and source.connected
 
 

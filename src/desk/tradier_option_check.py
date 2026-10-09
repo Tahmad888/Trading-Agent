@@ -425,7 +425,8 @@ def diagnostic(client: TradierClient, equities, *, option_underlying=None, round
     report["option_pair_comparison"] = pair_comparison(report)
     if report["status"] == "OBSERVATIONS_ONLY" and report["option_pair_comparison"]["status"] in {"FAIL", "PARTIAL"}:
         report["status"] = "PARTIAL_OBSERVATIONS"
-    report["requests"] = dict(count=client.requests, budget=client.max_requests, log=client.log)
+    report["requests"] = dict(count=client.requests, budget=client.max_requests, log=client.log,
+                              accounting=client.accounting())
     return report
 
 

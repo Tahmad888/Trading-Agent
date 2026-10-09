@@ -27,6 +27,8 @@ def observe_row(row, wanted, received, unused=None):
         raise QuoteUnavailable('INSTRUMENT_TYPE_MISMATCH')
     view=dict(symbol=wanted['symbol'],wire_symbol=wanted['wire'],kind=kind,type=row['type'],
               received_at=aware(received).isoformat())
+    if kind == 'stock':
+        view['issuer_reference'] = {k: row.get(k) for k in ('symbol', 'type', 'description', 'exch')}
     if kind=='option':
         terms=occ_terms(wanted['symbol'])
         if (row.get('underlying')!=terms['underlying'] or row.get('expiration_date')!=terms['expiry']

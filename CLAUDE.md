@@ -2,6 +2,19 @@
 
 ## Active repair work
 
+Current authorized batch (2026-10-08): finish the four after-hours loops, within
+G5 -> G5a -> parent CP3 (not new children). Read
+`docs/checkpoints/G5a-afterhours-four-loops-2026-10-08.md` first. The Greek recovery
+code at e2cb9f5 is independently cleared and Taz's exact-commit iMac strict suite
+passed 2235; that supersedes the older holds below for that code only.
+This batch separates bounded diagnostics from operational Tradier quote refreshes,
+persists local minute-rate reservations, isolates local budget refusal, clarifies raw
+Greek reporting, and adds offline crosswalk preparation/configuration inventory and
+saved Greek observation analysis. It supplies no real account/market/contract factory
+or approved mapping. Tradier advertised-size clarification is prepared, not sent or
+answered. Current-code live acceptance, opening volume, parent CP3 and G5 stay open;
+Step 09 stays paused. Older entries below retain their dated scope.
+
 Immediate authorized step (2026-10-08): repair Claude's F1/F2 review of 4776bea.
 Read `docs/checkpoints/G5a-greek-recovery-2026-10-08.md`. Same-generation Greek
 recovery retains the newest validated index and lost transaction/snapshot boundary

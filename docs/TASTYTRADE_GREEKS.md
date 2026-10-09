@@ -101,8 +101,10 @@ an explicit full snapshot, restores state. Earlier rows remain internally indexe
 4096 pending/retained entries per option is a memory bound; overflow withholds that
 symbol rather than silently trimming history. It is not a trading rule.
 
-The normal raw `measurements.greeks` records and offline observation normalizer keep
-their original labels. The new `measurements.greek_state` reports reduced state.
+The raw `measurements.greeks` block is explicitly labelled RAW_OBSERVATION_SUMMARY
+with `summary_scope=RAW_OBSERVATIONS_ONLY` and `arithmetic_eligibility=NONE`; the
+ambiguous old `current_state` marker is removed. Its `reduced_state_path` links
+`measurements.greek_state`, which reports reduced state. Raw values remain unchanged.
 After finite capture closes it correctly says unavailable. Each capture attempt also
 records `capture.final_attempt.greek_terminal_state`: an explicitly historical,
 ineligible view at that attempt's end. Failed/reconnected earlier attempts never
@@ -122,3 +124,19 @@ Greek conventions remain informational and separate from tastytrade.
 Plan B: show the specific unavailable/partial state and retain raw observations;
 no fallback provider, guessed multiplier or theoretical price is substituted.
 Revert this follow-up to disable the reducer; no host/account settings change.
+
+## Saved-data audit (2026-10-08)
+
+`desk.saved_greek_audit` checks retained indexed observations against their captured
+option identities, keeps exact indexes/decimals, and computes age from source time
+to original receipt time. Contradictory duplicate identities cannot silently replace
+each other. The bounded measurement log omits some control/health events, so it is
+not replayed as a complete snapshot or a live connection.
+
+The authentic MacBook comparison archive yielded six valid indexed Greek observations
+for two SPY options. Original receipt ages were 200.967142, 200.967142, 128.550859,
+128.654318, 101.271857 and 101.271857 seconds. These are calculation ages at receipt,
+not measured quote-feed delay. No records were reported dropped by that capture.
+This validates those retained observations and documented field conventions; it
+does not attest the latest reducer against live delivery or a usable Greek age policy.
+Tradier conventions remain provisional. No option future-stop valuation was derived.

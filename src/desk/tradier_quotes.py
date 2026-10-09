@@ -6,8 +6,8 @@ request that started before it, and an unfinished newer request blocks old data.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
-from datetime import datetime
+from contextlib import contextmanager, nullcontext
+from datetime import datetime, timedelta
 from decimal import Decimal
 import hashlib
 import json
@@ -25,7 +25,7 @@ from desk.quote_mapping import WebullSide
 from desk.quote_secrets import credential_free
 from desk.risk_terms import QuoteProvenance
 from desk.tastytrade_quotes import QuoteUnavailable, aware, canonical
-from desk.tradier_client import listed, wire_symbol
+from desk.tradier_client import listed, wire_symbol, RequestBudgetExceeded, LocalRateLimitExceeded, MARKET_DATA_PER_MINUTE
 from desk.tradier_fields import observe_row, latest_policy_view
 
 SOURCE = "tradier-rest"
@@ -87,6 +87,26 @@ def requested(symbol, kind):
 
 
 class QuoteStore:
+    def reserve_request(self, environment, at):
+        """Persistent conservative rolling-minute limit, shared by this store's clients.
+
+        Reservations include failed dispatches. Other applications using the token
+        are not visible here; an actual provider refusal still creates STOP.
+        """
+        if environment not in MARKET_DATA_PER_MINUTE:
+            raise QuoteUnavailable("ENVIRONMENT_INVALID")
+        at = aware(at)
+        limit = MARKET_DATA_PER_MINUTE[environment]
+        with self.held() as db:
+            rows = db.execute("SELECT payload FROM events WHERE key=? AND action='REQUEST_RESERVED' "
+                              "ORDER BY id DESC LIMIT ?", (environment + "|rate", limit)).fetchall()
+            stamps = [datetime.fromisoformat(json.loads(r["payload"])["reserved_at"]) for r in rows]
+            if any(t > at for t in stamps):
+                raise LocalRateLimitExceeded("LOCAL_RATE_CLOCK_MOVED_BACKWARDS")
+            if sum(t > at - timedelta(minutes=1) for t in stamps) >= limit:
+                raise LocalRateLimitExceeded()
+            self.add(db, environment + "|rate", "REQUEST_RESERVED", payload={"reserved_at": at.isoformat()})
+
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,7 +264,9 @@ class QuoteStore:
         starts = self.begin(client.environment, names)
         try:
             sent = aware(client.clock())
-            reply = client.get("quotes", {"symbols": ",".join(r["wire"] for r in names), "greeks": "false"})
+            workload = client.quote_workload() if getattr(client, "operational", False) else nullcontext()
+            with workload:
+                reply = client.get("quotes", {"symbols": ",".join(r["wire"] for r in names), "greeks": "false"})
             body = reply.get("quotes")
             if not isinstance(body, dict):
                 raise QuoteUnavailable("REPLY_SHAPE_INVALID")
@@ -254,6 +276,17 @@ class QuoteStore:
                 raise QuoteUnavailable("CLOCK_MOVED_BACKWARDS")
             self.finish(client.environment, names, starts, rows, received)
         except Exception as exc:
+            if isinstance(exc, RequestBudgetExceeded):
+                # Local workload/rate exhaustion withdraws only the attempted names.
+                # It changes component health, so recovery cannot revive old approvals.
+                code = str(exc) if str(exc) in {"REST_REQUEST_BUDGET", "LOCAL_MARKET_DATA_RATE_LIMIT",
+                                                "LOCAL_RATE_CLOCK_MOVED_BACKWARDS"} else "REST_REQUEST_BUDGET"
+                with self.held() as db:
+                    for want in names:
+                        for component in ("trade", "quote"):
+                            self.add(db, client.environment + "|" + want["symbol"] + "|" + component,
+                                     "FAILED", starts[want["symbol"]], {"reason": code})
+                raise RequestBudgetExceeded() if code == "REST_REQUEST_BUDGET" else LocalRateLimitExceeded(code)
             # Fixed code only. STOP persists across process restarts until explicit resume.
             code = str(exc) if isinstance(exc, QuoteUnavailable) else "TRADIER_FETCH_FAILURE"
             allowed = {"REST_HTTP_400", "REST_HTTP_401", "REST_HTTP_403", "REST_HTTP_429", "REST_HTTP_500",
