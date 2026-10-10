@@ -150,6 +150,36 @@ class SignalStore:
                            (day.isoformat(), market, encoded, _time(observed_at) if observed_at else None))
             db.execute("INSERT OR REPLACE INTO armed VALUES (?,?,?)", (day.isoformat(), market, encoded))
 
+    def publish_armed(self, day, market, payload, *, now, decision_clock=None):
+        """Append candidates prepared for ``day`` with their no-replay floor; return the publication clock.
+
+        G5 backlog R1: Taz picks and delayed-volume setups prepared during the target
+        session follow the close-job publication rule. The final clock is read inside
+        the exclusive transaction, after lock waits and provider preparation; it may not
+        precede the evaluation clock. At or after the open, candidates not already armed
+        get a floor at that clock; armed candidates keep theirs. Nothing is backdated.
+        Before the open (genuine pre-open preparation) no floor is written.
+        """
+        with self._db() as db:
+            db.execute("BEGIN EXCLUSIVE")  # rollback-journal readers cannot delay COMMIT after the clock
+            final = clock(decision_clock() if decision_clock else now)
+            if final < clock(now):
+                raise SignalStateError("Publication clock precedes the evaluation clock")
+            old = db.execute("SELECT market,payload FROM armed WHERE day=?", (day.isoformat(),)).fetchone()
+            current = json.loads(old["payload"]) if old else []
+            existing_ids = {candidate_id(restore_signal(p), day) for p in current}
+            merged_market = (old["market"] if old and old["market"] else None) or market
+            unique = {candidate_id(restore_signal(p), day): p for p in current + list(payload)}
+            encoded = _json(list(unique.values()))
+            if old is None or old["payload"] != encoded or old["market"] != merged_market:
+                db.execute("INSERT INTO armed_history(day,market,payload,observed_at) VALUES (?,?,?,?)",
+                           (day.isoformat(), merged_market, encoded, _time(final)))
+            db.execute("INSERT OR REPLACE INTO armed VALUES (?,?,?)", (day.isoformat(), merged_market, encoded))
+            if final >= session(day)[0]:
+                db.executemany("INSERT OR IGNORE INTO armed_floors VALUES (?,?,?)",
+                               [(day.isoformat(), cid, _time(final)) for cid in unique if cid not in existing_ids])
+            return final
+
     # ---- close-preparation jobs (live-run package 2) ---------------------------------
     @staticmethod
     def _job(row):

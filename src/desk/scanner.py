@@ -943,6 +943,13 @@ class ScanLog:
         self.load_armed(day)  # import a legacy candidate list once, if present
         self.signals.save_armed(day, market.value, [_sig(s) for s in sigs], append=True)
 
+    def publish_armed(self, day: date, market: MarketSize, sigs: Sequence[Signal], now: datetime,
+                      decision_clock: Callable[[], datetime] | None = None) -> datetime:
+        """Append candidates prepared after the close job, with the no-replay floor (R1)."""
+        self.load_armed(day)  # import a legacy candidate list once, if present
+        return self.signals.publish_armed(day, market.value, [_sig(s) for s in sigs], now=now,
+                                          decision_clock=decision_clock)
+
     def save_armed(self, for_day: date, rec: ScanRecord) -> None:
         self.signals.save_armed(for_day, rec.market, rec.armed, observed_at=rec.at or None)
 
@@ -1043,7 +1050,8 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
                 preparation, user_new = close_scan(source, pending, now, decision_clock=decision_clock, preparing=True)
                 if not preparation.error:
                     market = MarketSize(preparation.market)
-                    log.add_armed(slot.date(), market, user_new)
+                    # R1: published with the no-replay floor before the names count as prepared.
+                    log.publish_armed(slot.date(), market, user_new, clock(preparation.at), decision_clock)
                     log.mark_prepared_users(slot.date(), preparation.discovery.get("prepared", []))
                     armed += user_new
             # Volume setups whose Alpaca native daily was not final at the close scan run
@@ -1056,7 +1064,7 @@ def run(source: BarSource, watchlist: Sequence[str], log: ScanLog, now: datetime
                 if not vprep.error:
                     market = market or MarketSize(vprep.market)
                     volume_new = [s for s in detected if s.setup_id in VOLUME_SETUPS]
-                    log.add_armed(slot.date(), MarketSize(vprep.market), volume_new)
+                    log.publish_armed(slot.date(), MarketSize(vprep.market), volume_new, clock(vprep.at), decision_clock)
                     retry = set(volume_pending(vprep.skipped, "volume unavailable:"))
                     log.mark_prepared_users(slot.date(), set(vprep.discovery.get("prepared", [])) - retry, "volume")
                     armed += volume_new
