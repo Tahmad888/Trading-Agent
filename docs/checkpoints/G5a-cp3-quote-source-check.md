@@ -32,7 +32,11 @@ credentials, scheduler or account/order endpoint changes.
 
 1. Resolve fresh Webull metadata once; group snapshot requests using the resolved
    COMMON_STOCK/ETF classification, preserving the reviewed BRK.B provider alias.
-2. Record request-start and response-receipt UTC separately. Associate each row
+2. Record request-start and response-receipt UTC separately (G5 backlog R5 B-1: the
+   whole call is `workload_*`, which includes the throttle wait, signing and parsing;
+   `transport_bracket` is the urllib open-to-read bracket alone, with the wait before it
+   shown as `throttle_and_signing_ms`; compare sources only by the transport bracket,
+   and neither edge is a provider time). Associate each row
    with exactly one requested canonical symbol and the metadata instrument ID.
    Duplicate/mismatched/missing identities are explicit; they cannot become usable
    by returning another healthy ticker. Keep valid peers' observations.

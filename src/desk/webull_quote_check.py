@@ -10,12 +10,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import json
 import math
+import os
 from pathlib import Path
 import re
 import time
-from urllib import request
+from urllib import parse, request
 
-from desk.quote_measure import load_host_clock, number_state, time_state, write_report
+from desk.quote_measure import load_host_clock, number_state, time_state, write_new_report
 from desk.security import securities
 from desk.symbols import canonical_symbol
 from desk.tastytrade_quotes import session_label
@@ -47,13 +48,38 @@ def _read_once(req, timeout):
 
 
 class BoundedData(WebullData):
-    """Count actual calls, including metadata pagination, before transmission."""
+    """Count actual calls, including metadata pagination, before transmission.
+
+    Each call also records its transport bracket: the local clock immediately before
+    the urllib open and after the body is read (connect and TLS included), apart from
+    the throttle wait and signing before it (G5 backlog R5 B-1). Neither edge is a
+    provider send or receipt time.
+    """
 
     def __init__(self, *args, max_requests=5, **kwargs):
         if type(max_requests) is not int or not 1 <= max_requests <= MAX_REQUESTS:
             raise ProbeStop("INVALID_REQUEST_BUDGET")
         self.max_requests, self.requests = max_requests, 0
-        kwargs.setdefault("transport", _read_once)
+        self.transport_brackets, self._entered = [], None
+        inner = kwargs.pop("transport", _read_once)
+
+        def bracketed(req, timeout):
+            started, start = self._clock(), time.monotonic()
+            outcome = "RAISED"
+            try:
+                raw = inner(req, timeout)
+                outcome = "RETURNED"
+                return raw
+            finally:
+                returned, end = self._clock(), time.monotonic()
+                self.transport_brackets.append(dict(
+                    path=parse.urlsplit(req.full_url).path, outcome=outcome,
+                    started_at=started.isoformat(), returned_at=returned.isoformat(),
+                    elapsed_ms=round((end - start) * 1000, 3),
+                    throttle_and_signing_ms=None if self._entered is None
+                    else round((start - self._entered) * 1000, 3)))
+
+        kwargs["transport"] = bracketed
         super().__init__(*args, **kwargs)
 
     def _call(self, method, path, query=None, payload=None):
@@ -62,7 +88,26 @@ class BoundedData(WebullData):
         if self.requests >= self.max_requests:
             raise ProbeStop("REQUEST_BUDGET_EXHAUSTED")
         self.requests += 1
+        self._entered = time.monotonic()
         return super()._call(method, path, query, payload)
+
+
+TRANSPORT_BASIS = ("Local clock immediately before the urllib open and after the body was read, one "
+                   "snapshot request; includes connect and TLS, excludes throttle wait, signing and JSON "
+                   "parsing. Not a provider send or receipt time.")
+WORKLOAD_NOTE = ("Local clock around the whole snapshot call: throttle wait, signing, transport and "
+                 "parsing. Not a latency; compare sources by transport_bracket only.")
+
+
+def _transport_bracket(source, before):
+    """This snapshot's one transport bracket, or why there is none."""
+    brackets = getattr(source, "transport_brackets", None)
+    if not isinstance(brackets, list):
+        return dict(state="NOT_RECORDED", basis=TRANSPORT_BASIS)
+    mine = brackets[before:]
+    if len(mine) != 1:
+        return dict(state="NOT_SINGLE_REQUEST", requests=len(mine), basis=TRANSPORT_BASIS)
+    return dict(mine[0], state="MEASURED", basis=TRANSPORT_BASIS)
 
 
 def _now(clock):
@@ -81,10 +126,11 @@ def _source_time(row, field, received):
                 raw_type=type(value).__name__ if field in row else "absent")
 
 
-def _row(row, expected, sent, received):
+def _row(row, expected, sent, received, transport):
     item = dict(symbol=expected.symbol, provider_symbol=expected.provider_symbol or expected.symbol,
                 expected_instrument_id=expected.instrument_id,
-                request_started_at=sent.isoformat(), received_at=received.isoformat(),
+                workload_started_at=sent.isoformat(), received_at=received.isoformat(),
+                transport_bracket=transport,
                 fields={k: number_state(row, k) for k in FIELDS},
                 quote_time=_source_time(row, "quote_time", received),
                 last_trade_time=_source_time(row, "last_trade_time", received), issues=[])
@@ -106,6 +152,20 @@ def _row(row, expected, sent, received):
     return item
 
 
+def validate(symbols, rounds, interval_seconds):
+    """The canonical symbols, or ProbeStop; local arguments only, no client needed."""
+    if (type(rounds) is not int or not 1 <= rounds <= 3
+            or isinstance(interval_seconds, bool) or not isinstance(interval_seconds, (int, float))
+            or not math.isfinite(interval_seconds) or not 0 <= interval_seconds <= 30
+            or not isinstance(symbols, (list, tuple)) or not 1 <= len(symbols) <= 5
+            or any(not isinstance(s, str) for s in symbols)):
+        raise ProbeStop("INVALID_PROBE_ARGUMENTS")
+    names = list(dict.fromkeys(canonical_symbol(s) for s in symbols))
+    if any(not re.fullmatch(r"[A-Z0-9][A-Z0-9.-]{0,19}", s) for s in names):
+        raise ProbeStop("INVALID_PROBE_SYMBOL")
+    return names
+
+
 def check(source, symbols, *, rounds=2, interval_seconds=5, clock=lambda: datetime.now(UTC),
           sleep=time.sleep, host_clock=None):
     """Resolve once, then inspect each snapshot; preserve peers but never attest BBO."""
@@ -118,15 +178,7 @@ def check(source, symbols, *, rounds=2, interval_seconds=5, clock=lambda: dateti
                   volume_note="Raw snapshot observations only; no RTH30 volume or share-basis attestation.",
                   LIVE_TIMING="NOT_TESTED", stopped_on_error=False)
     try:
-        if (type(rounds) is not int or not 1 <= rounds <= 3
-                or isinstance(interval_seconds, bool) or not isinstance(interval_seconds, (int, float))
-                or not math.isfinite(interval_seconds) or not 0 <= interval_seconds <= 30
-                or not isinstance(symbols, (list, tuple)) or not 1 <= len(symbols) <= 5
-                or any(not isinstance(s, str) for s in symbols)):
-            raise ProbeStop("INVALID_PROBE_ARGUMENTS")
-        names = list(dict.fromkeys(canonical_symbol(s) for s in symbols))
-        if any(not re.fullmatch(r"[A-Z0-9][A-Z0-9.-]{0,19}", s) for s in names):
-            raise ProbeStop("INVALID_PROBE_SYMBOL")
+        names = validate(symbols, rounds, interval_seconds)
         report.update(requested_symbols=names, rounds_requested=rounds)
         report["started_at"] = _now(clock).isoformat()
         raw_metadata = source.security_metadata(names)
@@ -150,16 +202,19 @@ def check(source, symbols, *, rounds=2, interval_seconds=5, clock=lambda: dateti
                 if not grouped:
                     continue
                 sent = _now(clock)
+                before = len(getattr(source, "transport_brackets", None) or [])
                 rows = source.snapshot(grouped, category=category)
                 received = _now(clock)
+                transport = _transport_bracket(source, before)
                 if received < sent:
                     raise ProbeStop("LOCAL_CLOCK_MOVED_BACKWARDS")
                 if not isinstance(rows, list):
                     raise ProbeStop("SNAPSHOT_REPLY_NOT_LIST")
                 capture = dict(category=category, symbols=grouped, row_count=len(rows),
-                               request_started_at=sent.isoformat(), received_at=received.isoformat(),
+                               workload_started_at=sent.isoformat(), received_at=received.isoformat(),
                                request_session=session_label(sent), receipt_session=session_label(received),
-                               request_elapsed_ms=(received - sent).total_seconds() * 1000,
+                               workload_elapsed_ms=(received - sent).total_seconds() * 1000,
+                               workload_note=WORKLOAD_NOTE, transport_bracket=transport,
                                unrequested_or_unattributable_rows=0)
                 group_report["groups"].append(capture)
                 by_symbol = {name: [] for name in grouped}
@@ -175,7 +230,7 @@ def check(source, symbols, *, rounds=2, interval_seconds=5, clock=lambda: dateti
                         item = dict(symbol=name, status="SOURCE_ISSUE", issues=[
                             "SNAPSHOT_MISSING" if not matches else "SNAPSHOT_IDENTITY_AMBIGUOUS"])
                     else:
-                        item = _row(matches[0], metadata[name], sent, received)
+                        item = _row(matches[0], metadata[name], sent, received, transport)
                     if capture["unrequested_or_unattributable_rows"]:
                         item["status"] = "SOURCE_ISSUE"
                         item["issues"].append("SNAPSHOT_BATCH_UNATTRIBUTABLE")
@@ -206,16 +261,24 @@ def main(argv=None):
     parser.add_argument("--host-clock", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
+    if os.path.lexists(args.output):
+        parser.error("Output exists; choose a new path (reports are never overwritten)")
     try:
+        # Local arguments first: an argument error is reported as one even without credentials.
+        validate(args.symbols, args.rounds, args.interval_seconds)
+        if type(args.max_requests) is not int or not 1 <= args.max_requests <= MAX_REQUESTS:
+            raise ProbeStop("INVALID_REQUEST_BUDGET")
         source = BoundedData.from_env(max_requests=args.max_requests)
         result = check(source, args.symbols, rounds=args.rounds, interval_seconds=args.interval_seconds,
                        host_clock=load_host_clock(args.host_clock))
     except Exception as exc:
         result = dict(purpose="read-only Webull snapshot observations; no decision/order activation",
-                      status="UNAVAILABLE", error_type=type(exc).__name__)
-    result = write_report(result, args.output)
+                      status="UNAVAILABLE", error_type=type(exc).__name__, requests=0)
+        if isinstance(exc, ProbeStop):
+            result["stop_reason"] = str(exc)
+    result, write_failed = write_new_report(result, args.output)
     print(json.dumps(result, indent=2))
-    return 0 if result["status"] == "OBSERVATIONS_ONLY" else 1
+    return 0 if result["status"] == "OBSERVATIONS_ONLY" and not write_failed else 1
 
 
 if __name__ == "__main__":

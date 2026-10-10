@@ -312,3 +312,96 @@ no associative arrays, `mapfile`, `${var,,}` or `|&`).
   `SUMMARY` line that printed the clock path.
 - Not shown here: bash 3.2 itself, macOS `mktemp`, and the real credential tool.
   These blocks are tested against stubs; that is not host or deployment acceptance.
+
+## R5 — diagnostic integrity and carried notes
+
+### Requirement (recorded before implementation)
+
+- **B-1** (`webull_quote_check`, carried W1). Producer: `WebullData._call` sleeps
+  for the per-path throttle, signs, then calls the transport; `BoundedData._call`
+  counts the request first. Consumer: the diagnostic report, read by Astra/Taz to
+  compare sources. The old `request_elapsed_ms` spanned all of it (0 ms vs 886 ms
+  in the 10-10 re-run). Required: a transport bracket around the urllib open and
+  read only, the wait before it shown separately, and the whole call labelled as
+  workload, not latency. Budgets, signing and routes unchanged; no send time is
+  invented.
+- **B-2** (`snapshot_quote_check`, `webull_quote_check` CLIs). Local arguments and
+  the output path are checked before any client is built or credentials are
+  needed. Refused examples: `--rounds 9`, a NaN interval, a bad symbol, a duplicate
+  symbol, a negative strike with missing credentials must report the argument
+  error. Successful control: valid arguments without credentials still report
+  `UNAVAILABLE` (`CREDENTIALS_MISSING` / `WebullError`). No request in either case.
+- **B-3.** Both CLIs refuse an existing `--output` (also a symlink) before any
+  client and keep its bytes; a file that appears during the run is not replaced
+  (exclusive create) and the printed report says
+  `OUTPUT_EXISTS_NOT_OVERWRITTEN`; another write error says
+  `OUTPUT_WRITE_FAILED_<error>`; both exit 1. Inventory of
+  `quote_measure.write_report` callers: `webull_quote_check`, `snapshot_quote_check`
+  (changed to the exclusive writer); `quote_check`, `quote_measure` clock/volume,
+  `option_conventions` and `tradier_option_check` CLIs and the comparison wrapper's
+  own `summary.json` (unchanged; the default still overwrites, which the wrapper's
+  deliberate internal write needs). `tradier_fields.write_report` callers are a
+  separate function, unchanged.
+- **B-4.** Document the observed `updated-at` behaviour (T1).
+- **A-O2/N1.** `close_jobs.attempt` publishes `close_job.last_attempt` from the job
+  read after its commit, which can be a later worker's attempt; `evaluated_at` is
+  read after the bar fetch, while earnings evidence may be requested after it. The
+  attempt must report its own chronology. Job history and behaviour unchanged.
+- **D O7.** Correct the focused count with the exact command.
+- **Dispositions** of D O3–O6, B-5/B-6, A-O3, N2: keep safe restrictions, add no
+  tolerance and no invisible cross-application accounting.
+
+### Implementation and results
+
+- B-1: `BoundedData` wraps its transport and appends one bracket per wire call
+  (`started_at`, `returned_at`, `elapsed_ms` from the monotonic clock,
+  `throttle_and_signing_ms`, `outcome` RETURNED/RAISED). Each snapshot group and
+  row carries `transport_bracket` (`MEASURED` for exactly one call, otherwise
+  `NOT_SINGLE_REQUEST` or `NOT_RECORDED`) with its basis text. The whole call is
+  `workload_started_at`/`workload_elapsed_ms` with `workload_note`;
+  `request_started_at` and `request_elapsed_ms` are gone from the Webull report
+  (no code consumer; Checked by grep). `received_at`, used for source-time ages, is
+  unchanged. The tastytrade REST snapshot and Tradier brackets contain no throttle
+  sleep (Checked by reading `snapshot_quote_check.observe` and
+  `tradier_option_check.quotes`), so they are unchanged.
+- B-2/B-3: `webull_quote_check.validate` and `snapshot_quote_check.validate` are
+  shared by the diagnostic and the CLI; the CLIs also check the request budget and
+  `os.path.lexists(--output)` first. `quote_measure.write_new_report` writes with
+  `open("x")`, removes only a partial file it created, and returns the
+  credential-checked report with `output_write` on failure.
+- B-4: `TASTYTRADE_QUOTES.md` REST section now carries the 2026-10-05 observation
+  (Checked) and says `updated-at` is not a side-change time and its age alone does
+  not show bid/ask freshness.
+- A-O2/N1: `rec.discovery["this_attempt"]` gives this attempt's `attempt`,
+  `committed`, `started_at`, `evaluated_at` with `evaluated_at_basis`, `final_at`
+  (the clock read under the publication lock) and `status` (`CLAIM_LOST` when its
+  results were discarded); `close_job.last_attempt_is_this_attempt` says whether the
+  job's last history row is this attempt. The persisted history row is unchanged.
+- D O7: corrected in `checkpoints/G5a-afterhours-four-loops-2026-10-08.md` and
+  `G5_ACCEPTANCE.md`; the evidence JSON is left as the developer's record.
+
+| Item | Disposition |
+| --- | --- |
+| D O3 CLI refresh skips the ledger | Kept; now documented in `TRADIER_TICKET_QUOTES.md` as an invisible same-store user (one GET per process). No cross-process accounting added. |
+| D O4 no margin at 60 s | Kept; documented. A 429 fails closed to STOP. Adding a margin would be a new tolerance (Taz/Astra decision). |
+| D O5 clock read before the lock | Kept; two concurrent clients can refuse one refresh with the backwards-clock check. Fails closed; window is microseconds (Inferred). |
+| D O6 same path, new store object | Kept; over-conservative only. |
+| B-5 `equity=` comma form | Kept; documented. The comma form answered on 2026-10-05; the documented array form is untested. |
+| B-6 NaN body code | Kept; documented. Refused as `INVALID_JSON`; fails closed. |
+| A-O3 `SOURCE_SESSION_NO_LONGER_LATEST` | Kept as a defensive check; effectively unreachable before `TARGET_SESSION_ENDED`, harmless. |
+| N2 backwards wall-clock step | Kept; refused and retried after the spacing. A one-off `ValueError`/`SignalStateError` in the scan log after an NTP step is this, not a data fault. |
+
+Other writers found by the B-3 inventory that still replace an existing output:
+`quote_check`, `quote_measure clock/volume` and `option_conventions` CLIs, and
+`tradier_option_check` between its own existence check and its write (a race
+window only). Not changed here (outside B-3's named paths); the host commands use a
+fresh `mktemp -d` folder.
+
+Results: `tests/test_diagnostic_integrity.py` (26) plus the focused Webull, snapshot,
+close-job, close-recovery, publication-chronology, quote-measure and scanner suites
+pass. On c41142e the new file gives 24 failed, 2 passed (no collection error); the two
+passes are the snapshot controls (`INVALID_REST_CONFIG` and `CREDENTIALS_MISSING`
+were already reported before credentials). One existing assertion was renamed with
+the field (`request_elapsed_ms` -> `workload_elapsed_ms`). Mutations: 16/16 caught;
+the first run let "exit 0 although the write failed" survive, so a test for it was
+added and both CLIs' versions of that mutation were then caught.

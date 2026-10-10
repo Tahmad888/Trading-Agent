@@ -65,6 +65,10 @@ def classify(reason) -> str:
     return "REFUSED"
 
 
+EVALUATED_AT_BASIS = ("decision clock after the daily-bar fetch and volume attach; earnings evidence "
+                      "for armed setups may be requested after it; final_at is read under the publication lock")
+
+
 def summary(job) -> dict | None:
     """Bounded diagnostic view of one job (no candidate payloads)."""
     if job is None:
@@ -147,7 +151,10 @@ def attempt(source, log, source_session: date, now: datetime, *, removed: set[st
                 for s in universe if s in removed and done.get(s, {}).get("status") != "PREPARED"}
     try:
         scan, _ = close_scan(source, todo, now, decision_clock=decision_clock, preparing=True)
-        now = clock(scan.at)  # evaluated after provider work, not the invocation's old clock
+        # Decision clock read after the daily-bar fetch, not the invocation's old clock. Earnings
+        # evidence for armed setups can still be requested after it (N1); publication reads its
+        # own final clock under the lock.
+        now = clock(scan.at)
         if now < started:
             raise ValueError("Close evaluation clock precedes the attempt start")
         market_ok = scan.error is None
@@ -215,6 +222,13 @@ def attempt(source, log, source_session: date, now: datetime, *, removed: set[st
     if committed:
         rec.at = clock(record["at"]).isoformat()
     rec.discovery["close_job"] = summary(final_job)
+    # This attempt's own chronology. The job's last_attempt can be a later worker's (A-O2).
+    rec.discovery["this_attempt"] = {
+        "attempt": record["attempt"], "committed": bool(committed), "started_at": record["started_at"],
+        "evaluated_at": record["evaluated_at"], "evaluated_at_basis": EVALUATED_AT_BASIS,
+        "final_at": record["at"] if committed else None, "status": record["status"] if committed else "CLAIM_LOST"}
+    rec.discovery["close_job"]["last_attempt_is_this_attempt"] = bool(
+        committed and final_job and final_job["history"] and final_job["history"][-1] == record)
     rec.discovery["requests"] = record["symbols_requested"]
     for key in ("prepared", "volume_pending", VOLUME_USAGE):
         if key in scan.discovery:

@@ -598,7 +598,9 @@ commit only; live reducer acceptance remains separate. Authorized batch record:
 | Tradier advertised quantities | Primary REST/stream docs rechecked, contradiction retained; exact provider inquiry ready but not sent/answered. Units remain unverified and no capacity conversion enabled. Chosen contract exposure remains available. |
 | Greek conventions / saved data | Six authentic indexed observations checked offline; original ages and exact decimals preserved. No complete-snapshot/live-state claim from an incomplete measurement log. Documented tastytrade conventions remain supported; Tradier provisional definitions and current live-state acceptance remain open. |
 
-Final developer strict suite: 2265 passes on Python 3.14.6; 88 focused passes;
+Final developer strict suite: 2265 passes on Python 3.14.6; 88 focused passes
+(file list not recorded; the brief's six-file focused command gives 226 at `c41142e`,
+see the four-loops checkpoint's count correction);
 14 collected safeguard mutations caught. Compact evidence:
 `evidence/G5a-afterhours-offline-2026-10-08.json`. No market-data provider call,
 account query, order, schedule, activation or iMac modification in this batch.

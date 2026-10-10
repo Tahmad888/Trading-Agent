@@ -12,12 +12,31 @@ import platform
 import subprocess
 import time
 
-from desk.quote_measure import write_report
+from desk.quote_measure import write_new_report
 from desk.snapshot_quotes import normalize_batch
 from desk.tastytrade_quotes import QuoteService, QuoteUnavailable, aware, canonical, session_label
 from desk.tastytrade_transport import Credentials, ReadClient, select_pair, utcnow
 
 STOPS = {"REST_HTTP_401", "REST_HTTP_403", "REST_HTTP_429", "REST_REQUEST_BUDGET"}
+
+
+def validate(equities, option_underlying, option_strike, rounds, interval_seconds):
+    """Names to resolve and the option underlying, or QuoteUnavailable; no client needed."""
+    if (not isinstance(equities, (list, tuple)) or not 1 <= len(equities) <= 10
+            or type(rounds) is not int or not 1 <= rounds <= 3
+            or isinstance(interval_seconds, bool) or not isinstance(interval_seconds, (int, float))
+            or not math.isfinite(interval_seconds) or not 0 <= interval_seconds <= 30):
+        raise QuoteUnavailable("SNAPSHOT_PROBE_ARGUMENTS_INVALID")
+    names = [canonical(s, "Equity") for s in equities]
+    if len(set(names)) != len(names):
+        raise QuoteUnavailable("SNAPSHOT_PROBE_ARGUMENTS_INVALID")
+    underlying = canonical(option_underlying, "Equity") if option_underlying else None
+    if option_strike is not None and (not isinstance(option_strike, Decimal)
+            or not option_strike.is_finite() or option_strike <= 0 or underlying is None):
+        raise QuoteUnavailable("SNAPSHOT_PROBE_ARGUMENTS_INVALID")
+    if underlying and underlying not in names:
+        names.append(underlying)
+    return names, underlying
 
 
 def diagnostic(client, equities, *, option_underlying=None, option_strike=None, rounds=2,
@@ -33,20 +52,7 @@ def diagnostic(client, equities, *, option_underlying=None, option_strike=None, 
     service = QuoteService(environment=client.environment)  # identity registry only, never connected
     identities = []
     try:
-        if (not isinstance(equities, (list, tuple)) or not 1 <= len(equities) <= 10
-                or type(rounds) is not int or not 1 <= rounds <= 3
-                or isinstance(interval_seconds, bool) or not isinstance(interval_seconds, (int, float))
-                or not math.isfinite(interval_seconds) or not 0 <= interval_seconds <= 30):
-            raise QuoteUnavailable("SNAPSHOT_PROBE_ARGUMENTS_INVALID")
-        names = [canonical(s, "Equity") for s in equities]
-        if len(set(names)) != len(names):
-            raise QuoteUnavailable("SNAPSHOT_PROBE_ARGUMENTS_INVALID")
-        underlying = canonical(option_underlying, "Equity") if option_underlying else None
-        if option_strike is not None and (not isinstance(option_strike, Decimal)
-                or not option_strike.is_finite() or option_strike <= 0 or underlying is None):
-            raise QuoteUnavailable("SNAPSHOT_PROBE_ARGUMENTS_INVALID")
-        if underlying and underlying not in names:
-            names.append(underlying)
+        names, underlying = validate(equities, option_underlying, option_strike, rounds, interval_seconds)
         started = aware(clock())
         report.update(started_at=started.isoformat(), requested_symbols=names)
         for symbol in names:
@@ -141,8 +147,14 @@ def main(argv=None, env=None):
     parser.add_argument("--max-requests", type=int, default=12)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
+    if os.path.lexists(args.output):
+        parser.error("Output exists; choose a new path (reports are never overwritten)")
     env = os.environ if env is None else env
     try:
+        # Local arguments first: an argument error is reported as one even without credentials.
+        validate(args.symbols, args.option_underlying, args.option_strike, args.rounds, args.interval_seconds)
+        if not 1 <= args.max_requests <= 100:  # ReadClient's own bound, checked before credentials
+            raise QuoteUnavailable("INVALID_REST_CONFIG")
         client = ReadClient(Credentials(env.get("TASTYTRADE_CLIENT_SECRET", ""), env.get("TASTYTRADE_REFRESH_TOKEN", "")),
                             environment=args.environment, max_requests=args.max_requests)
         report = diagnostic(client, args.symbols, option_underlying=args.option_underlying,
@@ -156,9 +168,9 @@ def main(argv=None, env=None):
     except (OSError, subprocess.CalledProcessError):
         report["commit"] = "UNKNOWN"
     report["python"] = platform.python_version()
-    report = write_report(report, args.output, env)
+    report, write_failed = write_new_report(report, args.output, env)
     print(json.dumps(report, indent=2))
-    return 0 if report["status"] == "OBSERVATIONS_ONLY" else 1
+    return 0 if report["status"] == "OBSERVATIONS_ONLY" and not write_failed else 1
 
 
 if __name__ == "__main__":

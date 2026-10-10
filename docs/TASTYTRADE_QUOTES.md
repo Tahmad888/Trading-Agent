@@ -587,6 +587,15 @@ the contract under test, not a workaround that invents missing DXLink `bidTime` 
 `askTime`. Dasherized wire fields and the explicit camelCase reference aliases are
 supported; contradictions are refused. Prices/sizes retain decimal precision.
 Sizes are labelled `PROVIDER_UNITS_NOT_ATTESTED`; coverage is `NOT_ATTESTED`.
+
+Observed caveat (Checked on Astra's capture of 2026-10-05 01:45Z, recorded in the
+2026-10-07 review as T1; G5 backlog R5 B-4): `updated-at` advanced off-hours with no
+trading. It read 2026-10-03T10:09:27Z (QQQ, NVDA) and 10:31:09Z (SPY), Saturday
+morning about ten hours after Friday's extended session, while bid and ask were still
+at Friday's levels. So it can move on a record refresh that is not a quote change. It
+is not a replacement bid or ask side-change time, and its age alone does not show that
+a bid/ask is fresh. Whether it moves while bid/ask stay the same during the regular
+session is still to be recorded (Assumption until then); nothing consumes it today.
 Missing, zero, naive, invalid and future timestamps are refused. Old timestamps
 remain observations labelled outside the existing 60-second quote policy. No new
 clock allowance or policy change was added.
@@ -598,6 +607,15 @@ toward the explicit request budget. Denial, rate limit, budget, transport and gl
 response-shape failures stop without retries; missing/invalid individual symbols
 remain isolated. The last round is refreshed without a cache. Earlier rounds are
 history only, including when the final refresh fails.
+
+The CLI checks its own arguments and that `--output` does not already exist before it
+builds a client or needs credentials, and never replaces an existing file, even one
+created during the run (G5 backlog R5 B-2/B-3; Webull's snapshot diagnostic does the
+same). Two known differences are kept (R5 B-5/B-6): the query is sent as
+`equity=SPY%2CQQQ`, while the reference documents `equity[]=SPY&equity[]=QQQ`; the
+comma form answered in the 2026-10-05 capture, and the array form is untested. A reply
+body containing `NaN` is refused as `INVALID_JSON` rather than a number-specific code;
+it fails closed either way.
 
 After updating and verifying the committed code on the host, activate the virtual
 environment and source the existing private env file. `TASTYTRADE_CLIENT_SECRET`

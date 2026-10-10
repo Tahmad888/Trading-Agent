@@ -85,11 +85,11 @@ def test_request_receipt_bracket_is_independent_of_source_time():
     stamps = iter([AT, AT + timedelta(seconds=1), AT + timedelta(seconds=3), AT + timedelta(seconds=4)])
     report = check(source(), ["NVDA"], rounds=1, clock=lambda: next(stamps), sleep=lambda _: None)
     item = report["checks"][0]
-    assert item["request_started_at"] == (AT + timedelta(seconds=1)).isoformat()
+    assert item["workload_started_at"] == (AT + timedelta(seconds=1)).isoformat()
     assert item["received_at"] == (AT + timedelta(seconds=3)).isoformat()
     assert item["quote_time"]["at"] == AT.isoformat()
     assert item["quote_time"]["receipt_minus_source_ms"] == 3000
-    assert report["rounds"][0]["groups"][0]["request_elapsed_ms"] == 2000
+    assert report["rounds"][0]["groups"][0]["workload_elapsed_ms"] == 2000
 
 
 def test_share_class_uses_reviewed_alias_and_exact_instrument_id():

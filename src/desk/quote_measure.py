@@ -536,15 +536,48 @@ def load_host_clock(path: Path | None) -> dict:
 # ---------------------------------------------------------------- credential guard ----
 
 
-def write_report(report: dict, path: Path, env=None) -> dict:
+def checked_report(report: dict, env=None) -> tuple[dict, str]:
+    """The report and its text, or the rejection that replaces it if a credential appears."""
     text = json.dumps(report, indent=2, default=str) + "\n"
     if not credential_free(text, env):
         report = {"status": "REPORT_REJECTED", "code": "REPORT_CREDENTIAL_MATCH",
                   "purpose": report.get("purpose")}
         text = json.dumps(report, indent=2) + "\n"
+    return report, text
+
+
+def write_report(report: dict, path: Path, env=None, *, exclusive=False) -> dict:
+    """Write the credential-checked report. With `exclusive`, an existing path (even one
+    created after the caller's own check) is never replaced: FileExistsError is raised and
+    its bytes are kept; a failed write removes only the file this call created."""
+    report, text = checked_report(report, env)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    if not exclusive:
+        path.write_text(text)
+        return report
+    with path.open("x") as handle:
+        try:
+            handle.write(text)
+            handle.flush()
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
     return report
+
+
+def write_new_report(report: dict, path: Path, env=None) -> tuple[dict, int]:
+    """Exclusive write for a diagnostic CLI (G5 backlog R5 B-3): the credential-checked report
+    and 0, or that report with a truthful `output_write` failure and 1. Never overwrites."""
+    try:
+        return write_report(report, path, env, exclusive=True), 0
+    except FileExistsError as exc:
+        # A parent that is a file also raises FileExistsError (from mkdir); only the output
+        # path itself existing is an existing report.
+        failure = ("OUTPUT_EXISTS_NOT_OVERWRITTEN" if os.path.lexists(path)
+                   else "OUTPUT_WRITE_FAILED_" + type(exc).__name__)
+    except OSError as exc:
+        failure = "OUTPUT_WRITE_FAILED_" + type(exc).__name__
+    return dict(checked_report(report, env)[0], output_write=failure), 1
 
 
 # ------------------------------------------------------------------- volume window ----

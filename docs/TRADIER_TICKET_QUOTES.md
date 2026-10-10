@@ -116,6 +116,11 @@ window is an engineering guard, not an exact mirror of the provider counter or a
 trading rule. Other applications or stores using the same token remain invisible
 to it. Provider response headers are not currently integrated, so the local ledger
 does not attest remaining provider quota. No automatic sleeps or denial retries.
+The `python -m desk.tradier_quotes ... refresh` command is one of those invisible
+users even on the same store: it builds a diagnostic client (one GET per process) that
+does not reserve in the minute ledger (10-09 audit O3; kept, G5 backlog R5). Do not run
+it in a loop beside an operational composer. Releases happen exactly at 60 s with no
+added latency margin (O4); a real provider 429 still fails closed to a STOP.
 
 A local workload/rate refusal withdraws only the requested quote/trade components;
 it does not create a global provider STOP. Healthy peers retain their evidence.

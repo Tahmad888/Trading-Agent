@@ -55,7 +55,15 @@ requirements even if every offline check passes.
 ## Results and individual dispositions
 
 Developer verification, Python 3.14.6: 88 focused cases passed; final combined
-`python -m pytest -q -W error` passed **2265** in 213.14 seconds. The first combined
+`python -m pytest -q -W error` passed **2265** in 213.14 seconds.
+Count correction (G5 backlog R5, D O7): the 88 focused cases were not run with a
+recorded file list. The brief's six-file focused command, `python -m pytest -q -W error
+tests/test_afterhours_budget.py tests/test_afterhours_readiness.py
+tests/test_tradier_quotes_runtime.py tests/test_quote_measure.py
+tests/test_tastytrade_greeks.py tests/test_option_conventions.py`, collects and passes
+**226** at `c41142e` (Checked by Claude on 2026-10-09 and again 2026-10-10, Python
+3.14.6). 88 equals the first two files plus `tests/test_tastytrade_greeks.py`
+(15 + 15 + 58; Inferred, not re-run as a separate count). The 2265 full count matches. The first combined
 run had one old raw-report key assertion fail (2262 passed); its expectation was
 updated for the intentional `current_state` -> `summary_scope` report change.
 A newly added identity-conflict fixture initially altered a stock instead of the
