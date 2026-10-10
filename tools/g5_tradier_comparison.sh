@@ -46,23 +46,39 @@ if missing:
 PY
 OUT="$(mktemp -d "$HOME/Desktop/g5-step3-comparison-XXXXXX")"
 echo "Report directory: $OUT"
+# VALID, MISSING, MALFORMED (or UNAVAILABLE for a clock) for an expected file; never an exit status.
+evidence() {
+  python - "$1" "$2" <<'PY'
+import sys
+from desk.evidence_files import state
+print(state(sys.argv[2], sys.argv[1]))
+PY
+}
 # Select once. Both captures will re-check this exact expiry, strike, call and put.
 if python -m desk.tradier_option_check --environment production --symbols SPY --option-underlying SPY \
     --select-only --max-requests 3 --output "$OUT/selection.json" > "$OUT/selection.stdout" 2>&1; then
-  echo "Option pair selected."
+  selection_exit=0
 else
-  echo "STOP: selection failed; inspect selection.json and selection.stdout in the report directory."
+  selection_exit=$?
+fi
+selection_state="$(evidence selection "$OUT/selection.json")"
+if [ "$selection_exit" -ne 0 ] || [ "$selection_state" != "VALID" ]; then
+  echo "STOP: selection failed (exit $selection_exit, selection.json $selection_state); inspect selection.json and selection.stdout in the report directory."
   exit 1
 fi
+echo "Option pair selected (exit 0, selection.json VALID)."
 clock_exit=0
 if python -m desk.quote_measure clock --output "$OUT/clock.json" > "$OUT/clock.stdout" 2>&1; then
   clock_exit=0
 else
   clock_exit=$?
 fi
+# Only a valid measured host-clock file is attached; anything else is named in the summary.
 HC=()
-if [ -f "$OUT/clock.json" ]; then
+if [ "$(evidence clock "$OUT/clock.json")" = "VALID" ]; then
   HC=(--host-clock "$OUT/clock.json")
+else
+  echo "Host clock evidence is not valid; captures run without --host-clock (see summary.json)."
 fi
 python -m desk.tradier_option_check --environment production --symbols SPY QQQ NVDA \
   --option-selection "$OUT/selection.json" --rounds 4 --interval-seconds 60 --max-requests 9 \
@@ -86,30 +102,33 @@ else
   greeks_exit=$?
 fi
 # Preserve command exits and shared-pair binding; recording data is not a live-data PASS.
-python - "$OUT" "$EXPECTED" "$clock_exit" "$tradier_exit" "$tastytrade_exit" "$webull_exit" "$greeks_exit" <<'PY'
+python - "$OUT" "$EXPECTED" "${#HC[@]}" "$selection_exit" "$clock_exit" "$tradier_exit" "$tastytrade_exit" \
+  "$webull_exit" "$greeks_exit" <<'PY'
 import json
 from pathlib import Path
 import sys
+from desk.evidence_files import state
 from desk.quote_measure import write_report
 out = Path(sys.argv[1])
-names = ("clock", "tradier", "tastytrade", "webull", "greeks")
-exits = dict(zip(names, map(int, sys.argv[3:]), strict=True))
-reports, errors = {}, {}
-for name in ("selection", "tradier", "tastytrade", "webull"):
-    try:
-        data = json.loads((out / (name + ".json")).read_text())
-        if not isinstance(data, dict):
-            raise ValueError
-        reports[name] = data
-    except (OSError, ValueError):
-        errors[name] = "REPORT_MISSING_OR_MALFORMED"
+names = ("selection", "clock", "tradier", "tastytrade", "webull", "greeks")
+exits = dict(zip(names, map(int, sys.argv[4:]), strict=True))
+# Every expected file, checked apart from its command's exit status.
+files = {"selection": ("selection.json", "selection"), "clock": ("clock.json", "clock"),
+         "tradier": ("tradier.json", "report"), "tastytrade": ("tastytrade.json", "report"),
+         "webull": ("webull.json", "report"), "greeks": ("tastytrade-greeks-normalized.json", "report")}
+states = {name: state(out / file, kind) for name, (file, kind) in files.items()}
+reports = {name: json.loads((out / files[name][0]).read_text()) for name, s in states.items()
+           if s == "VALID" and name != "clock"}
+errors = {name: "REPORT_" + s for name, s in states.items() if s != "VALID"}
 selection_id = reports.get("selection", {}).get("option_pair", {}).get("selection_id")
-binding = {name: bool(selection_id and reports.get(name, {}).get("option_pair_comparison", {})
-                     .get("selection_id") == selection_id) for name in ("tradier", "tastytrade")}
+binding = {name: bool(selection_id and isinstance(reports.get(name, {}).get("option_pair_comparison"), dict)
+                     and reports[name]["option_pair_comparison"].get("selection_id") == selection_id)
+           for name in ("tradier", "tastytrade")}
 summary = dict(purpose="read-only comparison collection; no decision eligibility", commit=sys.argv[2],
                status="RECORDED_REVIEW_REQUIRED" if not errors and not any(exits.values()) and all(binding.values())
                       else "PARTIAL_OR_FAILED_REVIEW_REQUIRED",
-               command_exit_codes=exits, report_errors=errors, shared_pair_binding=binding,
+               command_exit_codes=exits, evidence_files=states, report_errors=errors,
+               host_clock_passed_to_captures=sys.argv[3] != "0", shared_pair_binding=binding,
                report_statuses={name: report.get("status") for name, report in reports.items()},
                report_directory=str(out), live_data_approval="NOT_ATTESTED", G5="OPEN")
 summary = write_report(summary, out / "summary.json")

@@ -56,6 +56,9 @@ pair = {"selection_id": "fixture-selection", "call": {"symbol": "fixture-call"},
 data = {"status": "OBSERVATIONS_ONLY"}
 if name == "selection":
     data.update(status="OPTION_PAIR_SELECTED", option_pair=pair)
+elif name == "clock":
+    data = {"status": "MEASURED", "measured_finished_at": "2026-10-07T17:00:00+00:00",
+            "offset_seconds_as_printed": "+0.104", "plus_minus_seconds_as_printed": "0.020"}
 elif name in {"tradier", "tastytrade"}:
     selected = json.loads(Path(args[args.index("--option-selection") + 1]).read_text())["option_pair"]
     sid = "different-selection" if os.environ.get("TEST_MISMATCH") == name else selected["selection_id"]
@@ -89,7 +92,11 @@ elif module == "desk.webull_quote_check":
     probe.check = partial(probe.check, clock=lambda: at, sleep=lambda _: None)
     exit_code = probe.main(args[2:])
     sys.exit(1 if os.environ.get("TEST_FAIL") == name else exit_code)
-output.write_text(json.dumps(data))
+# R4 fixtures: an exit status and the file it should leave are independent.
+if os.environ.get("TEST_NOFILE") != name:
+    output.write_text("[1, 2]" if os.environ.get("TEST_MALFORMED") == name else
+                      json.dumps({"status": "UNAVAILABLE"}) if os.environ.get("TEST_UNMEASURED") == name else
+                      json.dumps(data))
 sys.exit(1 if os.environ.get("TEST_FAIL") == name else 0)
 ''')
     python = bins / "python"
@@ -172,3 +179,54 @@ def test_wrong_branch_stops_before_any_credential_or_provider_command(host):
                             text=True, capture_output=True, timeout=10)
     assert result.returncode == 1 and "STOP:" in result.stdout
     assert not Path(env["TEST_LOG"]).exists() and not list((home / "Desktop").iterdir())
+
+
+# ---- G5 backlog R4: expected evidence files, apart from exit status ------------------------------
+def stop_run(host, **changes):
+    script, home, env = host
+    result = subprocess.run(["bash", str(script), SHA], env=dict(env, **changes),
+                            text=True, capture_output=True, timeout=30)
+    folders = list((home / "Desktop").iterdir())
+    calls = [json.loads(line) for line in Path(env["TEST_LOG"]).read_text().splitlines()]
+    return result, folders, calls
+
+
+@pytest.mark.parametrize("changes,state", [({"TEST_NOFILE": "selection"}, "MISSING"),
+                                           ({"TEST_MALFORMED": "selection"}, "MALFORMED"),
+                                           ({"TEST_FAIL": "selection"}, "VALID")])
+def test_selection_success_is_printed_only_after_valid_pair_evidence(host, changes, state):
+    result, folders, calls = stop_run(host, **changes)
+    exit_code = 1 if "TEST_FAIL" in changes else 0
+    assert result.returncode == 1 and "Option pair selected" not in result.stdout
+    assert f"STOP: selection failed (exit {exit_code}, selection.json {state})" in result.stdout
+    assert len(calls) == 1 and not (folders[0] / "summary.json").exists()
+
+
+@pytest.mark.parametrize("name,changes,state", [
+    ("greeks", {"TEST_NOFILE": "tastytrade-greeks-normalized"}, "MISSING"),
+    ("greeks", {"TEST_MALFORMED": "tastytrade-greeks-normalized"}, "MALFORMED"),
+    ("tastytrade", {"TEST_NOFILE": "tastytrade"}, "MISSING"),
+    ("tradier", {"TEST_MALFORMED": "tradier"}, "MALFORMED"),
+    ("clock", {"TEST_NOFILE": "clock"}, "MISSING"),
+    ("clock", {"TEST_MALFORMED": "clock"}, "MALFORMED"),
+    ("clock", {"TEST_UNMEASURED": "clock"}, "UNAVAILABLE"),
+])
+def test_an_exit_zero_without_valid_evidence_is_reported_apart_from_the_exit(host, name, changes, state):
+    result, folder, summary = run(host, **changes)
+    assert result.returncode == 1 and summary["status"] == "PARTIAL_OR_FAILED_REVIEW_REQUIRED"
+    assert not any(summary["command_exit_codes"].values())
+    assert summary["evidence_files"][name] == state and summary["report_errors"] == {name: "REPORT_" + state}
+    others = {k: v for k, v in summary["evidence_files"].items() if k != name}
+    assert set(others.values()) == {"VALID"}                     # peers were still collected
+
+
+@pytest.mark.parametrize("changes,passed", [({}, True), ({"TEST_NOFILE": "clock"}, False),
+                                            ({"TEST_MALFORMED": "clock"}, False),
+                                            ({"TEST_UNMEASURED": "clock"}, False)])
+def test_only_a_valid_host_clock_file_is_passed_to_the_captures(host, changes, passed):
+    result, folder, summary = run(host, **changes)
+    commands = [json.loads(line) for line in Path(host[2]["TEST_LOG"]).read_text().splitlines()]
+    captures = [c for c in commands if c[1] in {"desk.quote_check", "desk.webull_quote_check"}]
+    assert len(captures) == 2 and all(("--host-clock" in c) == passed for c in captures)
+    assert summary["host_clock_passed_to_captures"] is passed
+    assert ("captures run without --host-clock" in result.stdout) is not passed

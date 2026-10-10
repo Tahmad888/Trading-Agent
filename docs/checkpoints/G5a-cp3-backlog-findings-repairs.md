@@ -240,3 +240,75 @@ refusal; malformed rows are isolated with peers kept.
 - Tests: `tests/test_offline_evidence_shapes.py` (33). On c41142e 30 fail; the
   integer, missing and contradictory-size controls pass. Focused option, quote,
   Greek, readiness and diagnostic-pair suites pass (384). Mutations: 11/11 caught.
+
+## R4 — host-command and wrapper evidence correctness
+
+### Requirement (recorded before implementation)
+
+Findings E1–E3 of the 2026-10-10 backlog audit (Checked with stubs at c41142e) and
+the wrapper's evidence reporting. Consumers: Taz pasting the three blocks of
+`docs/TASTYTRADE_QUOTES.md` into the iMac Terminal (zsh; the inner scripts run in
+`bash`, macOS ships 3.2), and anyone reading `tools/g5_tradier_comparison.sh`
+output or `summary.json`.
+
+- **Part 1.** Before anything changes: full 40-character SHA, the folder (a failed
+  `cd` stops), a clean tracked tree and the dedicated branch. Fetch once. The SHA
+  must be fetched, reachable from the fetched branch and a forward descendant of
+  (or equal to) HEAD. Merge exactly that SHA (`--ff-only`), never the branch head.
+  A host past it stops and is not rewound. Refused examples: advanced origin
+  (c41142e moved the host to the newer unreviewed head and then printed STOP),
+  absent SHA, unpushed SHA, host already past, fetch failure, dirty tree, wrong
+  branch, short or unreplaced SHA, failed `cd`. Successful: origin at or past the
+  reviewed commit, from any Terminal directory.
+- **Part 2.** An explicit guarded script: fail on `cd`, require the exact HEAD,
+  branch and clean tree, and confirm `.venv/bin/python` and the tool exist before
+  running it. The tool keeps the Terminal as stdin (hidden prompts). Refused at
+  c41142e: none; a failed `cd` ran another directory's tool.
+- **Part 3.** Per command, its real exit and its file's state, separately. Never
+  claim an absent file was written. Only a valid measured clock file is passed as
+  `--host-clock`; a missing, malformed or unmeasured clock is named in the
+  summary. Later read-only captures still run after a failure; the script ends
+  non-zero when any command failed or left no valid report. Collection is never
+  live-data approval.
+- **Wrapper.** The same properties for the selection, clock, three captures and
+  the normalized Greek file; selection success is printed only after exit 0 and
+  a valid pair file. Same pair, raw files, durations, request caps and read-only
+  calls.
+
+Not in scope: running anything on the iMac or against a provider, and bash 3.2
+itself (not available in this container; the scripts avoid 4.x-only constructs:
+no associative arrays, `mapfile`, `${var,,}` or `|&`).
+
+### Implementation and results
+
+- `src/desk/evidence_files.py`: `state(path, kind)` gives `VALID`, `MISSING`,
+  `MALFORMED` or, for a clock, `UNAVAILABLE` (a well-formed "not measured"
+  record). A report needs a JSON object with a string `status`; a clock is valid
+  only when `load_host_clock` accepts it as `MEASURED`; a selection needs
+  `option_pair.selection_id` and call/put symbols. `python -m desk.evidence_files
+  KIND FILE` prints the state.
+- `docs/TASTYTRADE_QUOTES.md` Parts 1–3 rewritten as described; Part 2 is now a
+  guarded script that `exec`s the tool, so stdin stays the Terminal.
+- `tools/g5_tradier_comparison.sh` records the selection exit and file state,
+  attaches the clock only when `VALID` and says so otherwise, and `summary.json`
+  gains `evidence_files` (all six), `report_errors` as `REPORT_<state>` and
+  `host_clock_passed_to_captures`.
+- Tests: `tests/test_host_commands.py` pastes each Part's block, as written in the
+  guide, into real `bash` (5.2.21) and `zsh -f` (5.9, installed in this cloud
+  container only for the test) with stub `git` (a linear OLD → reviewed → newer
+  history) and stub `python` (only `-m desk.evidence_files` runs for real). Part
+  2's hidden prompt is checked under a pseudo-terminal: the fake tool sees a
+  terminal on stdin, reads 15 characters, and the typed text is not echoed.
+  `tests/test_evidence_files.py` covers the checker; `tests/test_comparison_command.py`
+  gains selection, exit-zero-without-file and clock cases.
+- Results: 121 focused tests pass (`test_host_commands` 78 including both shells,
+  `test_comparison_command` 24, `test_evidence_files` 19); the decision-module import
+  guard in `test_quote_measure.py` now lists `evidence_files.py` as a diagnostic. On
+  c41142e the host-command and wrapper tests give 72 failed, 30 passed (no collection
+  error); the passing ones are the controls (origin at the reviewed commit, tool run
+  from another Terminal directory, Part 2's terminal stdin, guards that already
+  stopped). `test_evidence_files` imports the new module and is not counted as
+  before/after proof. Mutations: 20/20 caught, including the pre-commit
+  `SUMMARY` line that printed the clock path.
+- Not shown here: bash 3.2 itself, macOS `mktemp`, and the real credential tool.
+  These blocks are tested against stubs; that is not host or deployment acceptance.

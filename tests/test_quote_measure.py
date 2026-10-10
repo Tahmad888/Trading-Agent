@@ -440,7 +440,7 @@ def test_measurements_stay_out_of_decision_modules():
     root = Path(__file__).resolve().parents[1] / "src" / "desk"
     importer = re.compile(r"^\s*(from desk(\.quote_measure| import quote_measure)|import desk\.quote_measure)", re.M)
     users = sorted(p.name for p in root.rglob("*.py") if importer.search(p.read_text()))
-    assert users == ["option_conventions.py", "quote_check.py", "snapshot_quote_check.py",
+    assert users == ["evidence_files.py", "option_conventions.py", "quote_check.py", "snapshot_quote_check.py",
                      "tradier_option_check.py", "webull_quote_check.py"]  # diagnostics only
 
 

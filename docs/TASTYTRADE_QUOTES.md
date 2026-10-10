@@ -369,24 +369,34 @@ Order matters: the iMac's last accepted commit (`b747904`) does not contain
 credential tool runs second, and the diagnostics run last.
 
 Each part runs as its own script so that a failed guard really stops everything after it
-(`set -e` plus an explicit `exit 1` per guard; printing STOP alone would not). Paste each
-block as shown and replace `REVIEWED_SHA` with the exact commit Astra signed off. The
-scripts run in their own shell, so a STOP never closes the Terminal window.
+(`set -e` plus an explicit `exit 1` per guard, including a failed `cd`; printing STOP
+alone would not). Paste each block as shown and replace `REVIEWED_SHA` with the full
+40-character commit Astra signed off. The scripts run in their own `bash`, whatever the
+Terminal's shell (zsh on the iMac), so a STOP never closes the Terminal window. They use
+only constructs that macOS's bash 3.2 supports (repaired 2026-10-10, G5 backlog R4).
 
-**Part 1: update and verify the reviewed code (no credentials, no provider request).**
+**Part 1: update to exactly the reviewed commit (no credentials, no provider request).**
+Nothing changes until the SHA, the folder, the clean tree and the branch are checked. It
+fetches once, requires the reviewed commit to be on the fetched branch and ahead of (or
+equal to) the current checkout, and fast-forwards to that commit, never to the branch's
+newer head. A checkout already past the reviewed commit stops; it is never rewound.
 
 ```sh
 desk_update=$(mktemp "${TMPDIR:-/tmp}/desk-child4-update.XXXXXX")
 cat > "$desk_update" <<'UPDATE'
 set -eo pipefail
-test -n "${1:-}" || { echo "STOP: give the reviewed commit SHA"; exit 1; }
-cd "$HOME/Trading-Agent"
+[[ "${1:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "STOP: give the full 40-character reviewed commit SHA"; exit 1; }
+cd "$HOME/Trading-Agent" || { echo "STOP: cannot enter $HOME/Trading-Agent"; exit 1; }
 test -z "$(git status --porcelain --untracked-files=no)" || { echo "STOP: tracked files have local changes"; exit 1; }
 test "$(git branch --show-current)" = "codex/repair-step-01-baseline" || { echo "STOP: wrong branch"; exit 1; }
 git fetch origin codex/repair-step-01-baseline || { echo "STOP: fetch failed"; exit 1; }
-git merge --ff-only origin/codex/repair-step-01-baseline || { echo "STOP: fast-forward failed"; exit 1; }
+git cat-file -e "$1^{commit}" || { echo "STOP: reviewed commit not fetched"; exit 1; }
+git merge-base --is-ancestor "$1" origin/codex/repair-step-01-baseline || { echo "STOP: reviewed commit is not on the fetched branch"; exit 1; }
+git merge-base --is-ancestor HEAD "$1" || { echo "STOP: this checkout is not behind the reviewed commit; nothing was rewound"; exit 1; }
+git merge --ff-only "$1" || { echo "STOP: fast-forward failed"; exit 1; }
 test "$(git rev-parse HEAD)" = "$1" || { echo "STOP: HEAD is not the reviewed commit"; exit 1; }
 echo "SHA_OK $1"
+test -f .venv/bin/activate || { echo "STOP: .venv missing"; exit 1; }
 source .venv/bin/activate
 python --version
 python -m pip install -e '.[dev,quotes]' || { echo "STOP: install failed"; exit 1; }
@@ -400,41 +410,88 @@ bash "$desk_update" REVIEWED_SHA
 Expected: no STOP; `SHA_OK`, the suite passes, `UPDATE_OK`.
 
 **Part 2: credentials, only after `UPDATE_OK`, run on their own.** Hidden input, mode
-0600, other saved settings preserved. Never paste keys into chat or a command line.
+0600, other saved settings preserved. Never paste keys into chat or a command line. The
+script re-checks the folder, branch, clean tree and exact reviewed commit, and that the
+tool exists, before it runs the tool. The tool reads the Terminal directly (`exec`, no
+pipe), so its hidden prompts behave as before.
 
 ```sh
-cd "$HOME/Trading-Agent"
-.venv/bin/python tools/setup_tastytrade_env.py
+desk_setup=$(mktemp "${TMPDIR:-/tmp}/desk-child4-setup.XXXXXX")
+cat > "$desk_setup" <<'SETUP'
+set -eo pipefail
+[[ "${1:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "STOP: give the full 40-character reviewed commit SHA"; exit 1; }
+cd "$HOME/Trading-Agent" || { echo "STOP: cannot enter $HOME/Trading-Agent"; exit 1; }
+test -z "$(git status --porcelain --untracked-files=no)" || { echo "STOP: tracked files have local changes"; exit 1; }
+test "$(git branch --show-current)" = "codex/repair-step-01-baseline" || { echo "STOP: wrong branch"; exit 1; }
+test "$(git rev-parse HEAD)" = "$1" || { echo "STOP: HEAD is not the reviewed commit"; exit 1; }
+test -x .venv/bin/python || { echo "STOP: .venv/bin/python missing"; exit 1; }
+test -f tools/setup_tastytrade_env.py || { echo "STOP: credential tool missing"; exit 1; }
+echo "SHA_OK $1"
+exec .venv/bin/python tools/setup_tastytrade_env.py
+SETUP
+bash "$desk_setup" REVIEWED_SHA
 ```
 
-**Part 3: read-only checks and diagnostics.** It re-checks the branch, the tree and the
-reviewed commit before any provider request.
+**Part 3: read-only checks and diagnostics.** It re-checks the folder, branch, tree and
+reviewed commit before any provider request. Each command's line gives its real exit and
+the state of the file it should have written (`VALID`, `MISSING`, `MALFORMED`, or for the
+clock `UNAVAILABLE`), checked by `desk.evidence_files`; neither implies the other. Only a
+`VALID` measured clock file is passed on as `--host-clock`; otherwise the captures run
+without it and the summary names the clock. A failure does not stop the later read-only
+captures, but the script ends non-zero if any command failed or left no valid report.
 
 ```sh
 desk_checks=$(mktemp "${TMPDIR:-/tmp}/desk-child4-checks.XXXXXX")
 cat > "$desk_checks" <<'CHECKS'
 set -eo pipefail
-test -n "${1:-}" || { echo "STOP: give the reviewed commit SHA"; exit 1; }
-cd "$HOME/Trading-Agent"
+[[ "${1:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "STOP: give the full 40-character reviewed commit SHA"; exit 1; }
+cd "$HOME/Trading-Agent" || { echo "STOP: cannot enter $HOME/Trading-Agent"; exit 1; }
 test -z "$(git status --porcelain --untracked-files=no)" || { echo "STOP: tracked files have local changes"; exit 1; }
 test "$(git branch --show-current)" = "codex/repair-step-01-baseline" || { echo "STOP: wrong branch"; exit 1; }
 test "$(git rev-parse HEAD)" = "$1" || { echo "STOP: HEAD is not the reviewed commit"; exit 1; }
 echo "SHA_OK $1"
+test -f .venv/bin/activate || { echo "STOP: .venv missing"; exit 1; }
+test -f "$HOME/.config/trading-desk/env" || { echo "STOP: credential file missing"; exit 1; }
 source .venv/bin/activate
 source "$HOME/.config/trading-desk/env"
 desk_quote_report_dir=$(mktemp -d "$HOME/Desktop/g5-quotes-XXXXXX")
-python -m desk.quote_measure clock --output "$desk_quote_report_dir/clock.json" || echo "clock.json written; host clock offset UNAVAILABLE"
-python -m desk.quote_check --environment production --symbols SPY QQQ NVDA --option-underlying SPY --seconds 120 --reconnects 1 --max-requests 20 --measure --host-clock "$desk_quote_report_dir/clock.json" --output "$desk_quote_report_dir/quotes.json" || echo "quotes.json written; non-zero exit means status is not OBSERVATIONS_ONLY"
-python -m desk.quote_check --environment production --symbols SPY --profile --seconds 30 --reconnects 0 --max-requests 6 --output "$desk_quote_report_dir/profile.json" || echo "profile.json written; non-zero exit means status is not OBSERVATIONS_ONLY"
+failed=""
+record() {  # name, the command's real exit, the expected file's kind
+  local state
+  state=$(python -m desk.evidence_files "$3" "$desk_quote_report_dir/$1.json") || state=CHECK_FAILED
+  echo "$1: exit $2, report $state"
+  if [ "$2" -ne 0 ] || [ "$state" != VALID ]; then failed="$failed $1"; fi
+}
+if python -m desk.quote_measure clock --output "$desk_quote_report_dir/clock.json"; then c=0; else c=$?; fi
+record clock "$c" clock
+host_clock=""
+if [ "$(python -m desk.evidence_files clock "$desk_quote_report_dir/clock.json")" = VALID ]; then
+  host_clock="$desk_quote_report_dir/clock.json"
+else
+  echo "clock: no valid host-clock file; the captures run without --host-clock"
+fi
+if python -m desk.quote_check --environment production --symbols SPY QQQ NVDA --option-underlying SPY --seconds 120 --reconnects 1 --max-requests 20 --measure ${host_clock:+--host-clock "$host_clock"} --output "$desk_quote_report_dir/quotes.json"; then c=0; else c=$?; fi
+record quotes "$c" report
+if python -m desk.quote_check --environment production --symbols SPY --profile --seconds 30 --reconnects 0 --max-requests 6 --output "$desk_quote_report_dir/profile.json"; then c=0; else c=$?; fi
+record profile "$c" report
 echo "Reports in $desk_quote_report_dir"
+if [ -n "$failed" ]; then
+  clock_note=""
+  [ -n "$host_clock" ] || clock_note="; host clock not attached"
+  echo "SUMMARY: failed or missing evidence:$failed$clock_note"
+  echo "EVIDENCE_COLLECTED_WITH_FAILURES (observations only; not a live-data PASS)"
+  exit 1
+fi
+echo "ALL_COMMANDS_EXIT_0_REPORTS_VALID (observations only; not a live-data PASS)"
 CHECKS
 bash "$desk_checks" REVIEWED_SHA
 ```
 
-Expected: no STOP line; `SHA_OK` with the reviewed commit; `clock.json` with
-`status` `MEASURED` (offset and `+/-` as printed; no clock-setting flags are used). Any
-STOP ends that script before any provider request, and the diagnostics write only to the
-new scratch folder.
+Expected: no STOP line; `SHA_OK` with the reviewed commit; `clock: exit 0, report VALID`
+(offset and `+/-` as printed in `clock.json`; no clock-setting flags are used), each
+capture `exit 0, report VALID`, then `ALL_COMMANDS_EXIT_0_REPORTS_VALID`. Any STOP ends
+that script before any provider request, and the diagnostics write only to the new
+scratch folder. Collected files are observations for review, never a live-data PASS.
 
 Option pair: the nearest non-expired Standard expiry on the ET market date (today's
 only before today's close), at the listed strike nearest the observed SPY trade
