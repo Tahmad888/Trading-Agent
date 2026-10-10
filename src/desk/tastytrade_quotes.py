@@ -149,6 +149,17 @@ CAPTURE_FIELDS = ("symbol", "instrument-type", "streamer-symbol", "cusip", "id",
                   "option-chain-type", "shares-per-contract")
 
 
+def _captured(value):
+    """Provider metadata as captured. A number with a fraction part (Decimal from the
+    transport, or a float) is kept as its exact text, never dropped: a non-integer
+    shares-per-contract must read as a conflict, not as absent (G5 backlog R3, C-1)."""
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    return value
+
+
 @dataclass(frozen=True)
 class Instrument:
     symbol: str
@@ -219,8 +230,8 @@ def instrument(requested: str, row: dict, received: datetime) -> Instrument:
                    instrument_id=ident, kind=kind, underlying=underlying,
                    expiry=str(expiry), right=right, strike=str(strike), is_etf=is_etf)
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    metadata = tuple((k, row[k]) for k in CAPTURE_FIELDS
-                     if k in row and isinstance(row[k], (str, int, bool)) and not isinstance(row[k], float))
+    metadata = tuple((k, _captured(row[k])) for k in CAPTURE_FIELDS
+                     if k in row and isinstance(row[k], (str, int, bool, Decimal, float)))
     return Instrument(symbol, row["symbol"], streamer, ident, kind, digest, aware(received),
                       underlying, expiry, right, strike, metadata, is_etf)
 

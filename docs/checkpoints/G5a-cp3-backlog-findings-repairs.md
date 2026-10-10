@@ -179,3 +179,64 @@ Rollback: revert the R2 commit; local failures then become STOP again.
   nothing was sent and the earlier evidence stands as it was before the attempt.
   An unwritable provider STOP is likewise held only by that process; a new
   process can send once more before it sees a provider refusal again.
+
+## R3 — contract-size metadata and malformed offline evidence
+
+### Requirement (recorded before implementation)
+
+**C-1 (Checked, Claude probe at c41142e):** `tastytrade_quotes` builds
+`Instrument.metadata` from text, integer and boolean fields only. The transport
+decodes JSON fractions as `Decimal`, so `shares-per-contract` 100.0, 100.5 or
+10.0 (and an injected float 100.5) disappears. `quote_check`'s pair check then
+reports `INCOMPLETE`/`PARTIAL` and subscribes the counterpart; the same value on
+the Tradier side is `CONFLICT`.
+
+Producer → consumer: tastytrade instrument row → `Instrument.metadata` →
+`quote_check.diagnostic` pair check (`diagnostic_pair.size_match`) → pair status,
+counterpart registration, `provider_fields` in the report.
+
+- Keep a fractional `Decimal` (or float) as its exact text. `size_match` already
+  refuses any non-integer text as `CONFLICT` (`INVALID_PROVIDER_SIZE`); no default
+  multiplier, no ×100, no adjusted-contract support.
+
+**D O2 (Checked):** `saved_greek_audit.audit` and `tradier_readiness.prepare`
+call `.get` on nested values without checking their type; Astra's probe
+`prepare({'identity_capture': []}, {'rounds': [None]}, ['SPY'], …)` raises
+`AttributeError`. Consumers are each tool's CLI report.
+
+- Check every root and nested shape before use: capture root, `measurements`,
+  `records`, `records_dropped`, `identity_capture` and each record's
+  `source_time` (audit); both roots, `identity_capture`, `rounds`, each round,
+  `observations`, each observation and `issuer_reference` (readiness).
+- Damage that cannot be tied to one symbol (a bad root, list or round) is a
+  fixed capture issue that withholds every draft or makes the audit a refusal.
+  Damage tied to one row or symbol isolates that row or symbol; healthy peers
+  keep their result. The input hash and the historical-only labels stay. No
+  catch-all exception handler; no state restored from incomplete logs.
+- The CLIs report invalid JSON as a structured refusal and exit 1.
+
+**D-O1 (Checked):** a Webull row spelled `BRK/B` beside the requested `BRK.B` is
+silently ignored. The readiness report now lists, per symbol, the rows it used
+and any alternate spellings found on either side. A Webull alternate row whose
+identity differs from the exact row is a contradiction and withholds the draft;
+a Tradier observation filed under another spelling also withholds it, since the
+draft could not say which observation the reviewer should trust.
+Drafts stay `DRAFT_NOT_INSTALLABLE`; equality of spellings never approves anything.
+
+Acceptance: the four fractional sizes give `CONFLICT` and keep the counterpart
+unregistered while the healthy stock peer stays; integer 100 matches; missing
+size stays `INCOMPLETE`; Astra's malformed-round call returns a structured
+refusal; malformed rows are isolated with peers kept.
+
+### Implementation and results
+
+- `tastytrade_quotes._captured` keeps fractional `Decimal`/float metadata as text.
+- `saved_greek_audit.shape_issues` and `tradier_readiness.capture_issues` check
+  shapes first; per-row and per-symbol checks isolate attributable damage;
+  `tradier_readiness` adds `input_sha256`, `capture_issues` and
+  `evidence_inventory`. Both CLIs refuse invalid JSON and capture-shape damage
+  with exit 1. Docs: `OPTION_CONVENTIONS.md`, `TASTYTRADE_GREEKS.md`,
+  `TRADIER_TICKET_QUOTES.md`.
+- Tests: `tests/test_offline_evidence_shapes.py` (33). On c41142e 30 fail; the
+  integer, missing and contradictory-size controls pass. Focused option, quote,
+  Greek, readiness and diagnostic-pair suites pass (384). Mutations: 11/11 caught.

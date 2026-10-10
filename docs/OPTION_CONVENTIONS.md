@@ -76,6 +76,9 @@ provider metadata; neither substitutes a neighboring contract. `MATCHED_REPORTED
 compares the reported size fields only: Tradier `contract_size` and tastytrade
 `shares-per-contract` are not an attestation of premium units or full adjusted
 deliverables. Unknown fields give `PARTIAL`; conflicting terms give `FAIL`.
+A tastytrade `shares-per-contract` with a fraction part (for example JSON `100.0`
+or `100.5`) is kept as its exact text and is a `CONFLICT`, never an absent field
+(G5 backlog R3, C-1).
 
 Freshness is measured independently for bid, ask and trade at report completion under
 the existing 60-second quote policy. Future source times at receipt or completion fail.

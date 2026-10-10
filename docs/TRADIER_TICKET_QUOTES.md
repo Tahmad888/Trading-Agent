@@ -153,6 +153,13 @@ fields required by ReviewedMapping. Without capture arguments, the command only
 inventories configuration presence. It never invokes the configured factory,
 creates a quote store, or calls a provider. Configured settings cannot establish
 real account/status/contract/market readiness.
+Malformed capture shapes give fixed codes (G5 backlog R3): damage no single symbol
+owns (a bad root, list or round) withholds every draft with `CAPTURE_SHAPE_INVALID`;
+a bad observation for one symbol withholds only that symbol. The report keeps both
+input hashes and lists, per symbol, the rows used and any alternate spellings
+(`BRK/B` beside `BRK.B`). An alternate Webull row with another identity, or a
+Tradier observation under another spelling, withholds that draft; spellings are
+never folded into an approval. Invalid JSON is a structured refusal (exit 1).
 
 Final lock order: ticket, signal, existing volume/vendor identity guards, Tradier
 store, account. The final clock is sampled after all lock acquisition. The held

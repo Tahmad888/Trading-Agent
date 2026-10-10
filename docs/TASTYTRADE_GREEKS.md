@@ -132,6 +132,12 @@ option identities, keeps exact indexes/decimals, and computes age from source ti
 to original receipt time. Contradictory duplicate identities cannot silently replace
 each other. The bounded measurement log omits some control/health events, so it is
 not replayed as a complete snapshot or a live connection.
+Shapes are checked before use (G5 backlog R3): a bad root, `measurements`,
+`records`, `records_dropped`, `identity_capture` list or identity row refuses the
+whole capture as `CAPTURE_SHAPE_INVALID` (exit 1), keeping the input hash and the
+historical-only labels. A non-object record is listed as an issue and a record
+with a bad `source_time` is `UNAVAILABLE` (`SAVED_ROW_SHAPE_INVALID`); healthy
+records keep their results (`PARTIAL_OBSERVATIONS`).
 
 The authentic MacBook comparison archive yielded six valid indexed Greek observations
 for two SPY options. Original receipt ages were 200.967142, 200.967142, 128.550859,
