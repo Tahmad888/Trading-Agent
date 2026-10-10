@@ -108,3 +108,74 @@ Acceptance examples:
   `floor_15min(checked)` with `checked` read before its `BEGIN IMMEDIATE`, so a
   lock wait does not move it. The replacement still cannot see bars ending at or
   before the retired candidate's check. Low; no change.
+
+## R2 — local database contention is not a provider STOP
+
+### Requirement (recorded before implementation)
+
+**Checked (D O1; Claude's injected probe 2026-10-09 and Astra's real-lock probe
+2026-10-10, both reproduced on c41142e):** when the quote store's reservation
+transaction cannot get its SQLite lock, `QuoteStore.fetch` reaches its generic
+branch, records a durable global `STOP` with `TRADIER_FETCH_FAILURE`, and after a
+reopen even the healthy GOOD quote needs `EXPLICIT_RESUME_REQUIRED`. No request
+was sent; nothing about the provider was learned.
+
+Producers → consumers:
+
+- `TradierClient.get` → `reserve_request` (`QuoteStore.held`, `BEGIN EXCLUSIVE`)
+  before dispatch → `QuoteStore.fetch` outcome rows / global STOP →
+  `QuoteStore.read` / `proof` → `TradierRiskSource.verified`, `resolve`,
+  `held_event` (final approve/consume fence) and `executable` →
+  `tickets.recheck` / `final_problem` / approve and consume refusals.
+- `QuoteStore.begin` and `finish` (also `held`) around the request.
+- `tradier_quotes.main refresh` command output and exit.
+
+Contract:
+
+- Any SQLite failure inside the quote store is a fixed local code:
+  `LOCAL_QUOTE_STORE_BUSY` (busy/locked) or `LOCAL_QUOTE_STORE_FAILURE` (other).
+  Raw SQLite text is never shown or stored.
+- A local failure never writes `STOP` and never needs an operator resume.
+  A reservation failure dispatches nothing.
+- The attempted names are withdrawn: `FAILED` rows with the local code when the
+  store is writable. If it is not, the withdrawal is held in the process and
+  written before the next check; until then reads of those names refuse with
+  `LOCAL_QUOTE_EVIDENCE_WITHDRAWN`, and a started check (durable `START`) already
+  keeps them unavailable after a reopen. Unattempted peers stay readable.
+- The withdrawal changes the attempted names' generation, so a ticket prepared on
+  the old evidence cannot be approved after a fresh check; a fresh normal check
+  recovers without resume.
+- Real 401/403/429/transport/reply failures keep the durable STOP and explicit
+  resume. If the STOP row itself cannot be written, the STOP is held in the
+  process and written before any later check; nothing is dispatched meanwhile.
+- Local rate and workload limits keep their existing codes and behavior.
+- Refusals show the code: ticket approve/consume refusals show a fixed evidence
+  code instead of the exception class; the refresh command's JSON names the
+  cause (`local`, `provider` or `request`).
+- Append-only events are never updated or deleted.
+
+Acceptance examples: Astra's probe now gives `LOCAL_QUOTE_STORE_BUSY`, one send,
+no STOP, GOOD readable after reopen, LEAD unavailable until a fresh check, which
+then succeeds without resume. A 401 still stops and needs resume.
+Rollback: revert the R2 commit; local failures then become STOP again.
+
+### Implementation and results
+
+- `tradier_quotes`: `LocalQuoteStoreUnavailable`, `local_failure`, `cause`;
+  `held()` and store creation translate SQLite errors; `fetch` handles a local
+  failure before the budget and provider branches; `_withdraw` and
+  `_persist_held` keep process-held withdrawals and STOPs until written;
+  `read` refuses them. The refresh command adds `cause`.
+- `tickets`: approve/consume refusals show the fixed evidence code (`_cause`).
+- `docs/TRADIER_TICKET_QUOTES.md` documents the local-failure policy.
+- Tests: `tests/test_tradier_local_store.py` (14). On c41142e 9 fail and the 5
+  controls (local rate limit; 401/403/429/transport STOP) pass. Astra's probe
+  now fails its old expectation with `LOCAL_QUOTE_STORE_BUSY` (it passes on
+  c41142e). Tradier, ticket, quote, after-hours and risk suites pass (726).
+  Mutations: 10/10 caught.
+- Limits: an in-process withdrawal is lost if the process exits before the store
+  becomes writable. If the check had started, its durable `START` row still keeps
+  the name unavailable after a reopen; if the store refused even the start,
+  nothing was sent and the earlier evidence stands as it was before the attempt.
+  An unwritable provider STOP is likewise held only by that process; a new
+  process can send once more before it sees a provider refusal again.

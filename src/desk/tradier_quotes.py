@@ -32,6 +32,32 @@ SOURCE = "tradier-rest"
 SCHEMA = "tradier-quote-evidence-v1"
 
 
+class LocalQuoteStoreUnavailable(QuoteUnavailable):
+    """The local evidence store could not be read or written (G5 backlog R2).
+
+    Never a provider refusal: it never records STOP and never needs an operator resume.
+    Codes are fixed; raw SQLite text is never exposed or stored.
+    """
+
+
+def local_failure(exc):
+    name = getattr(exc, "sqlite_errorname", "") or ""
+    busy = name.startswith(("SQLITE_BUSY", "SQLITE_LOCKED"))
+    return LocalQuoteStoreUnavailable("LOCAL_QUOTE_STORE_BUSY" if busy else "LOCAL_QUOTE_STORE_FAILURE")
+
+
+PROVIDER_CODES = {"REST_HTTP_400", "REST_HTTP_401", "REST_HTTP_403", "REST_HTTP_429", "REST_HTTP_500",
+                  "REST_HTTP_502", "REST_HTTP_503", "REST_ERROR", "REST_TRANSPORT_FAILURE", "REPLY_SHAPE_INVALID",
+                  "TRADIER_FETCH_FAILURE", "TRADIER_STOPPED_EXPLICIT_RESUME_REQUIRED"}
+
+
+def cause(code):
+    """Whether a refusal came from this machine, the provider, or the request itself."""
+    if code.startswith("LOCAL_") or code == "REST_REQUEST_BUDGET":
+        return "local"
+    return "provider" if code in PROVIDER_CODES else "request"
+
+
 def decimal_json(value):
     if isinstance(value, Decimal) and value.is_finite():
         return str(value)
@@ -111,6 +137,15 @@ class QuoteStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.local = threading.local()
+        # Process-held outcomes the store could not record yet (R2); written before the next check.
+        self._guard, self._withdrawn, self._stopped = threading.Lock(), {}, {}
+        try:
+            self._create()
+        except sqlite3.Error as exc:
+            raise local_failure(exc) from None
+        self.path.chmod(0o600)
+
+    def _create(self):
         with self.connection() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -129,7 +164,6 @@ class QuoteStore:
             db.execute("INSERT OR IGNORE INTO meta VALUES('schema',?)", (SCHEMA,))
             db.execute("INSERT OR IGNORE INTO meta VALUES('instance',?)", (uuid.uuid4().hex,))
             db.execute("COMMIT")
-        self.path.chmod(0o600)
 
     @contextmanager
     def connection(self):
@@ -145,18 +179,57 @@ class QuoteStore:
         if getattr(self.local, "db", None) is not None:
             yield self.local.db
             return
-        with self.connection() as db:
-            db.execute("BEGIN EXCLUSIVE")
-            self.local.db = db
+        try:
+            with self.connection() as db:
+                db.execute("BEGIN EXCLUSIVE")
+                self.local.db = db
+                try:
+                    yield db
+                    db.execute("COMMIT")
+                except BaseException:
+                    if db.in_transaction:
+                        db.execute("ROLLBACK")
+                    raise
+                finally:
+                    self.local.db = None
+        except sqlite3.Error as exc:  # busy, locked, I/O: a local fault, never provider evidence
+            raise local_failure(exc) from None
+
+    def _withdraw(self, environment, names, starts, code, *, durable=True):
+        """Withdraw attempted names after a local failure; hold it in-process if it cannot be written."""
+        if durable:
             try:
-                yield db
-                db.execute("COMMIT")
-            except BaseException:
-                if db.in_transaction:
-                    db.execute("ROLLBACK")
-                raise
-            finally:
-                self.local.db = None
+                with self.held() as db:
+                    for want in names:
+                        for component in ("trade", "quote"):
+                            self.add(db, environment + "|" + want["symbol"] + "|" + component, "FAILED",
+                                     starts.get(want["symbol"]), {"reason": code})
+                return
+            except LocalQuoteStoreUnavailable:
+                pass
+        with self._guard:
+            for want in names:
+                self._withdrawn[(environment, want["symbol"])] = (starts.get(want["symbol"]), code)
+
+    def _persist_held(self, environment):
+        """Write a process-held STOP or withdrawal before anything else uses the store."""
+        with self._guard:
+            stopped = self._stopped.get(environment)
+            withdrawn = {k: v for k, v in self._withdrawn.items() if k[0] == environment}
+        if stopped is None and not withdrawn:
+            return
+        with self.held() as db:
+            if stopped is not None:
+                self.add(db, environment + "|*", "STOP", payload={"reason": stopped})
+            for (_, symbol), (start, code) in withdrawn.items():
+                for component in ("trade", "quote"):
+                    self.add(db, environment + "|" + symbol + "|" + component, "FAILED", start, {"reason": code})
+        with self._guard:
+            if self._stopped.get(environment) == stopped:
+                self._stopped.pop(environment, None)
+            for key, value in withdrawn.items():
+                if self._withdrawn.get(key) == value:
+                    del self._withdrawn[key]
 
     @staticmethod
     def add(db, key, action, start=None, payload=None):
@@ -173,6 +246,7 @@ class QuoteStore:
     def resume(self, environment):
         if environment not in {"production", "sandbox"}:
             raise QuoteUnavailable("ENVIRONMENT_INVALID")
+        self._persist_held(environment)
         with self.held() as db:
             self.add(db, environment + "|*", "RESUME")
 
@@ -205,6 +279,7 @@ class QuoteStore:
         return digest(record.model_dump(mode="json")), row["id"]
 
     def begin(self, environment, names):
+        self._persist_held(environment)
         with self.held() as db:
             stop = self.global_event(db, environment)
             if stop and stop["action"] == "STOP":
@@ -261,7 +336,13 @@ class QuoteStore:
             raise QuoteUnavailable("NETWORK_UNDER_QUOTE_FENCE_FORBIDDEN")
         if not names or len({r["symbol"] for r in names}) != len(names):
             raise QuoteUnavailable("QUOTE_REQUEST_INVALID")
-        starts = self.begin(client.environment, names)
+        try:
+            starts = self.begin(client.environment, names)
+        except (LocalQuoteStoreUnavailable, sqlite3.Error) as exc:
+            # Nothing was dispatched. The store is unusable now, so hold the withdrawal here.
+            code = str(exc) if isinstance(exc, LocalQuoteStoreUnavailable) else str(local_failure(exc))
+            self._withdraw(client.environment, names, {}, code, durable=False)
+            raise LocalQuoteStoreUnavailable(code) from None
         try:
             sent = aware(client.clock())
             workload = client.quote_workload() if getattr(client, "operational", False) else nullcontext()
@@ -276,16 +357,19 @@ class QuoteStore:
                 raise QuoteUnavailable("CLOCK_MOVED_BACKWARDS")
             self.finish(client.environment, names, starts, rows, received)
         except Exception as exc:
+            if isinstance(exc, (LocalQuoteStoreUnavailable, sqlite3.Error)):
+                # A local reservation or storage fault (TradierClient.get turns every
+                # transport exception into a fixed REST code, so SQLite errors are local).
+                # Withdraw the attempted names; no STOP, no resume needed after it clears.
+                code = str(exc) if isinstance(exc, LocalQuoteStoreUnavailable) else str(local_failure(exc))
+                self._withdraw(client.environment, names, starts, code)
+                raise LocalQuoteStoreUnavailable(code) from None
             if isinstance(exc, RequestBudgetExceeded):
                 # Local workload/rate exhaustion withdraws only the attempted names.
                 # It changes component health, so recovery cannot revive old approvals.
                 code = str(exc) if str(exc) in {"REST_REQUEST_BUDGET", "LOCAL_MARKET_DATA_RATE_LIMIT",
                                                 "LOCAL_RATE_CLOCK_MOVED_BACKWARDS"} else "REST_REQUEST_BUDGET"
-                with self.held() as db:
-                    for want in names:
-                        for component in ("trade", "quote"):
-                            self.add(db, client.environment + "|" + want["symbol"] + "|" + component,
-                                     "FAILED", starts[want["symbol"]], {"reason": code})
+                self._withdraw(client.environment, names, starts, code)
                 raise RequestBudgetExceeded() if code == "REST_REQUEST_BUDGET" else LocalRateLimitExceeded(code)
             # Fixed code only. STOP persists across process restarts until explicit resume.
             code = str(exc) if isinstance(exc, QuoteUnavailable) else "TRADIER_FETCH_FAILURE"
@@ -293,12 +377,21 @@ class QuoteStore:
                        "REST_HTTP_502", "REST_HTTP_503", "REST_ERROR", "REST_REQUEST_BUDGET",
                        "REST_TRANSPORT_FAILURE", "REPLY_SHAPE_INVALID", "CLOCK_MOVED_BACKWARDS"}
             code = code if code in allowed else "TRADIER_FETCH_FAILURE"
-            with self.held() as db:
-                self.add(db, client.environment + "|*", "STOP", payload={"reason": code})
+            try:
+                with self.held() as db:
+                    self.add(db, client.environment + "|*", "STOP", payload={"reason": code})
+            except LocalQuoteStoreUnavailable:
+                with self._guard:  # the STOP still holds; it is written before any later check
+                    self._stopped[client.environment] = code
             raise QuoteUnavailable(code) from None
 
     def read(self, db, environment, symbol, component, at):
         key = environment + "|" + symbol
+        with self._guard:
+            if environment in self._stopped:
+                raise QuoteUnavailable("TRADIER_STOPPED_EXPLICIT_RESUME_REQUIRED")
+            if (environment, symbol) in self._withdrawn:
+                raise LocalQuoteStoreUnavailable("LOCAL_QUOTE_EVIDENCE_WITHDRAWN")
         global_row = self.global_event(db, environment)
         if global_row and global_row["action"] == "STOP":
             raise QuoteUnavailable("TRADIER_STOPPED_EXPLICIT_RESUME_REQUIRED")
@@ -426,7 +519,7 @@ def main(argv=None, *, stdin=None, stdout=None):
         return 0
     except Exception as exc:
         code = str(exc) if isinstance(exc,QuoteUnavailable) else 'TRADIER_STORE_COMMAND_INVALID'
-        print(json.dumps(dict(status='UNAVAILABLE',reason=code,G5='OPEN')),file=stdout)
+        print(json.dumps(dict(status='UNAVAILABLE',reason=code,cause=cause(code),G5='OPEN')),file=stdout)
         return 1
 
 

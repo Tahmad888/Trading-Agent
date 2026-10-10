@@ -124,6 +124,17 @@ revive. An actual HTTP/transport/global-reply failure still persists STOP and ne
 explicit resume plus a fresh successful capture. Clock rollback refuses a local
 reservation until its earlier evidence is no longer ahead; no tolerance is invented.
 
+A local quote-store failure (SQLite busy/locked or another storage error, during
+the reservation, the check start or saving a reply) is also not a provider STOP
+(G5 backlog R2, 2026-10-10). It refuses with `LOCAL_QUOTE_STORE_BUSY` or
+`LOCAL_QUOTE_STORE_FAILURE`, never raw SQLite text, and a reservation failure sends
+nothing. The attempted names are withdrawn with that code; if the store cannot be
+written, the withdrawal (or a provider STOP that could not be written) is held by
+the process, refused at reads (`LOCAL_QUOTE_EVIDENCE_WITHDRAWN`), and written before
+the next check. Once the store is writable a normal fresh check recovers without a
+resume, and the changed generation keeps old tickets from reviving. Ticket refusals
+and the refresh command name the cause (`cause: local | provider | request`).
+
 Accounting distinguishes reserved/attempted dispatch from confirmed network sends.
 The shared client cannot know whether an injected request function contacted the
 network; `confirmed_network_sends` is null, `network_send_status` is NOT_ATTESTED,

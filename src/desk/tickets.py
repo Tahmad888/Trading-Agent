@@ -62,6 +62,11 @@ def _json(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _cause(exc: BaseException) -> str:
+    """A refusal's cause: the fixed evidence code (local or provider) or the exception class."""
+    return str(exc) if isinstance(exc, EvidenceUnavailable) else type(exc).__name__
+
+
 def _sha(value) -> str:
     return hashlib.sha256(_json(value).encode()).hexdigest()
 
@@ -944,7 +949,7 @@ class TicketStore:
             raise
         except (ValueError, sqlite3.Error) as exc:
             self._refused(now, ticket_id, version, "approval_refused", actor,
-                          f"Final check unavailable ({type(exc).__name__}); nothing was approved")
+                          f"Final check unavailable ({_cause(exc)}); nothing was approved")
         if refused:
             raise TicketError(refused)
         return record
@@ -1072,7 +1077,7 @@ class TicketStore:
             raise
         except (ValueError, sqlite3.Error) as exc:
             self._refused(now, ticket_id, version, "consumption_refused", actor,
-                          f"Final check unavailable ({type(exc).__name__}); nothing was consumed")
+                          f"Final check unavailable ({_cause(exc)}); nothing was consumed")
         if refused:
             raise TicketError(refused)
         return outcome
