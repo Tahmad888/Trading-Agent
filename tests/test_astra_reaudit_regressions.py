@@ -54,3 +54,36 @@ def test_saved_identity_nontext_symbol_gets_structured_refusal(bad):
     result=audit(capture,'a'*64)
     assert result['status'] in {'CAPTURE_SHAPE_INVALID','PARTIAL_OBSERVATIONS'}
     assert result['provider_calls']==0 and result['live_state']=='NOT_RESTORED'
+
+def test_actual_setup_tool_keeps_fixture_inputs_hidden(tmp_path):
+    import os,pty,select,signal,time,sys
+    from pathlib import Path
+    source=Path(__file__).resolve().parents[1]/'tools/setup_tastytrade_env.py'  # adapted path only
+    output=tmp_path/'scratch-env'; pid,fd=pty.fork()
+    if pid==0:
+        os.execve(sys.executable,[sys.executable,str(source),'--env-file',str(output)],
+                  {'PATH':'/usr/bin:/bin','PYTHONDONTWRITEBYTECODE':'1'})
+    messages=b''; sent=0; deadline=time.monotonic()+15
+    prompts=[b'tastytrade OAuth client secret (hidden): ',b'tastytrade refresh token (hidden): ']
+    fixtures=[b'placeholder-client-only\n',b'placeholder-refresh-only\n']
+    status=None
+    try:
+        while time.monotonic()<deadline:
+            ready,_,_=select.select([fd],[],[],1)
+            if ready:
+                try:chunk=os.read(fd,4096)
+                except OSError:break
+                if not chunk:break
+                messages+=chunk
+                if sent<2 and prompts[sent] in messages:
+                    os.write(fd,fixtures[sent]);sent+=1
+            done,code=os.waitpid(pid,os.WNOHANG)
+            if done:status=code;break
+        if status is None:
+            done,code=os.waitpid(pid,os.WNOHANG)
+            if not done:os.kill(pid,signal.SIGKILL);done,code=os.waitpid(pid,0)
+            status=code
+    finally:os.close(fd)
+    assert os.waitstatus_to_exitcode(status)==0 and sent==2
+    assert all(value.strip() not in messages for value in fixtures)
+    assert output.is_file() and output.stat().st_mode & 0o777==0o600

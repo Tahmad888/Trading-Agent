@@ -83,10 +83,16 @@ exit 8
 
 TOOL = '#!/bin/bash\necho "CREDENTIAL TOOL RAN from $PWD (repo marker: $(cat "$PWD/MARKER" 2>/dev/null))" >> "$HOME/log.txt"\n'
 
-# Hidden-prompt stand-in: reports whether stdin is the terminal, then reads without echo.
+# Hidden-prompt stand-in: reports whether stdin is the terminal, turns echo off, and only
+# then prints its prompt (as getpass does), so typing at the prompt can never echo. The
+# EXIT trap restores the terminal and reports whether echo came back (re-audit R4b).
+PROMPT = b"Secret (echo off): "
 PROMPT_TOOL = r'''#!/bin/bash
 if [ -t 0 ]; then echo "STDIN_IS_TERMINAL"; else echo "STDIN_NOT_TERMINAL"; fi
-printf 'Secret: '
+saved=$(stty -g) || { echo "STTY_FAILED"; exit 4; }
+trap 'stty "$saved"; case " $(stty -a | tr "\n" " ") " in *" -echo "*) echo "ECHO_STILL_OFF";; *) echo "ECHO_RESTORED";; esac' EXIT
+stty -echo || { echo "STTY_FAILED"; exit 4; }
+printf 'Secret (echo off): '
 IFS= read -rs secret || { echo "READ_FAILED"; exit 3; }
 echo
 echo "READ_LENGTH ${#secret}"
@@ -244,13 +250,17 @@ def test_part2_guards_stop_before_the_credential_tool(host, shell, kw, sha, setu
     assert "CREDENTIAL TOOL RAN" not in log(host)
 
 
-def run_in_terminal(h, shell, text, answer, cwd):
-    """Run `text` in `shell` attached to a pseudo-terminal; type `answer` at the prompt."""
+def run_in_terminal(h, shell, text, exchange, cwd):
+    """Run `text` in `shell` attached to a pseudo-terminal; type each answer after its prompt.
+
+    `exchange` is [(prompt, answer), ...]. Each prompt is printed only after the tool has
+    turned echo off, so waiting for it is the synchronization; no sleeps.
+    """
     pid, fd = pty.fork()
     if pid == 0:                                                   # child: the Terminal's shell
         os.chdir(cwd)
         os.execve(shutil.which(shell), argv(shell, text), h["env"])
-    out, sent, stalled = b"", False, False
+    out, sent, seen, stalled = b"", 0, 0, False
     try:
         while True:
             ready, _, _ = select.select([fd], [], [], 30)
@@ -264,11 +274,12 @@ def run_in_terminal(h, shell, text, answer, cwd):
             if not chunk:
                 break
             out += chunk
-            if not sent and b"Secret: " in out:
-                os.write(fd, answer)
-                sent = True
+            while sent < len(exchange) and out.find(exchange[sent][0], seen) >= 0:
+                seen = out.find(exchange[sent][0], seen) + len(exchange[sent][0])
+                os.write(fd, exchange[sent][1])
+                sent += 1
     finally:
-        if stalled or not sent:
+        if stalled or sent < len(exchange):
             os.kill(pid, signal.SIGKILL)                           # never leave a prompt waiting
         _, status = os.waitpid(pid, 0)
         os.close(fd)
@@ -280,11 +291,32 @@ def run_in_terminal(h, shell, text, answer, cwd):
 def test_part2_keeps_the_terminal_as_stdin_so_input_stays_hidden(host, shell):
     state(host, head=R)
     (host["repo"] / ".venv/bin/python").write_text(PROMPT_TOOL)
-    code, out = run_in_terminal(host, shell, block(2).replace("REVIEWED_SHA", R), b"hunter2-fixture\n",
-                                host["other"])
+    code, out = run_in_terminal(host, shell, block(2).replace("REVIEWED_SHA", R),
+                                [(PROMPT, b"hunter2-fixture\n")], host["other"])
     assert code == 0, out
-    assert "STDIN_IS_TERMINAL" in out and "READ_LENGTH 15" in out
+    assert "STDIN_IS_TERMINAL" in out and "READ_LENGTH 15" in out and "ECHO_RESTORED" in out
     assert "hunter2-fixture" not in out                            # typed text was not echoed
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_part2_runs_the_real_credential_tool_with_hidden_input(host, shell):
+    """The actual getpass tool through the guide, dummy values, scratch HOME (re-audit R4b)."""
+    state(host, head=R)
+    python = host["repo"] / ".venv/bin/python"
+    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    shutil.copy(ROOT / "tools/setup_tastytrade_env.py", host["repo"] / "tools/setup_tastytrade_env.py")
+    env_file = host["home"] / ".config/trading-desk/env"
+    assert env_file.read_text() == "export FIXTURE_ONLY=1\n"     # scratch file, no credential in it
+    code, out = run_in_terminal(host, shell, block(2).replace("REVIEWED_SHA", R),
+                                [(b"tastytrade OAuth client secret (hidden): ", b"fixture-client-only\n"),
+                                 (b"tastytrade refresh token (hidden): ", b"fixture-refresh-only\n")],
+                                host["other"])
+    assert code == 0 and f"SHA_OK {R}" in out and "credentials saved" in out, out
+    assert "fixture-client-only" not in out and "fixture-refresh-only" not in out   # nothing echoed
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    assert env_file.read_text().splitlines() == ["export FIXTURE_ONLY=1",
+                                                 "export TASTYTRADE_CLIENT_SECRET=fixture-client-only",
+                                                 "export TASTYTRADE_REFRESH_TOKEN=fixture-refresh-only"]
 
 
 # ------------------------------------------------------------- Part 3: diagnostics -------

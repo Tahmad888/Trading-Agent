@@ -565,3 +565,44 @@ behaviour are unchanged. The command writes the JSON report and exits 1.
   drafts. Making such a row withhold every draft would follow the same principle;
   it is outside F2's named path, so it is left for a decision.
 - Rollback: revert this commit.
+
+## R4b — the hidden-input fixture waits for echo to be off (Astra F3)
+
+### Requirement
+
+**Checked (Astra, native macOS bash 3.2.57):** the stand-in tool in
+`tests/test_host_commands.py` printed `Secret: ` before `read -rs` turned echo off,
+and the test typed as soon as it saw that prompt, so a scheduling gap echoed the
+dummy value (failed once in a focused run, passed in the full run). A fixture
+defect, not a credential leak: the production tool uses `getpass`, which turns echo
+off before it prints its prompt (Astra's separate PTY control of the real tool
+passed). Fix the synchronization without sleeps, skips or weaker assertions.
+
+### Implementation and results
+
+- The stand-in now saves the terminal settings, sets an `EXIT` trap that restores
+  them and reports `ECHO_RESTORED`, runs `stty -echo`, and only then prints
+  `Secret (echo off): `; the test types only after that prompt. Kept assertions:
+  stdin is the terminal, the read succeeds with the right length, nothing typed is
+  echoed, the reviewed checkout runs and a wrong directory is refused. Added:
+  the terminal's echo is restored.
+- New `test_part2_runs_the_real_credential_tool_with_hidden_input`: the guide's
+  Part 2, pasted into real bash and zsh on a pseudo-terminal, runs the actual
+  `tools/setup_tastytrade_env.py` with the scratch HOME (its default env file is a
+  scratch file holding only `FIXTURE_ONLY=1`) and two dummy values typed after each
+  `getpass` prompt: neither is echoed, both land in the file, the other line is
+  kept and the mode is 0600. Astra's own PTY control of the tool is copied into
+  `tests/test_astra_reaudit_regressions.py` with only its path adapted.
+- `run_in_terminal` takes a list of (prompt, answer) and types each answer only
+  after its prompt.
+- Before/after: production code and the guide are unchanged, so the new tests also
+  pass on 283c032 (80 passed). The race itself is shown by
+  `r4b_race_demo.py` in the handoff, which widens the gap with a sleep after the
+  prompt (in the demo only): the 283c032 stand-in echoes `hunter2-fixture`, the
+  repaired one does not.
+- Mutations: 5/5 caught (trap without restore, no trap, real tool reading with
+  `input`, guide Part 2 taking stdin from `/dev/null`, env file mode 0644).
+- Shells: bash 5.2.21 and zsh 5.9 (`-f`) in the cloud container. bash 3.2 is not
+  available here, so this is **not macOS acceptance**: Astra's native-host rerun
+  on bash 3.2.57 stays a required check.
+- Rollback: revert this commit (test-only).
