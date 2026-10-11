@@ -524,3 +524,44 @@ Rollback: revert the R2b commit; the 283c032 restart behaviour returns.
 - Limits: two overlapping refreshes of one symbol invalidate tickets prepared
   before them once (fail-closed). The process-only STOP bound above remains when
   the folder itself cannot be written. Rollback: revert this commit.
+
+## R3b — saved identity symbols are validated before grouping (Astra F2)
+
+### Requirement
+
+**Checked (Astra's probe, reproduced on 283c032):** `saved_greek_audit.audit`
+checks only that identity rows are objects, then groups them by `desk_symbol`
+outside the record handler. `[]` or `{}` there raises `TypeError` (the command
+prints a traceback). Other bad values did not crash but were worse: a row whose
+symbol is `""`, `None`, missing, a number or `True` was simply never matched, and
+the capture could still be reported `OBSERVATIONS_AUDITED` (Checked on 283c032 by
+the new tests: 22 such cases audited without refusal).
+
+Contract: a saved identity's `desk_symbol` must be printable text with no
+whitespace before grouping. Otherwise the row cannot be attributed to one symbol
+and could contradict any observation, so the whole capture is refused
+(`CAPTURE_SHAPE_INVALID`, no observations audited) with one issue per row at path
+`identity_capture[n].desk_symbol` and a fixed code: `IDENTITY_SYMBOL_MISSING`
+(missing or null), `IDENTITY_SYMBOL_NOT_TEXT` (any non-text JSON value) or
+`IDENTITY_SYMBOL_INVALID_TEXT` (empty, whitespace or non-printable). No
+stringifying, no discard, no catch-all. Rows that name a valid symbol but carry
+other bad fields stay attributable and fail only that symbol's observations, as
+before; bad records stay isolated. The input SHA-256, `provider_calls=0`,
+`live_state=NOT_RESTORED`, `HISTORICAL_OBSERVATION` labels and Greek unit
+behaviour are unchanged. The command writes the JSON report and exits 1.
+
+### Implementation and results
+
+- `saved_greek_audit.shape_issues` checks each identity row with `symbol_issue`.
+- Tests: `tests/test_saved_identity_symbols.py` (39) and Astra's two R3
+  regressions (assertions unchanged) in `tests/test_astra_reaudit_regressions.py`.
+  On 283c032 the new file gives 30 failed, 9 passed (controls: healthy,
+  conflicting identities, other bad identity fields, bad record symbols).
+  Offline-evidence and after-hours suites pass. Mutations: 6/6 caught.
+- Not changed (noted for Astra): `tradier_readiness.prepare` does not crash on the
+  same values (Checked: `[]`, `{}`, null, `True`, `5`, `""`); a Webull identity row
+  with an unusable symbol matches no symbol, so the symbols it might belong to are
+  withheld as missing identity, but other symbols still get non-installable
+  drafts. Making such a row withhold every draft would follow the same principle;
+  it is outside F2's named path, so it is left for a decision.
+- Rollback: revert this commit.

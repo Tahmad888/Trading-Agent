@@ -30,9 +30,21 @@ def shape_issues(capture):
     if not isinstance(ids,list):issues.append(dict(path='identity_capture',code='IDENTITY_CAPTURE_NOT_LIST'))
     else:
         # An unreadable identity row could contradict any symbol, so it is not isolated.
-        issues.extend(dict(path=f'identity_capture[{n}]',code='IDENTITY_ROW_NOT_OBJECT')
-                      for n,i in enumerate(ids) if not isinstance(i,dict))
+        for n,i in enumerate(ids):
+            if not isinstance(i,dict):
+                issues.append(dict(path=f'identity_capture[{n}]',code='IDENTITY_ROW_NOT_OBJECT'))
+            elif (code:=symbol_issue(i.get('desk_symbol'))):
+                # Rows are grouped by this symbol; one that names no symbol is unattributable (R3b).
+                issues.append(dict(path=f'identity_capture[{n}].desk_symbol',code=code))
     return issues
+
+
+def symbol_issue(value):
+    """Why a saved identity's desk_symbol cannot attribute it to one symbol, or None."""
+    if value is None:return 'IDENTITY_SYMBOL_MISSING'
+    if not isinstance(value,str):return 'IDENTITY_SYMBOL_NOT_TEXT'
+    if not value or not value.isprintable() or any(c.isspace() for c in value):return 'IDENTITY_SYMBOL_INVALID_TEXT'
+    return None
 
 
 def audit(capture, sha):

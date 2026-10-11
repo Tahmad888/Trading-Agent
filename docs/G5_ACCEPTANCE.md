@@ -617,3 +617,4 @@ verified offline only, pending Astra's re-audit; no host, provider or live claim
 | Item | Developer disposition | Still open |
 |---|---|---|
 | R2b old ticket revived after restart (F1) | A check overtaken by a later check's OK before its own outcome changes the generation durably; unrecorded provider STOP kept in a 0600 STOP file beside the store | If neither the STOP row nor the file can be written, the STOP is held by that process only (a restart may send one more request) |
+| R3b nontext identity symbol crashed the saved audit (F2) | Identity `desk_symbol` validated before grouping; unattributable rows refuse the capture with a fixed path/code; labels, input hash and Greek units unchanged | `tradier_readiness` drafts for other symbols when one Webull row has an unusable symbol (no crash; decision noted) |

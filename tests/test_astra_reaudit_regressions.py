@@ -45,3 +45,12 @@ def test_control_clean_restart_does_not_invalidate_healthy_ticket(tmp_path):
     adapters=compose(d.fixture.inputs(clock=lambda:d.fixture.at),price_source=d.fixture.desk.src,
         log=d.fixture.desk.log,store=restarted,client=client(d.rows,d.fixture.at))
     assert approve(d.tickets,tid,ver,adapters,now=d.fixture.at)
+
+@pytest.mark.parametrize('bad',[[],{}])
+def test_saved_identity_nontext_symbol_gets_structured_refusal(bad):
+    from desk.saved_greek_audit import audit
+    from tests.test_afterhours_readiness import saved
+    capture=deepcopy(saved());capture['identity_capture'][0]['desk_symbol']=bad
+    result=audit(capture,'a'*64)
+    assert result['status'] in {'CAPTURE_SHAPE_INVALID','PARTIAL_OBSERVATIONS'}
+    assert result['provider_calls']==0 and result['live_state']=='NOT_RESTORED'
