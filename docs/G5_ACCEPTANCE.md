@@ -606,3 +606,14 @@ see the four-loops checkpoint's count correction);
 account query, order, schedule, activation or iMac modification in this batch.
 The same G5 -> G5a -> parent CP3 outline and other open acceptance rows remain.
 Step 09 stays paused. This does not close all external loops or G5.
+
+### Backlog repairs and Astra's re-audit (2026-10-10/11)
+
+Records: `checkpoints/G5a-cp3-backlog-findings-repairs.md`. Astra's re-audit of
+R1–R5 at `283c032`: not approved as a set (R1 and R5 accepted in their bounded
+offline scope; R2, R3, R4 each had one finding). Repairs below are developer
+verified offline only, pending Astra's re-audit; no host, provider or live claim.
+
+| Item | Developer disposition | Still open |
+|---|---|---|
+| R2b old ticket revived after restart (F1) | A check overtaken by a later check's OK before its own outcome changes the generation durably; unrecorded provider STOP kept in a 0600 STOP file beside the store | If neither the STOP row nor the file can be written, the STOP is held by that process only (a restart may send one more request) |

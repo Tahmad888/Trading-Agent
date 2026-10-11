@@ -9,9 +9,11 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta
 from decimal import Decimal
+import glob
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sqlite3
 import threading
@@ -30,6 +32,10 @@ from desk.tradier_fields import observe_row, latest_policy_view
 
 SOURCE = "tradier-rest"
 SCHEMA = "tradier-quote-evidence-v1"
+# Codes a provider-side failure may record as STOP; anything else is TRADIER_FETCH_FAILURE.
+STOP_CODES = {"REST_HTTP_400", "REST_HTTP_401", "REST_HTTP_403", "REST_HTTP_429", "REST_HTTP_500",
+              "REST_HTTP_502", "REST_HTTP_503", "REST_ERROR", "REST_REQUEST_BUDGET",
+              "REST_TRANSPORT_FAILURE", "REPLY_SHAPE_INVALID", "CLOCK_MOVED_BACKWARDS"}
 
 
 class LocalQuoteStoreUnavailable(QuoteUnavailable):
@@ -152,6 +158,7 @@ class QuoteStore:
                 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT,
                     key TEXT NOT NULL, action TEXT NOT NULL, start_id INTEGER, payload TEXT);
                 CREATE INDEX IF NOT EXISTS quote_events_key ON events(key,id);
+                CREATE INDEX IF NOT EXISTS quote_events_start ON events(start_id);
                 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
                     BEGIN SELECT RAISE(ABORT,'events are append-only'); END;
                 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
@@ -211,19 +218,74 @@ class QuoteStore:
             for want in names:
                 self._withdrawn[(environment, want["symbol"])] = (starts.get(want["symbol"]), code)
 
+    def _stop_files(self, environment):
+        """Provider STOPs written beside the store because the store refused the row (R2b)."""
+        return sorted(self.path.parent.glob(glob.escape(self.path.name) + ".stop-" + environment + ".*"))
+
+    @staticmethod
+    def _stop_record(path):
+        """The STOP row a STOP file stands for; an unreadable file still stops (fixed code)."""
+        try:
+            reason = json.loads(path.read_text()).get("reason")
+        except (OSError, ValueError, AttributeError):
+            reason = None
+        return {"reason": reason if reason in STOP_CODES else "TRADIER_FETCH_FAILURE", "recorded_from": path.name}
+
+    def _unrecorded_stops(self, db, environment):
+        """STOP files not yet copied into a STOP row. Each file is copied once, by its own name."""
+        pending = []
+        for path in self._stop_files(environment):
+            if not path.exists():
+                continue                                          # removed after another process copied it
+            record = self._stop_record(path)
+            text = json.dumps(record, allow_nan=False, default=decimal_json)
+            if db.execute("SELECT 1 FROM events WHERE key=? AND action='STOP' AND payload=? LIMIT 1",
+                          (environment + "|*", text)).fetchone() is None:
+                pending.append((path, record))
+        return pending
+
+    def _hold_stop(self, environment, code):
+        """Keep a provider STOP the store would not record: a 0600 file beside it, else this process only."""
+        path = self.path.with_name(f"{self.path.name}.stop-{environment}.{uuid.uuid4().hex}")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, json.dumps({"reason": code}).encode())
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            folder = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(folder)
+            finally:
+                os.close(folder)
+            return
+        except OSError:
+            pass
+        with self._guard:  # the documented bound: held by this process alone
+            self._stopped[environment] = code
+
     def _persist_held(self, environment):
-        """Write a process-held STOP or withdrawal before anything else uses the store."""
+        """Write a held STOP (file or process) or withdrawal before anything else uses the store."""
         with self._guard:
             stopped = self._stopped.get(environment)
             withdrawn = {k: v for k, v in self._withdrawn.items() if k[0] == environment}
-        if stopped is None and not withdrawn:
+        files = self._stop_files(environment)
+        if stopped is None and not withdrawn and not files:
             return
         with self.held() as db:
+            for _, record in self._unrecorded_stops(db, environment):
+                self.add(db, environment + "|*", "STOP", payload=record)
             if stopped is not None:
                 self.add(db, environment + "|*", "STOP", payload={"reason": stopped})
             for (_, symbol), (start, code) in withdrawn.items():
                 for component in ("trade", "quote"):
                     self.add(db, environment + "|" + symbol + "|" + component, "FAILED", start, {"reason": code})
+        for path in files:  # recorded and committed above; the file was only a pending write
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
         with self._guard:
             if self._stopped.get(environment) == stopped:
                 self._stopped.pop(environment, None)
@@ -373,16 +435,13 @@ class QuoteStore:
                 raise RequestBudgetExceeded() if code == "REST_REQUEST_BUDGET" else LocalRateLimitExceeded(code)
             # Fixed code only. STOP persists across process restarts until explicit resume.
             code = str(exc) if isinstance(exc, QuoteUnavailable) else "TRADIER_FETCH_FAILURE"
-            allowed = {"REST_HTTP_400", "REST_HTTP_401", "REST_HTTP_403", "REST_HTTP_429", "REST_HTTP_500",
-                       "REST_HTTP_502", "REST_HTTP_503", "REST_ERROR", "REST_REQUEST_BUDGET",
-                       "REST_TRANSPORT_FAILURE", "REPLY_SHAPE_INVALID", "CLOCK_MOVED_BACKWARDS"}
-            code = code if code in allowed else "TRADIER_FETCH_FAILURE"
+            code = code if code in STOP_CODES else "TRADIER_FETCH_FAILURE"
             try:
                 with self.held() as db:
                     self.add(db, client.environment + "|*", "STOP", payload={"reason": code})
             except LocalQuoteStoreUnavailable:
-                with self._guard:  # the STOP still holds; it is written before any later check
-                    self._stopped[client.environment] = code
+                # The STOP still holds in every process (STOP file); it is recorded before any later check.
+                self._hold_stop(client.environment, code)
             raise QuoteUnavailable(code) from None
 
     def read(self, db, environment, symbol, component, at):
@@ -393,7 +452,7 @@ class QuoteStore:
             if (environment, symbol) in self._withdrawn:
                 raise LocalQuoteStoreUnavailable("LOCAL_QUOTE_EVIDENCE_WITHDRAWN")
         global_row = self.global_event(db, environment)
-        if global_row and global_row["action"] == "STOP":
+        if (global_row and global_row["action"] == "STOP") or self._unrecorded_stops(db, environment):
             raise QuoteUnavailable("TRADIER_STOPPED_EXPLICIT_RESUME_REQUIRED")
         okay = db.execute("SELECT * FROM events WHERE key=? AND action='OK' ORDER BY start_id DESC,id DESC LIMIT 1",
                           (key + "|" + component,)).fetchone()
@@ -408,7 +467,17 @@ class QuoteStore:
             raise QuoteUnavailable("TRADIER_" + component.upper() + "_STALE_OR_INVALID")
         instance = db.execute("SELECT value FROM meta WHERE key='instance'").fetchone()[0]
         stop_id = db.execute("SELECT MAX(id) FROM events WHERE key=? AND action='STOP'", (environment + "|*",)).fetchone()[0] or 0
-        return data, digest([instance, stop_id, failure])
+        # R2b: checks overtaken by a later check's OK before any outcome of their own (abandoned,
+        # or still running then). Durable and only ever growing; absent, the generation is as before.
+        count, newest = db.execute(
+            "SELECT COUNT(*),MAX(s.id) FROM events s WHERE s.key=? AND s.action='START' AND "
+            "(SELECT o.id FROM events o WHERE o.key=? AND o.id>s.id AND o.action='OK' AND o.start_id>s.id "
+            "ORDER BY o.id LIMIT 1) < COALESCE((SELECT MIN(t.id) FROM events t WHERE t.start_id=s.id "
+            "AND t.key=? AND t.action IN ('OK','FAILED')), 9223372036854775807)",
+            (key, key + "|" + component, key + "|" + component)).fetchone()
+        if not count:
+            return data, digest([instance, stop_id, failure])
+        return data, digest([instance, stop_id, failure, count, newest])
 
     def proof(self, db, environment, symbol, component, at, mapping_digest, mapping_version, contract=None):
         data, generation = self.read(db, environment, symbol, component, at)

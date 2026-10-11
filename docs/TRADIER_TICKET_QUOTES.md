@@ -134,11 +134,29 @@ the reservation, the check start or saving a reply) is also not a provider STOP
 (G5 backlog R2, 2026-10-10). It refuses with `LOCAL_QUOTE_STORE_BUSY` or
 `LOCAL_QUOTE_STORE_FAILURE`, never raw SQLite text, and a reservation failure sends
 nothing. The attempted names are withdrawn with that code; if the store cannot be
-written, the withdrawal (or a provider STOP that could not be written) is held by
-the process, refused at reads (`LOCAL_QUOTE_EVIDENCE_WITHDRAWN`), and written before
-the next check. Once the store is writable a normal fresh check recovers without a
-resume, and the changed generation keeps old tickets from reviving. Ticket refusals
-and the refresh command name the cause (`cause: local | provider | request`).
+written, the withdrawal is held by the process, refused at reads
+(`LOCAL_QUOTE_EVIDENCE_WITHDRAWN`), and written before the next check. Once the store
+is writable a normal fresh check recovers without a resume. Ticket refusals and the
+refresh command name the cause (`cause: local | provider | request`).
+
+Old tickets stay dead across a restart (re-audit R2b, 2026-10-11). A check whose
+durable `START` was overtaken by a later check's `OK` before it recorded any outcome
+of its own (abandoned, or still running then) changes the generation of that
+symbol's component, computed from the stored rows at every read and final fence. So
+after a restart and a healthy refresh, a ticket prepared or approved before the
+unfinished check refuses as changed; a ticket prepared after the recovery is
+unaffected. Ordinary refreshes run in order and never count. Two overlapping
+refreshes of one symbol invalidate older tickets once; a late healthy result of the
+older one changes nothing; a late failure makes the name unavailable until a fresh
+check. No process writes an outcome for another process's check.
+
+A provider STOP the store cannot record is written beside it as
+`<store>.stop-<environment>.<random>` (mode 0600, fixed code only). Every process
+refuses reads and new checks while such a file is unrecorded; the next `begin` or
+`resume` copies it into a STOP row before anything else and then removes the file.
+If that file cannot be written either, the STOP is held by the process alone: a
+restarted process still refuses the attempted name (open `START`) but can send one
+more request before it meets the provider refusal again.
 
 Accounting distinguishes reserved/attempted dispatch from confirmed network sends.
 The shared client cannot know whether an injected request function contacted the

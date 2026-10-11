@@ -405,3 +405,122 @@ were already reported before credentials). One existing assertion was renamed wi
 the field (`request_elapsed_ms` -> `workload_elapsed_ms`). Mutations: 16/16 caught;
 the first run let "exit 0 although the write failed" survive, so a test for it was
 added and both CLIs' versions of that mutation were then caught.
+
+# Re-audit repairs at 283c032 (Astra F1–F3, 2026-10-10)
+
+2026-10-11. Implementer: Claude, authorized by Taz forwarding
+`CLAUDE_G5_R2_R3_REAUDIT_REPAIR_PROMPT_2026-10-10.md` with Astra's re-audit
+(R1–R5 NOT APPROVED as a set). Base `283c03237e343e86d0d134180a77e30a14f28027` on
+`codex/repair-step-01-baseline` (origin had not advanced). Same hierarchy and
+exclusions as above; G5 stays open. Offline only: no provider call, credential
+read or host command. Astra's probe file `test_astra_r2_r3_followup.py` is kept
+unchanged in the handoff; on 283c032 it gives 4 failed (F1 approve and consume,
+F2 `[]` and `{}`), 2 passed (clean-restart control, real setup tool hidden input).
+
+## R2b — a restart must not revive an old ticket (Astra F1)
+
+### Attempt lifecycle and recovery mechanism (recorded before implementation)
+
+**Checked (Astra's probe, reproduced on 283c032):** a refresh writes a durable
+`START`; the store then stays locked, so neither the outcome nor the withdrawal
+can be written and the withdrawal is held only in `_withdrawn`. After a restart
+the `START` keeps the name unavailable, as intended. The next healthy refresh
+writes a newer `START` and `OK`; `read()` then accepts it, and because the
+generation is `digest([instance, stop_id, latest FAILED id])` and none of those
+changed, the old prepared version approves and the old approval consumes.
+
+Attempt lifecycle, per symbol and environment (all rows append-only):
+
+1. `begin()` writes `START` (key `env|symbol`). A failure here sends nothing and
+   writes nothing; the earlier evidence stands (unchanged).
+2. The request is sent once.
+3. The attempt ends in one of three ways:
+   - **terminal:** `finish()` (or a durable `_withdraw`) writes one `OK` or
+     `FAILED` per component (`env|symbol|trade`, `env|symbol|quote`) with
+     `start_id` = that `START`;
+   - **provider STOP:** a global `STOP` row (`env|*`), components left open;
+   - **no outcome:** the process could not write (store still locked) or died.
+4. `read()` accepts a component only when its latest `OK` (by `start_id`) is
+   newer than every `FAILED`, the last `STOP`, and every `START` for the symbol.
+
+Recovery mechanism (the smallest durable change; no new row type, no writes on
+another attempt's behalf):
+
+- A `START` is **overtaken without an outcome** for a component when an `OK` for
+  that component from a later `START` was written before any `OK`/`FAILED` for
+  this `START`. This is computed from the stored rows at every `read()`, so it
+  survives a reopen and is evaluated inside the final approve/consume fences.
+  Because rows are only appended, a `START` once overtaken stays overtaken.
+- When at least one `START` is overtaken, `read()` adds `(count, newest id)` of
+  those `START`s to the generation. A ticket made before the unfinished check
+  therefore no longer matches after recovery; a ticket made after recovery keeps
+  matching until another check is overtaken. Stores with no overtaken `START`
+  keep exactly the old generation, so upgrading invalidates nothing healthy.
+- Ordinary refreshes run in order (each `START` gets its outcome before the next
+  `START`), so they never count and never change the generation by themselves.
+- Active overlap vs. abandonment: they are not told apart when the newer `OK`
+  lands, and nothing is inferred from age. In both cases the older check's
+  outcome is unknown, so the generation changes once (fail-closed). Afterwards
+  they differ only by what the older attempt itself writes: a late `OK` changes
+  nothing (the newer `OK` stays latest, the count is fixed); a late `FAILED` makes
+  the component unavailable until a fresh check (the existing rule); an
+  abandoned attempt writes nothing. No process marks another process's check
+  failed. Cost: two overlapping refreshes of the same symbol invalidate tickets
+  prepared before them once.
+- `_withdrawn` stays as the in-process immediate refusal; it is no longer what
+  protects old tickets across a restart.
+
+Provider STOP that cannot be recorded (the restart bound): when the `STOP` row
+cannot be written, the store writes a STOP file next to the database
+(`<store>.stop-<environment>.<random>`, mode 0600, fsync) holding only the fixed
+code. `begin()` and `read()` refuse with `TRADIER_STOPPED_EXPLICIT_RESUME_REQUIRED`
+while such a file exists, in any process. The next writer that gets the store
+(`begin` or `resume`) copies it into a `STOP` row, commits, then removes that
+exact file; `resume` therefore always records the `STOP` before its `RESUME`.
+Only if the STOP file cannot be written either is the STOP held in this process
+alone; that remaining bound is documented, not called durable: a restarted
+process sees the open `START` (no ticket can use the name) but may send one more
+request before it meets the provider refusal again.
+
+Unchanged: local codes never become a provider STOP; a reservation failure sends
+nothing; real provider STOP/resume; healthy peers per component, environment
+and symbol; concurrent ordering, the timestamp recheck, mapping binding and the
+final fence; no deletion or rewriting of events.
+
+Acceptance examples: Astra's approve and consume regressions raise
+`TicketError` after the restart and a healthy refresh; a ticket prepared after
+recovery approves and consumes; a clean reopen still approves the healthy
+ticket; a restarted process with an unwritten provider STOP sends nothing.
+Rollback: revert the R2b commit; the 283c032 restart behaviour returns.
+
+### Implementation and results
+
+- `tradier_quotes.read` adds `(count, newest id)` of overtaken `START`s for the
+  component to the generation, only when there are any (one indexed query; a new
+  additive index `quote_events_start` on `start_id`, schema text unchanged). The
+  no-marker return keeps the literal `digest([instance, stop_id, failure])`, so the
+  committed `tools/check_tradier_quote_guards.py` failure-epoch case still applies
+  (Checked: 7/7 at this commit; a first draft that rewrote the expression made the
+  tool stop with an assertion before it was committed).
+- `fetch`'s provider branch calls `_hold_stop` when the STOP row cannot be written:
+  a STOP file (`O_EXCL`, 0600, fsync of file and folder) holding only a fixed code,
+  falling back to the process-held STOP only if the file cannot be written.
+  `read` refuses while a STOP file is unrecorded; `_persist_held` (called by
+  `begin` and `resume`) records each file once (by its own name in the STOP row,
+  so a second copier skips it; a file with any other text is recorded as
+  `TRADIER_FETCH_FAILURE`), commits, then removes it. `STOP_CODES` is now a module
+  constant (same members).
+- `docs/TRADIER_TICKET_QUOTES.md` documents both; `G5_ACCEPTANCE.md` has the row.
+- Tests: `tests/test_tradier_restart_invalidation.py` (13) and
+  `tests/test_astra_reaudit_regressions.py` (Astra's R2 regressions and
+  clean-restart control, assertions unchanged). On 283c032 the new file gives
+  8 failed, 5 passed; the passes are the controls (new ticket after recovery,
+  clean restart and ordinary refreshes, late old failure, append-only history,
+  and the documented bound when neither the STOP row nor its file can be written,
+  which behaves the same before and after). Astra's two R2 regressions fail on
+  283c032 (`DID NOT RAISE`) and pass now. Tradier, ticket, quote, after-hours and
+  risk suites: 604 passed. Mutations: 10/10 caught (one survived the first run, a
+  STOP file whose own text was recorded unchecked; a test was added and it is caught).
+- Limits: two overlapping refreshes of one symbol invalidate tickets prepared
+  before them once (fail-closed). The process-only STOP bound above remains when
+  the folder itself cannot be written. Rollback: revert this commit.
